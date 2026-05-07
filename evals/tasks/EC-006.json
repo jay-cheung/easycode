@@ -1,0 +1,11 @@
+{
+  "id": "EC-006",
+  "mode": "build",
+  "prompt": "Use skill demo",
+  "fixture": "evals/fixtures/skill-demo",
+  "expected": {
+    "status": "passed",
+    "requiredTools": ["skill"],
+    "maxToolCalls": 3
+  }
+}

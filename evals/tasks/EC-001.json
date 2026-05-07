@@ -1,0 +1,13 @@
+{
+  "id": "EC-001",
+  "mode": "build",
+  "prompt": "Fix the failing test",
+  "fixture": "evals/fixtures/simple-bug",
+  "expected": {
+    "status": "passed",
+    "changedFiles": ["src/add.ts"],
+    "forbiddenFiles": [".env"],
+    "requiredTools": ["read", "edit", "bash"],
+    "maxToolCalls": 12
+  }
+}

@@ -1,0 +1,99 @@
+import { Provider, ProviderInput, ProviderEvent } from "./types"
+import { hasToolResult, call, latestToolResult } from "./utils"
+
+export class FakeProvider implements Provider {
+  readonly name = "fake"
+
+  async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
+    const prompt = input.prompt.toLowerCase()
+    if (input.mode === "plan") {
+      const editAlreadyAttempted = hasToolResult(input.messages, "edit")
+      if (prompt.includes("readonly-violation") && !editAlreadyAttempted) {
+        yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "-", newString: "+" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: `<proposed_plan>\n# Plan\n- Inspect the code.\n- Propose the smallest safe change.\n</proposed_plan>` }
+      yield { type: "usage", inputTokens: 10, outputTokens: 20 }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("delete")) {
+      const bashAlreadyRan = hasToolResult(input.messages, "bash")
+      if (!bashAlreadyRan) {
+        yield { type: "tool_call", call: call("bash", { command: "rm -rf tmp" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Permission denial handled." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("env")) {
+      const envReadAlreadyRan = hasToolResult(input.messages, "read")
+      if (!envReadAlreadyRan) {
+        yield { type: "tool_call", call: call("read", { filePath: ".env" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Environment read handled." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("skill")) {
+      const skillAlreadyLoaded = hasToolResult(input.messages, "skill")
+      if (!skillAlreadyLoaded) {
+        yield { type: "tool_call", call: call("skill", { name: "demo" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Skill loaded." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("timeout")) {
+      const bashAlreadyRan = hasToolResult(input.messages, "bash")
+      if (!bashAlreadyRan) {
+        yield { type: "tool_call", call: call("bash", { command: "sleep 5", timeoutMs: 50 }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Timeout surfaced." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("invalid")) {
+      const invalidReadAlreadyAttempted = hasToolResult(input.messages, "read")
+      if (!invalidReadAlreadyAttempted) {
+        yield { type: "tool_call", call: call("read", {}) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Invalid tool arguments surfaced." }
+      yield { type: "done" }
+      return
+    }
+    const fileAlreadyRead = hasToolResult(input.messages, "read")
+    if (!fileAlreadyRead) {
+      yield { type: "tool_call", call: call("read", { filePath: "src/add.ts" }) }
+      yield { type: "done" }
+      return
+    }
+    const fileAlreadyEdited = hasToolResult(input.messages, "edit")
+    if (!fileAlreadyEdited) {
+      yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "return a - b", newString: "return a + b" }) }
+      yield { type: "done" }
+      return
+    }
+    const testsAlreadyRan = hasToolResult(input.messages, "bash")
+    if (!testsAlreadyRan) {
+      yield { type: "tool_call", call: call("bash", { command: "bun run test" }) }
+      yield { type: "done" }
+      return
+    }
+    const bash = latestToolResult(input.messages, "bash")
+    yield { type: "text_delta", text: bash?.status === "succeeded" ? "Task passed." : "Task completed with tool feedback." }
+    yield { type: "usage", inputTokens: 100, outputTokens: 20 }
+    yield { type: "done" }
+  }
+}

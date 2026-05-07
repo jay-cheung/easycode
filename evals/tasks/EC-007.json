@@ -1,0 +1,12 @@
+{
+  "id": "EC-007",
+  "mode": "build",
+  "prompt": "timeout command",
+  "fixture": "evals/fixtures/simple-bug",
+  "expected": {
+    "status": "passed",
+    "forbiddenFiles": ["src/add.ts", ".env"],
+    "requiredTools": ["bash"],
+    "maxToolCalls": 2
+  }
+}

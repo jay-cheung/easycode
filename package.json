@@ -1,0 +1,23 @@
+{
+  "name": "easycode",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "easycode": "./src/cli.ts"
+  },
+  "scripts": {
+    "start": "bun run src/cli.ts",
+    "openai": "bun run src/cli.ts build --provider openai",
+    "test": "bun test",
+    "eval": "bun run src/eval.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "dependencies": {
+    "zod": "^4.1.8"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.12",
+    "typescript": "^5.8.2"
+  }
+}

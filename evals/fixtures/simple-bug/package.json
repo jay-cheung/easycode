@@ -1,0 +1,9 @@
+{
+  "type": "module",
+  "scripts": {
+    "test": "bun test test/add.check.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.12"
+  }
+}

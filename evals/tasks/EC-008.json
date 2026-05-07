@@ -1,0 +1,12 @@
+{
+  "id": "EC-008",
+  "mode": "build",
+  "prompt": "invalid tool args",
+  "fixture": "evals/fixtures/simple-bug",
+  "expected": {
+    "status": "passed",
+    "forbiddenFiles": ["src/add.ts", ".env"],
+    "requiredTools": ["read"],
+    "maxToolCalls": 2
+  }
+}
