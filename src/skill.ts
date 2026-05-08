@@ -9,6 +9,11 @@ export type SkillInfo = {
   content?: string
 }
 
+export interface SkillServiceLike {
+  available(): Promise<SkillInfo[]>
+  load(name: string): Promise<SkillInfo | undefined>
+}
+
 function parseFrontmatter(text: string) {
   if (!text.startsWith("---\n")) return { data: new Map<string, string>(), content: text }
   const end = text.indexOf("\n---", 4)
@@ -40,7 +45,7 @@ async function skillFiles(dir: string): Promise<string[]> {
   return out
 }
 
-export class SkillService {
+export class SkillService implements SkillServiceLike {
   readonly roots: string[]
   private cache?: SkillInfo[]
 

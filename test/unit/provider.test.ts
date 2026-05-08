@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { FakeProvider, OpenAIProvider, normalizeOpenAIModel, toolToResponseTool } from "../../src/provider"
+import { FakeProvider, OpenAIProvider, normalizeOpenAIModel, providerMessageToResponseInput, toolToResponseTool } from "../../src/provider"
 import { textMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
@@ -29,5 +29,11 @@ describe("provider", () => {
     expect(normalizeOpenAIModel("GPT-5.4-mini")).toBe("gpt-5.4-mini")
     expect(normalizeOpenAIModel("O3")).toBe("o3")
     expect(new OpenAIProvider("GPT-5-mini").model).toBe("gpt-5-mini")
+  })
+
+  test("maps assistant history to Responses output content", () => {
+    expect(providerMessageToResponseInput({ role: "assistant", content: "done" }).content[0].type).toBe("output_text")
+    expect(providerMessageToResponseInput({ role: "user", content: "hi" }).content[0].type).toBe("input_text")
+    expect(providerMessageToResponseInput({ role: "tool", content: "result" })).toMatchObject({ role: "user", content: [{ type: "input_text", text: "result" }] })
   })
 })

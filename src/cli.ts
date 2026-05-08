@@ -1,6 +1,7 @@
 #!/usr/bin/env bun
 import path from "node:path"
 import { createRunner } from "./agent"
+import { createLogger, emitLog } from "./logger"
 import type { AgentMode } from "./message"
 
 type EnvTarget = {
@@ -9,9 +10,10 @@ type EnvTarget = {
 
 function parseArgs(argv: string[]) {
   const mode = argv[0]
-  if (mode !== "build" && mode !== "plan") throw new Error("Usage: easycode <build|plan> <prompt> [--provider fake|openai] [--root path]")
+  if (mode !== "build" && mode !== "plan") throw new Error("Usage: easycode <build|plan> <prompt> [--provider fake|openai] [--root path] [--logger]")
   const providerIndex = argv.indexOf("--provider")
   const rootIndex = argv.indexOf("--root")
+  const logger = argv.includes("--logger")
   const rawProvider = providerIndex === -1 ? "fake" : argv[providerIndex + 1]
   if (rawProvider !== "fake" && rawProvider !== "openai") throw new Error(`Unknown provider: ${rawProvider}`)
   const provider: "fake" | "openai" = rawProvider
@@ -21,7 +23,7 @@ function parseArgs(argv: string[]) {
     return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root"
   }).join(" ")
   if (!prompt) throw new Error("Prompt is required")
-  return { mode: mode as AgentMode, prompt, provider, root }
+  return { mode: mode as AgentMode, prompt, provider, root, logger }
 }
 
 function unquoteEnvValue(value: string) {
@@ -64,8 +66,11 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
 
 if (import.meta.main) {
   const args = parseArgs(process.argv.slice(2))
-  await loadEnvFile(args.root)
-  const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode }).run(args.prompt, args.mode)
+  const logger = args.logger ? createLogger() : undefined
+  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root } })
+  const loadedEnvVars = await loadEnvFile(args.root)
+  emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
+  const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger }).run(args.prompt, args.mode)
   console.log(result.text)
   process.exit(result.status === "completed" ? 0 : 1)
 }

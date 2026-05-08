@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "bun run src/cli.ts",
-    "openai": "bun run src/cli.ts build --provider openai",
+    "dev": "bun run src/cli.ts build --provider openai --logger",
     "test": "bun test",
     "eval": "bun run src/eval.ts",
     "typecheck": "bunx tsc --noEmit"

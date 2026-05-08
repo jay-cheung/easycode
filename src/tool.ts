@@ -3,7 +3,7 @@ import { z } from "zod"
 import type { AgentMode, Message } from "./message"
 import type { PermissionService } from "./permission"
 import type { Sandbox } from "./sandbox"
-import type { SkillService } from "./skill"
+import type { SkillServiceLike } from "./skill"
 
 export type JsonSchema = {
   type: "object"
@@ -22,7 +22,7 @@ export type ToolContext = {
   agentMode: AgentMode
   sandbox: Sandbox
   permission: PermissionService
-  skills: SkillService
+  skills: SkillServiceLike
   messages: Message[]
 }
 
@@ -37,7 +37,13 @@ export type ToolDef = {
   execute(input: unknown, ctx: ToolContext): Promise<ToolResult>
 }
 
-export class ToolRegistry {
+export interface ToolRegistryLike {
+  get(name: string): ToolDef | undefined
+  list(mode?: AgentMode): ToolDef[]
+  run(name: string, input: unknown, ctx: ToolContext): Promise<ToolResult>
+}
+
+export class ToolRegistry implements ToolRegistryLike {
   private readonly tools = new Map<string, ToolDef>()
 
   register(tool: ToolDef) {
@@ -63,10 +69,11 @@ export class ToolRegistry {
     if (!parsed.success) {
       return { title: "Invalid tool input", output: `Invalid arguments for ${name}: ${parsed.error.message}`, metadata: { status: "failed", validation: parsed.error.issues } }
     }
+    const patterns = tool.patterns(parsed.data, ctx)
     await ctx.permission.authorize({
       permission: tool.permission,
-      patterns: tool.patterns(parsed.data, ctx),
-      always: tool.patterns(parsed.data, ctx),
+      patterns,
+      always: patterns,
       metadata: { tool: name },
     })
     return tool.execute(parsed.data, ctx)

@@ -7,6 +7,7 @@ import { ContextManager } from "../../src/context"
 import { toolResults } from "../../src/message"
 import { defaultPermissionRules, PermissionService } from "../../src/permission"
 import { FakeProvider } from "../../src/provider"
+import type { LogEvent } from "../../src/logger"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -26,6 +27,19 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["read", "edit", "bash"])
     expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a + b")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("logger records data flow and state transitions", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const result = await createRunner({ root, provider: "fake", mode: "build", logger: (event) => events.push(event) }).run("Fix the failing test", "build")
+    expect(result.status).toBe("completed")
+    expect(events.some((event) => event.type === "state" && event.name === "agent.state" && event.detail?.from === "idle" && event.detail.to === "preparing")).toBe(true)
+    expect(events.some((event) => event.type === "data" && event.name === "context -> provider")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.tool_call" && event.detail?.tool === "read")).toBe(true)
+    expect(events.some((event) => event.type === "tool" && event.name === "permission.evaluate" && event.detail?.tool === "edit")).toBe(true)
+    expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash")).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
 

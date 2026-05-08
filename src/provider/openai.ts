@@ -1,8 +1,18 @@
 import { toolToResponseTool } from "./utils"
 import { Provider, ProviderInput, ProviderEvent, ProviderError } from "./types"
+import type { ProviderInputMessage } from "../message"
 
 export function normalizeOpenAIModel(model: string) {
   return model.trim().replace(/^GPT/i, "gpt").replace(/^O(?=\d)/, "o")
+}
+
+export function providerMessageToResponseInput(message: ProviderInputMessage) {
+  const role = message.role === "tool" ? "user" : message.role
+  return {
+    type: "message",
+    role,
+    content: [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }],
+  }
 }
 
 export class OpenAIProvider implements Provider {
@@ -22,7 +32,7 @@ export class OpenAIProvider implements Provider {
       body: JSON.stringify({
         model: this.model,
         stream: true,
-        input: input.providerMessages.map((message) => ({ type: "message", role: message.role === "tool" ? "user" : message.role, content: [{ type: "input_text", text: message.content }] })),
+        input: input.providerMessages.map(providerMessageToResponseInput),
         tools: input.tools.map(toolToResponseTool),
       }),
     })

@@ -16,7 +16,18 @@ export type ContextOptions = {
   preserveRecentMessages?: number
 }
 
-export class ContextManager {
+export interface ContextManagerLike {
+  readonly state: ContextState
+  readonly compactAt: number
+  readonly preserveRecentMessages: number
+  add(message: Message): void
+  estimate(messages: Message[]): number
+  needsCompaction(): boolean
+  compact(): boolean
+  compose(input: { agent: Agent; skills: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
+}
+
+export class ContextManager implements ContextManagerLike {
   readonly state: ContextState
   readonly compactAt: number
   readonly preserveRecentMessages: number
