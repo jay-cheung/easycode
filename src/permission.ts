@@ -80,6 +80,12 @@ export class PermissionService {
     return new PermissionService(rules, () => "once")
   }
 
+  withRules(rules: PermissionRule[]) {
+    const service = new PermissionService(rules, this.askHandler)
+    service.approved.push(...this.approved)
+    return service
+  }
+
   evaluate(permission: string, pattern: string) {
     const base = evaluatePermission(permission, pattern, this.rules)
     if (base === "deny") return "deny"

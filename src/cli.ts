@@ -105,11 +105,11 @@ async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | unde
 async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   const store = new SessionStore(args.root)
   const context = await store.context(args.session ?? "")
+  let activeMode = args.mode
   let runner: ReturnType<typeof createRunner> | undefined
   const rl = createInterface({ input, output })
-  const permission = permissionService(args.mode, rl)
   const getRunner = () => {
-    runner ??= createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, context, permission, onTextDelta: textDeltaWriter(logger) })
+    runner ??= createRunner({ root: args.root, provider: args.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, rl), onTextDelta: textDeltaWriter(logger) })
     return runner
   }
   try {
@@ -125,15 +125,23 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       }
       if (!prompt) continue
       const activeRunner = getRunner()
-      const result = await activeRunner.run(prompt, args.mode)
+      const result = await activeRunner.run(prompt, activeMode)
       writeResult(result.text, Boolean(logger))
       await store.save(args.session ?? "", activeRunner.context)
+      if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
+        activeMode = "build"
+        runner = undefined
+      }
       if (result.failureReason === "max_steps") continue
       if (result.status !== "completed") return result.status
     }
   } finally {
     rl.close()
   }
+}
+
+function hasProposedPlan(text: string) {
+  return /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(text)
 }
 
 async function question(rl: ReturnType<typeof createInterface>) {

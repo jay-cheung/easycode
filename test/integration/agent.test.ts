@@ -238,6 +238,31 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("plan-exit-completes-run", async () => {
+    const root = await fixture()
+    const chunks: string[] = []
+    const result = await createRunner({ root, provider: "fake", mode: "plan", onTextDelta: (text) => chunks.push(text) }).run("plan-exit", "plan")
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["plan_exit"])
+    expect(result.text).toContain("<proposed_plan>")
+    expect(chunks.join("")).toContain("<proposed_plan>")
+    expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a - b")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("accepted-plan-runs-build-even-if-requested-mode-stays-plan", async () => {
+    const root = await fixture()
+    const runner = createRunner({ root, provider: "fake", mode: "plan" })
+    const plan = await runner.run("Plan how to fix the failing test", "plan")
+    expect(plan.status).toBe("completed")
+    expect(plan.text).toContain("<proposed_plan>")
+    const result = await runner.run("执行吧", "plan")
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read", "edit", "bash"])
+    expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a + b")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("permission-deny", async () => {
     const root = await fixture()
     const result = await createRunner({ root, provider: "fake", mode: "build" }).run("delete tmp files", "build")

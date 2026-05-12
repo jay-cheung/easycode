@@ -71,24 +71,25 @@ export class AgentRunner {
   }
 
   async run(prompt: string, mode: AgentMode): Promise<AgentRunResult> {
-    const agent = createAgent(mode)
+    const effectiveMode = this.effectiveMode(prompt, mode)
+    const agent = createAgent(effectiveMode)
     const usedTools: string[] = []
     let latestAssistantText = ""
     let reasoningTranscript = ""
-    let state = this.aspect.transition("preparing", { mode, provider: this.provider.name })
+    let state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
     this.context.add(textMessage("user", prompt))
-    const tools = this.registry.list(mode)
+    const tools = this.registry.list(effectiveMode)
     const skills = await this.skills.available()
     for (let step = 0; step < this.maxSteps; step += 1) {
       this.aspect.step(step + 1, this.maxSteps)
-      await this.compactContext(mode)
+      await this.compactContext(effectiveMode)
       const providerMessages = this.context.compose(step === 0 ? { agent, skills, tools } : undefined)
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
       try {
-        for await (const event of this.provider.stream({ mode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
+        for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
           if (event.type === "reasoning_delta") {
             reasoningTranscript = appendOutput(reasoningTranscript, event.text)
             this.onTextDelta?.(formatReasoningText(event.text))
@@ -130,8 +131,15 @@ export class AgentRunner {
       this.context.add(toolCallMessage(toolCall))
       usedTools.push(toolCall.name)
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
-      const result = await this.runTool(toolCall, mode)
+      const result = await this.runTool(toolCall, effectiveMode, mode)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
+      if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
+        const output = assistantOutput(reasoningTranscript, result.output)
+        this.onTextDelta?.(result.output)
+        this.context.add(textMessage("assistant", output))
+        state = this.aspect.transition("completed", { usedTools })
+        return { status: "completed", text: output, messages: this.context.state.messages, usedTools, state }
+      }
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }
     const text = assistantOutput(reasoningTranscript, latestAssistantText || `Stopped after max steps: ${this.maxSteps}`)
@@ -140,9 +148,9 @@ export class AgentRunner {
     return { status: "failed", failureReason: "max_steps", text, messages: this.context.state.messages, usedTools, state }
   }
 
-  private async runTool(call: ToolCall, mode: AgentMode) {
+  private async runTool(call: ToolCall, mode: AgentMode, requestedMode = mode) {
     try {
-      return await this.registry.run(call.name, call.input, { agentMode: mode, sandbox: this.sandbox, permission: this.permission, skills: this.skills, messages: this.context.state.messages })
+      return await this.registry.run(call.name, call.input, { agentMode: mode, sandbox: this.sandbox, permission: this.permissionFor(mode, requestedMode), skills: this.skills, messages: this.context.state.messages })
     } catch (error) {
       if (error instanceof PermissionDeniedError || error instanceof PermissionRejectedError) {
         return { title: call.name, output: error.message, metadata: { status: "denied", error: error.name } }
@@ -160,6 +168,17 @@ export class AgentRunner {
       if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
     }
     this.context.compact(extractSummary(summary))
+  }
+
+  private effectiveMode(prompt: string, mode: AgentMode): AgentMode {
+    if (mode !== "plan") return mode
+    if (!isPlanApproval(prompt)) return mode
+    return contextHasProposedPlan(this.context.state.messages) ? "build" : mode
+  }
+
+  private permissionFor(mode: AgentMode, requestedMode: AgentMode) {
+    if (mode === requestedMode) return this.permission
+    return this.permission.withRules(defaultPermissionRules(mode))
   }
 }
 
@@ -188,6 +207,15 @@ function compactPrompt(messages: Array<{ role: string; content: string }>) {
 
 function extractSummary(output: string) {
   return output.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/)?.[1]?.trim() ?? output.trim()
+}
+
+function isPlanApproval(prompt: string) {
+  const text = prompt.trim().toLowerCase()
+  return /^(执行吧|执行|确认|接受|同意|继续|开始|approve|accepted|execute|go ahead|yes|y)$/i.test(text)
+}
+
+function contextHasProposedPlan(messages: Message[]) {
+  return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void }) {
