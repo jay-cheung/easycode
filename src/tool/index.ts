@@ -76,17 +76,25 @@ export class ToolRegistry implements ToolRegistryLike {
     }
     try {
       const patterns = tool.patterns(parsed.data, ctx)
+      const permissionAction = permissionActionFor(patterns.map((pattern) => ctx.permission.evaluate(tool.permission, pattern)))
       await ctx.permission.authorize({
         permission: tool.permission,
         patterns,
         always: patterns,
         metadata: { tool: name },
       })
-      return await tool.execute(parsed.data, ctx)
+      const result = await tool.execute(parsed.data, ctx)
+      return { ...result, metadata: { ...result.metadata, permission: tool.permission, permissionAction, patterns } }
     } catch (error) {
       return toolErrorResult(name, error)
     }
   }
+}
+
+function permissionActionFor(actions: string[]) {
+  if (actions.includes("deny")) return "deny"
+  if (actions.includes("ask")) return "ask"
+  return "allow"
 }
 
 function toolErrorResult(name: string, error: unknown): ToolResult {

@@ -1,0 +1,13 @@
+{
+  "id": "EC-REAL-001",
+  "mode": "build",
+  "prompt": "Reply with exactly: easycode real eval ok",
+  "fixture": "evals/fixtures/simple-bug",
+  "providers": ["openai", "deepseek"],
+  "tools": "none",
+  "expected": {
+    "status": "passed",
+    "outputContains": ["easycode real eval ok"],
+    "maxToolCalls": 0
+  }
+}

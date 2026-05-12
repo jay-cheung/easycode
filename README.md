@@ -96,3 +96,10 @@ bun test
 bun run eval --provider fake
 bun run typecheck
 ```
+
+Real provider smoke tests are opt-in so the default test suite stays offline and deterministic:
+
+```bash
+EASYCODE_TEST_PROVIDER=deepseek bun run test:real
+EASYCODE_TEST_PROVIDER=openai bun run test:real
+```

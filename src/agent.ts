@@ -7,6 +7,7 @@ import { SkillService, type SkillServiceLike } from "./skill"
 import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
 import { createRunAspect, type RunAspect } from "./instrumentation"
 import type { Logger } from "./logger"
+import { BASE_COMPACT_PROMPT } from "./context/prompt"
 
 export type Agent = {
   name: string
@@ -18,6 +19,7 @@ export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" 
 
 export type AgentRunResult = {
   status: "completed" | "failed"
+  failureReason?: "provider_error" | "max_steps"
   text: string
   messages: Message[]
   usedTools: string[]
@@ -72,16 +74,15 @@ export class AgentRunner {
     const agent = createAgent(mode)
     const usedTools: string[] = []
     let latestAssistantText = ""
-    let latestReasoningText = ""
+    let reasoningTranscript = ""
     let state = this.aspect.transition("preparing", { mode, provider: this.provider.name })
     this.context.add(textMessage("user", prompt))
+    const tools = this.registry.list(mode)
+    const skills = await this.skills.available()
     for (let step = 0; step < this.maxSteps; step += 1) {
       this.aspect.step(step + 1, this.maxSteps)
-      this.context.compact()
-      const tools = this.registry.list(mode)
-      const skills = await this.skills.available()
-      const providerMessages = this.context.compose({ agent, skills, tools })
-      let reasoningText = ""
+      await this.compactContext(mode)
+      const providerMessages = this.context.compose(step === 0 ? { agent, skills, tools } : undefined)
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
@@ -89,7 +90,7 @@ export class AgentRunner {
       try {
         for await (const event of this.provider.stream({ mode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
           if (event.type === "reasoning_delta") {
-            reasoningText += event.text
+            reasoningTranscript = appendOutput(reasoningTranscript, event.text)
             this.onTextDelta?.(formatReasoningText(event.text))
           }
           if (event.type === "text_delta") {
@@ -105,23 +106,22 @@ export class AgentRunner {
       } catch (error) {
         if (error instanceof ProviderError) {
           const failureText = providerFailureText(error)
-          const output = assistantOutput(reasoningText, text, failureText)
+          const output = assistantOutput(reasoningTranscript, text, failureText)
           this.context.add(textMessage("assistant", output))
           state = this.aspect.runFailed("provider_error", usedTools)
-          return { status: "failed", text: output, messages: this.context.state.messages, usedTools, state }
+          return { status: "failed", failureReason: "provider_error", text: output, messages: this.context.state.messages, usedTools, state }
         }
         throw error
       }
       if (failureText) {
-        const output = assistantOutput(reasoningText, text, failureText)
+        const output = assistantOutput(reasoningTranscript, text, failureText)
         this.context.add(textMessage("assistant", output))
         state = this.aspect.runFailed("provider_error", usedTools)
-        return { status: "failed", text: output, messages: this.context.state.messages, usedTools, state }
+        return { status: "failed", failureReason: "provider_error", text: output, messages: this.context.state.messages, usedTools, state }
       }
-      if (reasoningText) latestReasoningText = reasoningText
       if (text) latestAssistantText = text
       if (!toolCall) {
-        const output = assistantOutput(reasoningText, text)
+        const output = assistantOutput(reasoningTranscript, text)
         this.context.add(textMessage("assistant", output))
         state = this.aspect.transition("completed", { usedTools })
         return { status: "completed", text: output, messages: this.context.state.messages, usedTools, state }
@@ -134,10 +134,10 @@ export class AgentRunner {
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }
-    const text = assistantOutput(latestReasoningText, latestAssistantText || `Stopped after max steps: ${this.maxSteps}`)
+    const text = assistantOutput(reasoningTranscript, latestAssistantText || `Stopped after max steps: ${this.maxSteps}`)
     this.context.add(createMessage("assistant", [{ type: "text", text }]))
     state = this.aspect.runFailed("max_steps", usedTools)
-    return { status: "failed", text, messages: this.context.state.messages, usedTools, state }
+    return { status: "failed", failureReason: "max_steps", text, messages: this.context.state.messages, usedTools, state }
   }
 
   private async runTool(call: ToolCall, mode: AgentMode) {
@@ -149,6 +149,17 @@ export class AgentRunner {
       }
       return { title: call.name, output: error instanceof Error ? error.message : String(error), metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" } }
     }
+  }
+
+  private async compactContext(mode: AgentMode) {
+    if (!this.context.needsCompaction()) return
+    const providerMessages = [{ role: "user" as const, content: compactPrompt(this.context.compactionInput()) }]
+    let summary = ""
+    for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [] })) {
+      if (event.type === "text_delta") summary += event.text
+      if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
+    }
+    this.context.compact(extractSummary(summary))
   }
 }
 
@@ -162,12 +173,23 @@ function formatReasoningText(text: string) {
 
 function assistantOutput(reasoningText: string, text: string, failureText?: string) {
   const parts = [reasoningText ? formatReasoningText(reasoningText) : "", text, failureText ?? ""].filter((part) => part.length > 0)
-  return parts.reduce<string>((output, part) => {
-    if (!output || output.endsWith("\n")) return `${output}${part}`
-    return `${output}\n${part}`
-  }, "")
+  return parts.reduce<string>(appendOutput, "")
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; onTextDelta?: (text: string) => void }) {
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? "fake"), permission: PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta })
+function appendOutput(output: string, part: string) {
+  if (!output || output.endsWith("\n")) return `${output}${part}`
+  return `${output}\n${part}`
+}
+
+function compactPrompt(messages: Array<{ role: string; content: string }>) {
+  const transcript = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n")
+  return `${BASE_COMPACT_PROMPT}\n\nConversation to summarize:\n<conversation>\n${transcript}\n</conversation>`
+}
+
+function extractSummary(output: string) {
+  return output.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/)?.[1]?.trim() ?? output.trim()
+}
+
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void }) {
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? "fake"), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta })
 }

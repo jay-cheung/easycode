@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { ContextManager } from "../../src/context"
-import { textMessage } from "../../src/message"
+import { textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
 import { safeSessionID, SessionStore } from "../../src/session"
 
 async function tmpdir() {
@@ -22,6 +22,73 @@ describe("session store", () => {
     const restored = await store.context("demo")
     expect(restored.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
     expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "hello" })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("prunes compacted session messages on save", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager({ preserveRecentMessages: 2 })
+    for (let i = 0; i < 5; i += 1) context.add(textMessage("user", `message ${i}`))
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.summary).toBe("summary")
+    expect(saved?.messages.map((message) => message.parts[0])).toMatchObject([{ type: "text", text: "message 3" }, { type: "text", text: "message 4" }])
+
+    const restored = await store.context("demo")
+    expect(restored.state.summary).toBe("summary")
+    expect(restored.state.messages.map((message) => message.parts[0])).toMatchObject([{ type: "text", text: "message 3" }, { type: "text", text: "message 4" }])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("prunes already compacted session messages on restore", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    for (let i = 0; i < 8; i += 1) context.add(textMessage("user", `message ${i}`))
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const restored = await store.context("demo")
+    expect(restored.state.messages.length).toBe(restored.preserveRecentMessages)
+    expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "message 4" })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("does not save compacted sessions with orphan leading tool results", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager({ preserveRecentMessages: 2 })
+    context.add(textMessage("user", "hello"))
+    context.add(toolResultMessage({ callID: "orphan", toolName: "read", status: "succeeded", output: "result" }))
+    context.add(textMessage("assistant", "done"))
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.messages.map((message) => message.role)).toEqual(["assistant"])
+    const restored = await store.context("demo")
+    expect(restored.state.messages.map((message) => message.role)).toEqual(["assistant"])
+    await rm(root, { recursive: true, force: true })
+  })
+
+
+  test("redacts protected tool results on save and restore", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.add(toolCallMessage({ id: "call_env", name: "read", input: { filePath: ".env" } }))
+    context.add(toolResultMessage({ callID: "call_env", toolName: "read", status: "succeeded", output: "SECRET=hidden", metadata: { status: "succeeded", permissionAction: "ask" } }))
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(JSON.stringify(saved)).not.toContain("SECRET=hidden")
+    expect(JSON.stringify(saved)).toContain("[redacted: permission-gated tool result]")
+
+    const restored = await store.context("demo")
+    expect(JSON.stringify(restored.state.messages)).not.toContain("SECRET=hidden")
     await rm(root, { recursive: true, force: true })
   })
 

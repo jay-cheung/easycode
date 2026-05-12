@@ -6,6 +6,17 @@ export class FakeProvider implements Provider {
 
   async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
     const prompt = input.prompt.toLowerCase()
+    if (prompt.includes("summarize conversation for context compaction")) {
+      yield { type: "text_delta", text: "<summary>\nFake compact summary.\n</summary>" }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("loop")) {
+      yield { type: "text_delta", text: "Still working." }
+      yield { type: "tool_call", call: call("read", { filePath: "src/add.ts" }) }
+      yield { type: "done" }
+      return
+    }
     if (input.mode === "plan") {
       const editAlreadyAttempted = hasToolResult(input.messages, "edit")
       if (prompt.includes("readonly-violation") && !editAlreadyAttempted) {

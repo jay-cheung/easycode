@@ -1,7 +1,7 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import { ContextManager, type ContextManagerLike } from "./context"
-import type { Message } from "./message"
+import { redactProtectedMessages, validProviderMessageSuffix, type Message } from "./message"
 
 export type SessionData = {
   id: string
@@ -25,9 +25,10 @@ export class SessionStore {
 
   async save(id: string, context: ContextManagerLike) {
     await mkdir(this.dir, { recursive: true })
+    const messages = context.state.summary ? validProviderMessageSuffix(context.state.messages.slice(-context.preserveRecentMessages)) : context.state.messages
     const data: SessionData = {
       id,
-      messages: context.state.messages,
+      messages: redactProtectedMessages(messages),
       summary: context.state.summary,
       updatedAt: Date.now(),
     }
@@ -38,7 +39,8 @@ export class SessionStore {
     const context = new ContextManager()
     const session = await this.load(id)
     if (!session) return context
-    for (const message of session.messages) context.add(message)
+    const messages = session.summary ? validProviderMessageSuffix(session.messages.slice(-context.preserveRecentMessages)) : session.messages
+    for (const message of redactProtectedMessages(messages)) context.add(message)
     context.state.summary = session.summary
     context.state.tokenEstimate = context.estimate(context.state.messages) + Math.ceil((context.state.summary ?? "").length / 4)
     return context

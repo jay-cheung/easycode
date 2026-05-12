@@ -96,19 +96,65 @@ export function toolResultMessage(input: {
   return createMessage("tool", [toolResultPart(input)])
 }
 
-export function partToText(part: MessagePart) {
+export const protectedToolResultRedaction = "[redacted: permission-gated tool result]"
+
+export function isProtectedToolResult(part: MessagePart) {
+  return part.type === "tool_result" && part.metadata.permissionAction === "ask"
+}
+
+function protectedReadPath(input: unknown) {
+  if (!input || typeof input !== "object") return false
+  const filePath = (input as { filePath?: unknown }).filePath
+  if (typeof filePath !== "string") return false
+  const normalized = filePath.replaceAll("\\", "/").split("/").at(-1) ?? filePath
+  return normalized === ".env" || normalized.startsWith(".env.")
+}
+
+export function redactProtectedMessages(messages: Message[]): Message[] {
+  const protectedCallIDs = new Set<string>()
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type === "tool_call" && part.call.name === "read" && protectedReadPath(part.call.input)) protectedCallIDs.add(part.call.id)
+    }
+  }
+  return messages.map((message) => redactProtectedMessage(message, protectedCallIDs))
+}
+
+export function validProviderMessageSuffix(messages: Message[]) {
+  let start = 0
+  while (start < messages.length && messages[start].role === "tool") start += 1
+  return messages.slice(start)
+}
+
+export function redactProtectedMessage(message: Message, protectedCallIDs = new Set<string>()): Message {
+  return {
+    ...message,
+    parts: message.parts.map((part) => {
+      if (!isProtectedToolResult(part) && !(part.type === "tool_result" && protectedCallIDs.has(part.callID))) return part
+      if (part.type !== "tool_result") return part
+      return {
+        ...part,
+        output: protectedToolResultRedaction,
+        metadata: { ...part.metadata, redacted: true },
+      }
+    }),
+  }
+}
+
+export function partToText(part: MessagePart, options: { redactProtectedToolResults?: boolean } = {}) {
   if (part.type === "text") return part.text
   if (part.type === "summary") return `<summary>\n${part.text}\n</summary>`
   if (part.type === "tool_call") return `<tool_call name="${part.call.name}" id="${part.call.id}">${JSON.stringify(part.call.input)}</tool_call>`
-  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${part.output}\n</tool_result>`
+  const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
+  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${output}\n</tool_result>`
 }
 
-export function messageToText(message: Message) {
-  return message.parts.map(partToText).join("\n")
+export function messageToText(message: Message, options: { redactProtectedToolResults?: boolean } = {}) {
+  return message.parts.map((part) => partToText(part, options)).join("\n")
 }
 
-export function messagesToProviderInput(messages: Message[]): ProviderInputMessage[] {
-  return messages.map((message) => ({ role: message.role, content: messageToText(message), parts: message.parts }))
+export function messagesToProviderInput(messages: Message[], options: { redactProtectedToolResults?: boolean } = {}): ProviderInputMessage[] {
+  return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: message.parts }))
 }
 
 export function toolResults(messages: Message[]) {

@@ -38,6 +38,7 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(events.some((event) => event.type === "state" && event.name === "agent.state" && event.detail?.from === "idle" && event.detail.to === "preparing")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "context -> provider")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.input_tokens" && typeof event.detail?.tokenEstimate === "number")).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.tool_call" && event.detail?.tool === "read")).toBe(true)
     expect(events.some((event) => event.type === "tool" && event.name === "permission.evaluate" && event.detail?.tool === "edit")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash")).toBe(true)
@@ -45,7 +46,7 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("logger records request body and skips successful responses", async () => {
+  test("logger skips provider request body and successful responses", async () => {
     const root = await fixture()
     const events: LogEvent[] = []
     const provider: Provider = {
@@ -60,8 +61,7 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
     expect(result.text).toBe("done")
-    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && JSON.stringify(event.detail) === "{\"body\":{\"input\":\"raw\"}}")).toBe(true)
-    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && event.detail?.url)).toBe(false)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.request")).toBe(false)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.status === 200)).toBe(false)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.response.raw" && event.detail?.response && JSON.stringify(event.detail.response) === "{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}")).toBe(false)
     await rm(root, { recursive: true, force: true })
@@ -82,7 +82,7 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
     expect(result.status).toBe("failed")
-    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && JSON.stringify(event.detail) === "{\"body\":{\"input\":\"raw\"}}")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.request")).toBe(false)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.body === "{\"error\":\"quota\"}" && event.detail.status === undefined)).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.response.raw" && event.detail?.response)).toBe(true)
     await rm(root, { recursive: true, force: true })
@@ -157,6 +157,50 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("accumulates reasoning across provider turns", async () => {
+    const root = await fixture()
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield { type: "reasoning_delta", text: "First thought." }
+          yield { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        yield { type: "reasoning_delta", text: "Second thought." }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    expect(result.status).toBe("completed")
+    expect(result.text).toBe("<reasoning>\nFirst thought.\nSecond thought.\n</reasoning>\nDone.")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("sends static composed context only on the first provider turn", async () => {
+    const root = await fixture()
+    const providerMessageContents: string[][] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        providerMessageContents.push(input.providerMessages.map((message) => message.content))
+        if (providerMessageContents.length === 1) {
+          yield { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    expect(result.status).toBe("completed")
+    expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(true)
+    expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(false)
+    expect(providerMessageContents[1].some((content) => content.includes("Fix"))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("streams assistant text deltas", async () => {
     const root = await fixture()
     const chunks: string[] = []
@@ -225,6 +269,50 @@ describe("agent integration", () => {
     const runner = new AgentRunner({ root, provider: new FakeProvider(), context })
     await runner.run("Fix the failing test with a very long instruction ".repeat(20), "build")
     expect(context.state.summary).toBeDefined()
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("context compaction asks provider for a summary", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    let summaryPrompt = ""
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          summaryPrompt = input.providerMessages[0]?.content ?? ""
+          yield { type: "text_delta", text: "<summary>\nModel generated summary.\n</summary>" }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, context }).run("Fix the failing test with a very long instruction ".repeat(20), "build")
+    expect(result.status).toBe("completed")
+    expect(summaryPrompt).toContain("Your task is to create a detailed summary")
+    expect(summaryPrompt).toContain("Conversation to summarize:")
+    expect(context.state.summary).toBe("Model generated summary.")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("logger records summary request and output", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          yield { type: "text_delta", text: "<summary>\nLogged summary.\n</summary>" }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, context, logger: (event) => events.push(event) }).run("Fix the failing test with a very long instruction ".repeat(20), "build")
+    expect(result.status).toBe("completed")
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.summary_request" && String(event.detail?.content).includes("Conversation to summarize:"))).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.summary_output" && event.detail?.summary === "<summary>\nLogged summary.\n</summary>")).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
 

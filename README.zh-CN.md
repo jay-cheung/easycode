@@ -96,3 +96,10 @@ bun test
 bun run eval --provider fake
 bun run typecheck
 ```
+
+真实 provider smoke test 默认不运行，以保持测试离线且确定性；需要时显式启用：
+
+```bash
+EASYCODE_TEST_PROVIDER=deepseek bun run test:real
+EASYCODE_TEST_PROVIDER=openai bun run test:real
+```

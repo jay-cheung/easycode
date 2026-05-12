@@ -83,6 +83,9 @@ export class LoggingRunAspect implements RunAspect {
         let reasoningContent = ""
         let output = ""
         const toolCalls: Array<{ tool: string; callID: string }> = []
+        const summaryRequest = input.prompt.includes("Summarize conversation")
+        emitLog(logger, { type: "provider", name: "provider.input_tokens", detail: providerInputTokenEstimate(input.providerMessages, input.tools) })
+        if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_request", detail: { prompt: input.prompt, content: input.providerMessages[0]?.content ?? "" } })
         try {
           for await (const event of provider.stream(input)) {
             logProviderEvent(logger, event, totalLength)
@@ -101,6 +104,7 @@ export class LoggingRunAspect implements RunAspect {
             yield event
           }
           emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: output.length, output, toolCalls } })
+          if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_output", detail: { summary: output } })
         } catch (error) {
           if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: error.output.length, output: error.output, toolCalls } })
           emitLog(logger, { type: "error", name: "provider.error", detail: providerErrorDetail(provider.name, error) })
@@ -130,6 +134,9 @@ export class LoggingRunAspect implements RunAspect {
               const patterns = tool.patterns(parsed.data, ctx)
               permissionEvaluationLogged = true
               emitLog(logger, { type: "tool", name: "permission.evaluate", detail: { tool: name, permission: tool.permission, patterns } })
+              if (patterns.some((pattern) => ctx.permission.evaluate(tool.permission, pattern) === "ask")) {
+                emitLog(logger, { type: "tool", name: "permission.waiting", detail: { tool: name, permission: tool.permission, patterns } })
+              }
             } else {
               emitLog(logger, { type: "tool", name: "tool.validate.failed", detail: { tool: name, issues: parsed.error.issues } })
             }
@@ -165,8 +172,21 @@ export class LoggingRunAspect implements RunAspect {
   }
 }
 
+function providerInputTokenEstimate(providerMessages: Array<{ content: string }>, tools: unknown[]) {
+  const messageChars = providerMessages.reduce((sum, message) => sum + message.content.length, 0)
+  const toolChars = tools.length > 0 ? JSON.stringify(tools).length : 0
+  const messageTokens = Math.ceil(messageChars / 4)
+  const toolTokens = Math.ceil(toolChars / 4)
+  return {
+    tokenEstimate: messageTokens + toolTokens,
+    messageTokens,
+    toolTokens,
+    providerMessageCount: providerMessages.length,
+    toolCount: tools.length,
+  }
+}
+
 function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefore: number) {
-  if (event.type === "request") emitLog(logger, { type: "provider", name: "provider.request", detail: { body: event.request.body } })
   if (event.type === "response" && !event.response.ok) emitLog(logger, { type: "provider", name: "provider.response", detail: { body: event.response.body ?? "" } })
   if (event.type === "response_raw" && rawProviderResponseHasError(event.response)) emitLog(logger, { type: "provider", name: "provider.response.raw", detail: { response: event.response } })
   if (event.type === "failure") {
@@ -245,16 +265,22 @@ class LoggingContextDecorator implements ContextManagerLike {
     return this.inner.needsCompaction()
   }
 
-  compact() {
+  compactionInput() {
+    const input = this.inner.compactionInput()
+    emitLog(this.logger, { type: "context", name: "context.compaction_input", detail: { providerMessageCount: input.length } })
+    return input
+  }
+
+  compact(summary: string) {
     const before = snapshotContext(this.inner)
-    const compacted = this.inner.compact()
+    const compacted = this.inner.compact(summary)
     emitLog(this.logger, { type: "context", name: "context.compact", detail: { compacted, before, after: snapshotContext(this.inner) } })
     return compacted
   }
 
-  compose(input: Parameters<ContextManagerLike["compose"]>[0]) {
+  compose(input?: Parameters<ContextManagerLike["compose"]>[0]) {
     const providerMessages = this.inner.compose(input)
-    emitLog(this.logger, { type: "data", name: "context -> provider", detail: { messageCount: this.inner.state.messages.length, providerMessageCount: providerMessages.length, toolNames: input.tools.map((tool) => tool.name) } })
+    emitLog(this.logger, { type: "data", name: "context -> provider", detail: { messageCount: this.inner.state.messages.length, providerMessageCount: providerMessages.length, toolNames: input?.tools.map((tool) => tool.name) ?? [], staticContext: Boolean(input) } })
     return providerMessages
   }
 

@@ -3,7 +3,7 @@
 ```text
 user input
  -> message append
- -> context compose
+ -> context compose (static agent/skill/tool descriptions on first provider turn only)
  -> provider stream
  -> model text/tool_call
  -> tool schema validate

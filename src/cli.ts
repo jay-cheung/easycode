@@ -5,12 +5,15 @@ import { stdin as input, stdout as output } from "node:process"
 import { createRunner } from "./agent"
 import { createLogger, emitLog, type Logger } from "./logger"
 import type { AgentMode } from "./message"
+import { defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { hasProvider, listProviders, type ProviderName } from "./provider"
 import { SessionStore } from "./session"
 
 type EnvTarget = {
   [key: string]: string | undefined
 }
+
+const eofPrompt = "\0__easycode_eof__"
 
 export function parseArgs(argv: string[]) {
   const mode = argv[0]
@@ -88,23 +91,34 @@ if (import.meta.main) {
 
 async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   if (!args.prompt) throw new Error("Prompt is required")
-  const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, onTextDelta: textDeltaWriter(logger) }).run(args.prompt, args.mode)
-  writeResult(result.text, Boolean(logger))
-  return result.status
+  const rl = createInterface({ input, output })
+  try {
+    const permission = permissionService(args.mode, rl)
+    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, onTextDelta: textDeltaWriter(logger) }).run(args.prompt, args.mode)
+    writeResult(result.text, Boolean(logger))
+    return result.status
+  } finally {
+    rl.close()
+  }
 }
 
 async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   const store = new SessionStore(args.root)
   const context = await store.context(args.session ?? "")
   let runner: ReturnType<typeof createRunner> | undefined
+  const rl = createInterface({ input, output })
+  const permission = permissionService(args.mode, rl)
   const getRunner = () => {
-    runner ??= createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, context, onTextDelta: textDeltaWriter(logger) })
+    runner ??= createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, context, permission, onTextDelta: textDeltaWriter(logger) })
     return runner
   }
-  const rl = createInterface({ input, output })
   try {
     while (true) {
-      const prompt = (await rl.question("> ")).trim()
+      const prompt = (await question(rl)).trim()
+      if (prompt === eofPrompt) {
+        await store.save(args.session ?? "", runner?.context ?? context)
+        return "completed"
+      }
       if (["exit", ":exit", "quit", ":quit"].includes(prompt.toLowerCase())) {
         await store.save(args.session ?? "", runner?.context ?? context)
         return "completed"
@@ -114,11 +128,48 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       const result = await activeRunner.run(prompt, args.mode)
       writeResult(result.text, Boolean(logger))
       await store.save(args.session ?? "", activeRunner.context)
+      if (result.failureReason === "max_steps") continue
       if (result.status !== "completed") return result.status
     }
   } finally {
     rl.close()
   }
+}
+
+async function question(rl: ReturnType<typeof createInterface>) {
+  try {
+    return await rl.question("> ")
+  } catch (error) {
+    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined
+    if (code === "ERR_USE_AFTER_CLOSE") return eofPrompt
+    throw error
+  }
+}
+
+function permissionService(mode: AgentMode, rl: ReturnType<typeof createInterface>) {
+  return new PermissionService(defaultPermissionRules(mode), async (request) => {
+    const answer = (await questionWithPrompt(rl, permissionPrompt(request))).trim().toLowerCase()
+    if (answer === eofPrompt) return "reject"
+    if (answer === "a" || answer === "always") return "always"
+    if (answer === "" || answer === "y" || answer === "yes" || answer === "once") return "once"
+    return "reject"
+  })
+}
+
+async function questionWithPrompt(rl: ReturnType<typeof createInterface>, prompt: string) {
+  try {
+    output.write(`${prompt}\n`)
+    return await rl.question("permission> ")
+  } catch (error) {
+    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined
+    if (code === "ERR_USE_AFTER_CLOSE") return eofPrompt
+    throw error
+  }
+}
+
+function permissionPrompt(request: PermissionRequest) {
+  const patterns = request.patterns.join(", ")
+  return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
 }
 
 function textDeltaWriter(logger: Logger | undefined) {

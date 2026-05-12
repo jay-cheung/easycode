@@ -33,9 +33,17 @@ describe("logger", () => {
   })
 
   test("highlights network request and response events", () => {
-    expect(formatLogEvent({ at: 1, type: "provider", name: "provider.request" })).toContain("\x1b[1;33m")
     expect(formatLogEvent({ at: 1, type: "provider", name: "provider.response" })).toContain("\x1b[1;33m")
     expect(formatLogEvent({ at: 1, type: "provider", name: "provider.response.raw" })).toContain("\x1b[1;33m")
     expect(formatLogEvent({ at: 1, type: "provider", name: "provider.done" })).not.toContain("\x1b[1;33m")
+  })
+
+  test("highlights provider input token events in green", () => {
+    expect(formatLogEvent({ at: 1, type: "provider", name: "provider.input_tokens", detail: { tokenEstimate: 12 } })).toContain("\x1b[1;32m")
+  })
+
+  test("highlights provider summary events", () => {
+    expect(formatLogEvent({ at: 1, type: "provider", name: "provider.summary_request" })).toContain("\x1b[1;35m")
+    expect(formatLogEvent({ at: 1, type: "provider", name: "provider.summary_output" })).toContain("\x1b[1;35m")
   })
 })

@@ -7,6 +7,8 @@
   "mode": "build",
   "prompt": "Fix the failing test",
   "fixture": "evals/fixtures/simple-bug",
+  "providers": ["fake"],
+  "tools": "builtin",
   "expected": {
     "status": "passed",
     "changedFiles": ["src/add.ts"],
@@ -26,3 +28,6 @@
 - `EC-006`: Skill content is progressively loaded.
 - `EC-007`: Bash timeout and truncation are surfaced.
 - `EC-008`: Invalid tool args can be fed back to the model.
+- `EC-REAL-001`: Real provider smoke eval with no tools and output matching.
+
+Tasks without `providers` are fake-provider deterministic evals. Real provider evals must opt in with `providers` and should avoid deterministic fake-only tool-sequence assertions unless explicitly intended.

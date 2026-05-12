@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { loadEnvFile, parseArgs, parseEnvFile } from "../../src/cli"
@@ -62,6 +62,44 @@ describe("cli args", () => {
     expect(status).toBe(0)
     expect(stdout).not.toContain("provider.request")
     expect(stdout).not.toContain("agent.state")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session continues after max steps", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "add.ts"), "export const value = 1\n")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("loop forever\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Still working.")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session asks before reading env files", async () => {
+    const root = await tmpdir()
+    await Bun.write(path.join(root, ".env"), "SECRET=hidden\n")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("Read env configuration\nn\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Allow read for .env?")
+    expect(stdout).not.toContain("SECRET=hidden")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })

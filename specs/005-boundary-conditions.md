@@ -20,7 +20,7 @@
 ## Context
 - Token count is estimated with `ceil(chars / 4)`.
 - Compaction triggers above `maxTokens * 0.75`.
-- Compaction preserves summary plus the latest 4 messages.
+- Compaction asks the provider to generate a summary with the compact prompt, then preserves that summary plus the latest 4 messages.
 
 ## Provider
 - Network/auth/rate-limit/overflow errors become `ProviderError` or tool feedback.

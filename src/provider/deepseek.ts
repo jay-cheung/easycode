@@ -102,7 +102,7 @@ function chatMessagesFromProviderMessage(message: ProviderInput["providerMessage
   const parts = message.parts ?? []
   const toolCalls = parts.filter((part): part is ToolCallPart => part.type === "tool_call")
   if (message.role === "assistant" && toolCalls.length > 0) {
-    const text = parts.filter((part) => part.type !== "tool_call").map(partToText).join("\n")
+    const text = parts.filter((part) => part.type !== "tool_call").map((part) => partToText(part)).join("\n")
     const reasoningContent = toolCalls.find((part) => part.call.reasoningContent)?.call.reasoningContent
     return [
       {
