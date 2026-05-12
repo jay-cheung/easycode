@@ -45,6 +45,7 @@ type ContextState = {
 
 type ProviderEvent =
   | { type: "text_delta"; text: string }
+  | { type: "reasoning_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
   | { type: "usage"; inputTokens: number; outputTokens: number }
   | { type: "done" }

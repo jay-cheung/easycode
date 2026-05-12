@@ -71,6 +71,8 @@ export class AgentRunner {
   async run(prompt: string, mode: AgentMode): Promise<AgentRunResult> {
     const agent = createAgent(mode)
     const usedTools: string[] = []
+    let latestAssistantText = ""
+    let latestReasoningText = ""
     let state = this.aspect.transition("preparing", { mode, provider: this.provider.name })
     this.context.add(textMessage("user", prompt))
     for (let step = 0; step < this.maxSteps; step += 1) {
@@ -79,12 +81,17 @@ export class AgentRunner {
       const tools = this.registry.list(mode)
       const skills = await this.skills.available()
       const providerMessages = this.context.compose({ agent, skills, tools })
+      let reasoningText = ""
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
       try {
         for await (const event of this.provider.stream({ mode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
+          if (event.type === "reasoning_delta") {
+            reasoningText += event.text
+            this.onTextDelta?.(formatReasoningText(event.text))
+          }
           if (event.type === "text_delta") {
             text += event.text
             this.onTextDelta?.(event.text)
@@ -98,21 +105,26 @@ export class AgentRunner {
       } catch (error) {
         if (error instanceof ProviderError) {
           const failureText = providerFailureText(error)
-          this.context.add(textMessage("assistant", failureText))
+          const output = assistantOutput(reasoningText, text, failureText)
+          this.context.add(textMessage("assistant", output))
           state = this.aspect.runFailed("provider_error", usedTools)
-          return { status: "failed", text: failureText, messages: this.context.state.messages, usedTools, state }
+          return { status: "failed", text: output, messages: this.context.state.messages, usedTools, state }
         }
         throw error
       }
       if (failureText) {
-        this.context.add(textMessage("assistant", failureText))
+        const output = assistantOutput(reasoningText, text, failureText)
+        this.context.add(textMessage("assistant", output))
         state = this.aspect.runFailed("provider_error", usedTools)
-        return { status: "failed", text: failureText, messages: this.context.state.messages, usedTools, state }
+        return { status: "failed", text: output, messages: this.context.state.messages, usedTools, state }
       }
+      if (reasoningText) latestReasoningText = reasoningText
+      if (text) latestAssistantText = text
       if (!toolCall) {
-        this.context.add(textMessage("assistant", text))
+        const output = assistantOutput(reasoningText, text)
+        this.context.add(textMessage("assistant", output))
         state = this.aspect.transition("completed", { usedTools })
-        return { status: "completed", text, messages: this.context.state.messages, usedTools, state }
+        return { status: "completed", text: output, messages: this.context.state.messages, usedTools, state }
       }
       state = this.aspect.transition("tool_pending", { tool: toolCall.name, callID: toolCall.id })
       this.context.add(toolCallMessage(toolCall))
@@ -122,7 +134,7 @@ export class AgentRunner {
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }
-    const text = `Stopped after max steps: ${this.maxSteps}`
+    const text = assistantOutput(latestReasoningText, latestAssistantText || `Stopped after max steps: ${this.maxSteps}`)
     this.context.add(createMessage("assistant", [{ type: "text", text }]))
     state = this.aspect.runFailed("max_steps", usedTools)
     return { status: "failed", text, messages: this.context.state.messages, usedTools, state }
@@ -142,6 +154,18 @@ export class AgentRunner {
 
 function providerFailureText(error: ProviderError) {
   return error.output?.trim() || error.message
+}
+
+function formatReasoningText(text: string) {
+  return `<reasoning>\n${text}\n</reasoning>\n`
+}
+
+function assistantOutput(reasoningText: string, text: string, failureText?: string) {
+  const parts = [reasoningText ? formatReasoningText(reasoningText) : "", text, failureText ?? ""].filter((part) => part.length > 0)
+  return parts.reduce<string>((output, part) => {
+    if (!output || output.endsWith("\n")) return `${output}${part}`
+    return `${output}\n${part}`
+  }, "")
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; onTextDelta?: (text: string) => void }) {

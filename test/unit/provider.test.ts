@@ -117,7 +117,7 @@ describe("provider", () => {
     try {
       const provider = new DeepSeekProvider("deepseek-chat")
       const history = messagesToProviderInput([
-        toolCallMessage({ id: "call_1", name: "list", input: { dirPath: "." } }),
+        toolCallMessage({ id: "call_1", name: "list", input: { __easycodeInvalidToolArguments: true }, rawArguments: "{\"dirPath\": .}", reasoningContent: "I should inspect files." }),
         toolResultMessage({ callID: "call_1", toolName: "list", status: "succeeded", output: "README.md" }),
         textMessage("user", "继续"),
       ])
@@ -129,7 +129,7 @@ describe("provider", () => {
         request: {
           body: {
             messages: [
-              { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\":\".\"}" } }] },
+              { role: "assistant", content: null, reasoning_content: "I should inspect files.", tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\": .}" } }] },
               { role: "tool", tool_call_id: "call_1", content: "README.md" },
               { role: "user", content: "继续" },
             ],
@@ -177,7 +177,7 @@ describe("provider", () => {
     process.env.DEEPSEEK_API_KEY = "test-key"
     globalThis.fetch = (async () =>
       Response.json({
-        choices: [{ message: { tool_calls: [{ id: "call_1", function: { name: "list", arguments: "{\"dirPath\": .}" } }] } }],
+        choices: [{ message: { reasoning_content: "Need list.", tool_calls: [{ id: "call_1", function: { name: "list", arguments: "{\"dirPath\": .}" } }] } }],
       })) as unknown as typeof fetch
     try {
       const provider = new DeepSeekProvider("deepseek-chat")
@@ -185,8 +185,10 @@ describe("provider", () => {
       await stream.next()
       await stream.next()
       await stream.next()
+      const reasoning = await stream.next()
       const toolCall = await stream.next()
-      expect(toolCall.value).toMatchObject({ type: "tool_call", call: { id: "call_1", name: "list", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } } })
+      expect(reasoning.value).toEqual({ type: "reasoning_delta", text: "Need list." })
+      expect(toolCall.value).toMatchObject({ type: "tool_call", call: { id: "call_1", name: "list", rawArguments: "{\"dirPath\": .}", reasoningContent: "Need list.", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } } })
       await stream.return?.()
     } finally {
       globalThis.fetch = previousFetch

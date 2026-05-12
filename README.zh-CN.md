@@ -39,19 +39,27 @@ Provider 通过 `src/provider/registry.ts` 注册；agent、CLI、eval 都通过
 ## 使用
 
 ```bash
-bun run src/cli.ts build "Fix the failing test" --provider fake
-bun run src/cli.ts plan "Plan the smallest safe change" --provider fake
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai
-bun run src/cli.ts build "我当前有什么可用的skill" --provider deepseek --logger
+bun run src/cli.ts build --provider fake
+bun run src/cli.ts plan --provider fake
+bun run src/cli.ts build --provider openai
+bun run src/cli.ts build --provider deepseek --logger
 ```
 
 未开启 `--logger` 时，模型输出会流式写入 stdout。开启 `--logger` 时，模型文本会在 run 结束后一次性输出，避免和结构化日志混在一起。
 
-## 会话
-
-使用 `--session <id>` 启动交互式会话，并将对话历史持久化到 `.easycode/sessions/`。看到 `> ` 后再输入 prompt。
+使用 `--once` 可以执行单次 prompt，不进入交互式会话。
 
 ```bash
+bun run src/cli.ts build --once "Fix the failing test" --provider fake
+bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
+```
+
+## 会话
+
+交互式会话是默认模式，会将对话历史持久化到 `.easycode/sessions/`。不传 `--session` 时使用 `default` 会话；使用 `--session <id>` 可以选择具名会话。看到 `> ` 后再输入 prompt。
+
+```bash
+bun run src/cli.ts build --provider deepseek
 bun run src/cli.ts build --provider deepseek --session demo
 ```
 
@@ -71,7 +79,7 @@ Skill 会从以下目录发现：
 ## Logger
 
 ```bash
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider deepseek --logger
+bun run src/cli.ts build --provider deepseek --logger
 ```
 
 Logger 行为：

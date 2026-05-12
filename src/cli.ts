@@ -18,23 +18,24 @@ export function parseArgs(argv: string[]) {
   const providerIndex = argv.indexOf("--provider")
   const rootIndex = argv.indexOf("--root")
   const sessionIndex = argv.indexOf("--session")
+  const once = argv.includes("--once")
   const logger = argv.includes("--logger")
   const rawProvider = providerIndex === -1 ? "fake" : argv[providerIndex + 1]
   if (!hasProvider(rawProvider)) throw new Error(`Unknown provider: ${rawProvider}. Available providers: ${listProviders().join(", ")}`)
   const provider = rawProvider
   const root = rootIndex === -1 ? process.cwd() : path.resolve(argv[rootIndex + 1])
-  const session = sessionIndex === -1 ? undefined : argv[sessionIndex + 1]
-  if (sessionIndex !== -1 && (!session || session.startsWith("--"))) throw new Error("--session requires an id")
+  const explicitSession = sessionIndex === -1 ? undefined : argv[sessionIndex + 1]
+  if (sessionIndex !== -1 && (!explicitSession || explicitSession.startsWith("--"))) throw new Error("--session requires an id")
   const prompt = argv.slice(1).filter((arg, index, items) => {
     const realIndex = index + 1
     return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session"
   }).join(" ")
-  if (session && prompt) throw new Error("--session is interactive; enter the prompt after the session starts")
-  return { mode: mode as AgentMode, prompt, provider, root, logger, session }
+  if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
+  return { mode: mode as AgentMode, prompt, provider, root, logger, session: explicitSession ?? "default", once }
 }
 
 function usage() {
-  return `Usage: easycode <build|plan> [prompt] [--provider ${listProviders().join("|")}] [--root path] [--logger] [--session id]`
+  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--root path] [--logger] [--session id]`
 }
 
 function unquoteEnvValue(value: string) {
@@ -78,10 +79,10 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
 if (import.meta.main) {
   const args = parseArgs(process.argv.slice(2))
   const logger = args.logger ? createLogger() : undefined
-  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root } })
+  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session: args.session, once: args.once } })
   const loadedEnvVars = await loadEnvFile(args.root)
   emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
-  const status = args.session ? await runSession(args, logger) : await runOnce(args, logger)
+  const status = args.once ? await runOnce(args, logger) : await runSession(args, logger)
   process.exit(status === "completed" ? 0 : 1)
 }
 
@@ -95,19 +96,24 @@ async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | unde
 async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   const store = new SessionStore(args.root)
   const context = await store.context(args.session ?? "")
-  const runner = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, context, onTextDelta: textDeltaWriter(logger) })
+  let runner: ReturnType<typeof createRunner> | undefined
+  const getRunner = () => {
+    runner ??= createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, context, onTextDelta: textDeltaWriter(logger) })
+    return runner
+  }
   const rl = createInterface({ input, output })
   try {
     while (true) {
       const prompt = (await rl.question("> ")).trim()
       if (["exit", ":exit", "quit", ":quit"].includes(prompt.toLowerCase())) {
-        await store.save(args.session ?? "", runner.context)
+        await store.save(args.session ?? "", runner?.context ?? context)
         return "completed"
       }
       if (!prompt) continue
-      const result = await runner.run(prompt, args.mode)
+      const activeRunner = getRunner()
+      const result = await activeRunner.run(prompt, args.mode)
       writeResult(result.text, Boolean(logger))
-      await store.save(args.session ?? "", runner.context)
+      await store.save(args.session ?? "", activeRunner.context)
       if (result.status !== "completed") return result.status
     }
   } finally {

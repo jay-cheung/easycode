@@ -124,6 +124,39 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("keeps assistant text before streamed provider failures", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "text_delta", text: "I checked the current state." }
+        yield { type: "failure", error: { code: "quota", message: "quota exceeded", output: "quota exceeded" } }
+      },
+    }
+    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    expect(result.status).toBe("failed")
+    expect(result.text).toBe("I checked the current state.\nquota exceeded")
+    expect(result.messages.at(-1)?.parts[0]).toMatchObject({ type: "text", text: "I checked the current state.\nquota exceeded" })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("outputs reasoning before assistant text", async () => {
+    const root = await fixture()
+    const chunks: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "reasoning_delta", text: "Need to inspect first." }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, onTextDelta: (text) => chunks.push(text) }).run("Fix", "build")
+    expect(result.status).toBe("completed")
+    expect(result.text).toBe("<reasoning>\nNeed to inspect first.\n</reasoning>\nDone.")
+    expect(chunks.join("")).toBe(result.text)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("streams assistant text deltas", async () => {
     const root = await fixture()
     const chunks: string[] = []
@@ -131,6 +164,23 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(chunks.join("")).toBe(result.text)
     expect(chunks.length).toBeGreaterThan(0)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("returns latest assistant text when max steps is reached", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "text_delta", text: "I inspected the issue and need one more command." }
+        yield { type: "tool_call", call: { id: "call_1", name: "read", input: { path: "src/add.ts" } } }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, maxSteps: 1 }).run("Fix", "build")
+    expect(result.status).toBe("failed")
+    expect(result.text).toBe("I inspected the issue and need one more command.")
+    expect(result.messages.at(-1)?.role).toBe("assistant")
     await rm(root, { recursive: true, force: true })
   })
 

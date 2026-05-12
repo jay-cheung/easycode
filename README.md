@@ -39,19 +39,27 @@ Built-in providers:
 ## Usage
 
 ```bash
-bun run src/cli.ts build "Fix the failing test" --provider fake
-bun run src/cli.ts plan "Plan the smallest safe change" --provider fake
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai
-bun run src/cli.ts build "我当前有什么可用的skill" --provider deepseek --logger
+bun run src/cli.ts build --provider fake
+bun run src/cli.ts plan --provider fake
+bun run src/cli.ts build --provider openai
+bun run src/cli.ts build --provider deepseek --logger
 ```
 
 Without `--logger`, model text is streamed to stdout as it arrives. With `--logger`, model text is printed after the run completes so structured logs do not mix with the response.
 
-## Sessions
-
-Use `--session <id>` to start an interactive session and persist conversation history under `.easycode/sessions/`. Enter prompts after the `> ` prompt appears.
+Use `--once` to run a single prompt without entering an interactive session.
 
 ```bash
+bun run src/cli.ts build --once "Fix the failing test" --provider fake
+bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
+```
+
+## Sessions
+
+Interactive session mode is the default and persists conversation history under `.easycode/sessions/`. Without `--session`, easycode uses the `default` session. Use `--session <id>` to select a named session. Enter prompts after the `> ` prompt appears.
+
+```bash
+bun run src/cli.ts build --provider deepseek
 bun run src/cli.ts build --provider deepseek --session demo
 ```
 
@@ -71,7 +79,7 @@ Skill files are matched case-insensitively as `skill.md` / `SKILL.md`. Only skil
 ## Logger
 
 ```bash
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider deepseek --logger
+bun run src/cli.ts build --provider deepseek --logger
 ```
 
 Logger behavior:

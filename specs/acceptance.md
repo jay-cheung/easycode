@@ -3,8 +3,10 @@
 ## Functional
 - `bun test` passes.
 - `bun run eval --provider fake` passes all local eval tasks.
-- `easycode plan "..."` does not modify files and returns `<proposed_plan>`.
-- `easycode build "..." --provider fake` can complete read -> edit -> bash.
+- `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
+- `easycode build --once "..." --provider fake` can complete read -> edit -> bash.
+- `easycode build --provider fake` starts the default interactive session.
+- `easycode build --session demo --provider fake` starts the named interactive session.
 - Skills expose title/description before full content is requested.
 - Context compaction preserves summary plus recent messages.
 

@@ -5,7 +5,7 @@ import { partToText, type ToolCallPart, type ToolResultPart } from "../message"
 import { parseProviderToolArguments } from "../tool/utils/arguments"
 
 type DeepSeekMessage =
-  | { role: "system" | "user" | "assistant"; content: string | null; tool_calls?: DeepSeekRequestToolCall[] }
+  | { role: "system" | "user" | "assistant"; content: string | null; reasoning_content?: string; tool_calls?: DeepSeekRequestToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string }
 
 type DeepSeekRequestToolCall = {
@@ -21,6 +21,7 @@ type DeepSeekChatCompletion = {
   choices?: Array<{
     message?: {
       content?: string | null
+      reasoning_content?: string | null
       tool_calls?: Array<{
         id?: string
         function?: {
@@ -77,6 +78,7 @@ export class DeepSeekProvider extends OpenAILikeProvider {
       return
     }
     const message = parsed.choices?.[0]?.message
+    if (message?.reasoning_content) yield { type: "reasoning_delta", text: message.reasoning_content }
     for (const toolCall of message?.tool_calls ?? []) {
       if (!toolCall.function?.name) continue
       const parsedInput = parseProviderToolArguments(toolCall.function.arguments ?? "{}", toolCall.function.name, toolCall.id)
@@ -86,6 +88,8 @@ export class DeepSeekProvider extends OpenAILikeProvider {
           id: toolCall.id ?? `call_${toolCall.function.name}`,
           name: toolCall.function.name,
           input: parsedInput.input,
+          rawArguments: toolCall.function.arguments ?? "{}",
+          reasoningContent: message?.reasoning_content ?? undefined,
         },
       }
     }
@@ -99,14 +103,16 @@ function chatMessagesFromProviderMessage(message: ProviderInput["providerMessage
   const toolCalls = parts.filter((part): part is ToolCallPart => part.type === "tool_call")
   if (message.role === "assistant" && toolCalls.length > 0) {
     const text = parts.filter((part) => part.type !== "tool_call").map(partToText).join("\n")
+    const reasoningContent = toolCalls.find((part) => part.call.reasoningContent)?.call.reasoningContent
     return [
       {
         role: "assistant",
         content: text || null,
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
         tool_calls: toolCalls.map((part) => ({
           id: part.call.id,
           type: "function",
-          function: { name: part.call.name, arguments: JSON.stringify(part.call.input) },
+          function: { name: part.call.name, arguments: part.call.rawArguments ?? JSON.stringify(part.call.input) },
         })),
       },
     ]

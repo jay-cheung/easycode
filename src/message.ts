@@ -7,6 +7,8 @@ export type ToolCall = {
   id: string
   name: string
   input: unknown
+  rawArguments?: string
+  reasoningContent?: string
 }
 
 export type TextPart = { type: "text"; text: string }

@@ -35,11 +35,34 @@ describe("cli env loading", () => {
 })
 
 describe("cli args", () => {
-  test("session mode does not accept startup prompts", () => {
-    expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("--session is interactive")
+  test("session mode is the default and does not accept startup prompts", () => {
+    expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: "default", prompt: "" })
+    expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 
-  test("session mode starts without a prompt", () => {
-    expect(parseArgs(["build", "--provider", "fake", "--session", "demo"]).prompt).toBe("")
+  test("session flag selects the interactive session id", () => {
+    expect(parseArgs(["build", "--provider", "fake", "--session", "demo"])).toMatchObject({ once: false, session: "demo", prompt: "" })
+  })
+
+  test("once mode accepts startup prompts", () => {
+    expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ once: true, session: "default", prompt: "hello" })
+  })
+
+  test("session startup waits for input before running provider", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "deepseek", "--logger", "--session", "startup", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).not.toContain("provider.request")
+    expect(stdout).not.toContain("agent.state")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
   })
 })

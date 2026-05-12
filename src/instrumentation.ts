@@ -80,11 +80,15 @@ export class LoggingRunAspect implements RunAspect {
       name: provider.name,
       async *stream(input) {
         let totalLength = 0
+        let reasoningContent = ""
         let output = ""
         const toolCalls: Array<{ tool: string; callID: string }> = []
         try {
           for await (const event of provider.stream(input)) {
             logProviderEvent(logger, event, totalLength)
+            if (event.type === "reasoning_delta") {
+              reasoningContent += event.text
+            }
             if (event.type === "text_delta") {
               output += event.text
               totalLength += event.text.length
@@ -96,9 +100,9 @@ export class LoggingRunAspect implements RunAspect {
             if (event.type === "tool_call") toolCalls.push({ tool: event.call.name, callID: event.call.id })
             yield event
           }
-          emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, textLength: output.length, output, toolCalls } })
+          emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: output.length, output, toolCalls } })
         } catch (error) {
-          if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, textLength: error.output.length, output: error.output, toolCalls } })
+          if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: error.output.length, output: error.output, toolCalls } })
           emitLog(logger, { type: "error", name: "provider.error", detail: providerErrorDetail(provider.name, error) })
           throw error
         }
@@ -169,6 +173,7 @@ function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefor
     emitLog(logger, { type: "provider", name: "provider.failure", detail: event.error })
     emitLog(logger, { type: "error", name: "provider.error", detail: event.error })
   }
+  if (event.type === "reasoning_delta") emitLog(logger, { type: "provider", name: "provider.reasoning_delta", detail: { length: event.text.length } })
   if (event.type === "text_delta") emitLog(logger, { type: "provider", name: "provider.text_delta", detail: { length: event.text.length, totalLength: totalLengthBefore + event.text.length } })
   if (event.type === "tool_call") emitLog(logger, { type: "provider", name: "provider.tool_call", detail: { tool: event.call.name, callID: event.call.id } })
   if (event.type === "usage") emitLog(logger, { type: "provider", name: "provider.usage", detail: { inputTokens: event.inputTokens, outputTokens: event.outputTokens } })

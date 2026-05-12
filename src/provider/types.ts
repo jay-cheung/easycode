@@ -7,6 +7,7 @@ export type ProviderEvent =
   | { type: "response"; response: { url: string; status: number; ok: boolean; headers: Record<string, string>; body?: string } }
   | { type: "response_raw"; response: unknown }
   | { type: "failure"; error: { message: string; code?: string; output: string } }
+  | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
   | { type: "usage"; inputTokens: number; outputTokens: number }
