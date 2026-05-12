@@ -26,13 +26,6 @@ DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-v4-pro
 ```
 
-Optional provider endpoint overrides:
-
-```env
-OPENAI_API_URL=https://api.openai.com/v1/responses
-DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
-```
-
 ## Providers
 
 Providers are registered through `src/provider/registry.ts`; agent, CLI, and eval code create providers through that registry instead of hard-coded provider checks.
@@ -41,31 +34,14 @@ Built-in providers:
 
 - `fake`: deterministic local provider for tests and evals.
 - `openai`: OpenAI Responses API provider.
-- `deepseek`: DeepSeek Chat Completions provider with `thinking: { type: "enabled" }`, `reasoning_effort: "high"`, and `stream: false`.
+- `deepseek`: DeepSeek Chat Completions provider with `thinking`, `reasoning_effort: "high"`, and `stream: false`.
 
 ## Usage
 
-Run a one-shot build task:
-
 ```bash
 bun run src/cli.ts build "Fix the failing test" --provider fake
-```
-
-Run a planning task:
-
-```bash
 bun run src/cli.ts plan "Plan the smallest safe change" --provider fake
-```
-
-Use OpenAI:
-
-```bash
 bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai
-```
-
-Use DeepSeek:
-
-```bash
 bun run src/cli.ts build "我当前有什么可用的skill" --provider deepseek --logger
 ```
 
@@ -73,15 +49,7 @@ Without `--logger`, model text is streamed to stdout as it arrives. With `--logg
 
 ## Sessions
 
-Use `--session <id>` to persist conversation history under `.easycode/sessions/`.
-
-Single turn with persistence:
-
-```bash
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai --session demo
-```
-
-Interactive session:
+Use `--session <id>` to start an interactive session and persist conversation history under `.easycode/sessions/`. Enter prompts after the `> ` prompt appears.
 
 ```bash
 bun run src/cli.ts build --provider deepseek --session demo
@@ -102,15 +70,13 @@ Skill files are matched case-insensitively as `skill.md` / `SKILL.md`. Only skil
 
 ## Logger
 
-Enable structured execution logs with `--logger`:
-
 ```bash
 bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider deepseek --logger
 ```
 
 Logger behavior:
 
-- Network logs `provider.request`, `provider.response`, and `provider.response.raw` are highlighted in yellow.
+- Network request and error response logs are highlighted in yellow. `provider.request` and `provider.response` only include the request/response body.
 - State transition logs are highlighted in cyan.
 - Only real error events are written to stderr.
 - Provider failures are surfaced in `provider.output` and returned to the user as the final failed result text.

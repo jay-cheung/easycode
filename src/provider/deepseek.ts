@@ -1,10 +1,20 @@
 import { OpenAILikeProvider, normalizeModelName } from "./openai-like"
 import type { ProviderEvent, ProviderInput } from "./types"
 import { toolToResponseTool } from "./utils"
+import { partToText, type ToolCallPart, type ToolResultPart } from "../message"
+import { parseProviderToolArguments } from "../tool/utils/arguments"
 
-type DeepSeekMessage = {
-  role: "system" | "user" | "assistant"
-  content: string
+type DeepSeekMessage =
+  | { role: "system" | "user" | "assistant"; content: string | null; tool_calls?: DeepSeekRequestToolCall[] }
+  | { role: "tool"; tool_call_id: string; content: string }
+
+type DeepSeekRequestToolCall = {
+  id: string
+  type: "function"
+  function: {
+    name: string
+    arguments: string
+  }
 }
 
 type DeepSeekChatCompletion = {
@@ -46,12 +56,16 @@ export class DeepSeekProvider extends OpenAILikeProvider {
   protected override buildRequestBody(input: ProviderInput) {
     return {
       model: this.model,
-      messages: input.providerMessages.map(chatMessageFromProviderMessage),
+      messages: input.providerMessages.flatMap(chatMessagesFromProviderMessage),
       thinking: { type: "enabled" },
       reasoning_effort: "high",
       stream: false,
       tools: input.tools.map(toolToChatCompletionTool),
     }
+  }
+
+  protected override includeSuccessfulResponseBody() {
+    return true
   }
 
   protected override async *readResponseEvents(response: Response): AsyncIterable<ProviderEvent> {
@@ -65,11 +79,7 @@ export class DeepSeekProvider extends OpenAILikeProvider {
     const message = parsed.choices?.[0]?.message
     for (const toolCall of message?.tool_calls ?? []) {
       if (!toolCall.function?.name) continue
-      const parsedInput = parseToolArguments(toolCall.function.arguments ?? "{}", toolCall.function.name, toolCall.id)
-      if (!parsedInput.ok) {
-        yield { type: "failure", error: parsedInput.error }
-        return
-      }
+      const parsedInput = parseProviderToolArguments(toolCall.function.arguments ?? "{}", toolCall.function.name, toolCall.id)
       yield {
         type: "tool_call",
         call: {
@@ -84,9 +94,34 @@ export class DeepSeekProvider extends OpenAILikeProvider {
   }
 }
 
-function chatMessageFromProviderMessage(message: ProviderInput["providerMessages"][number]): DeepSeekMessage {
+function chatMessagesFromProviderMessage(message: ProviderInput["providerMessages"][number]): DeepSeekMessage[] {
+  const parts = message.parts ?? []
+  const toolCalls = parts.filter((part): part is ToolCallPart => part.type === "tool_call")
+  if (message.role === "assistant" && toolCalls.length > 0) {
+    const text = parts.filter((part) => part.type !== "tool_call").map(partToText).join("\n")
+    return [
+      {
+        role: "assistant",
+        content: text || null,
+        tool_calls: toolCalls.map((part) => ({
+          id: part.call.id,
+          type: "function",
+          function: { name: part.call.name, arguments: JSON.stringify(part.call.input) },
+        })),
+      },
+    ]
+  }
+  const toolResults = parts.filter((part): part is ToolResultPart => part.type === "tool_result")
+  if (message.role === "tool" && toolResults.length > 0) {
+    return toolResults.map((part) => ({ role: "tool", tool_call_id: part.callID, content: toolResultContent(part) }))
+  }
   const role = message.role === "system" || message.role === "assistant" ? message.role : "user"
-  return { role, content: message.content }
+  return [{ role, content: message.content }]
+}
+
+function toolResultContent(part: ToolResultPart) {
+  if (part.status === "succeeded") return part.output
+  return `status: ${part.status}\n${part.output}`
 }
 
 function toolToChatCompletionTool(tool: Parameters<typeof toolToResponseTool>[0]) {
@@ -99,21 +134,5 @@ function toolToChatCompletionTool(tool: Parameters<typeof toolToResponseTool>[0]
       parameters: responseTool.parameters,
       strict: responseTool.strict,
     },
-  }
-}
-
-function parseToolArguments(rawArguments: string, toolName: string, callID: string | undefined) {
-  try {
-    return { ok: true as const, input: JSON.parse(rawArguments) as unknown }
-  } catch (error) {
-    const message = `Invalid tool arguments from provider for ${toolName}: ${error instanceof Error ? error.message : String(error)}`
-    return {
-      ok: false as const,
-      error: {
-        code: "invalid_tool_arguments",
-        message,
-        output: JSON.stringify({ code: "invalid_tool_arguments", message, tool: toolName, callID, arguments: rawArguments }),
-      },
-    }
   }
 }

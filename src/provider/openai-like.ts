@@ -1,6 +1,7 @@
 import { toolToResponseTool } from "./utils"
 import { Provider, ProviderInput, ProviderEvent, ProviderError } from "./types"
 import type { ProviderInputMessage } from "../message"
+import { parseProviderToolArguments } from "../tool/utils/arguments"
 
 type OpenAIContentPart = {
   type?: string
@@ -123,7 +124,7 @@ export class OpenAILikeProvider implements Provider {
       yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), body: output } }
       throw new ProviderError(`${this.errorPrefix}: ${response.status} ${output}`, { status: response.status, output })
     }
-    yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response) } }
+    yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), ...(await this.successfulResponseBody(response)) } }
     yield* this.readResponseEvents(response)
     yield { type: "done" }
   }
@@ -153,6 +154,15 @@ export class OpenAILikeProvider implements Provider {
     }
     if (buffer) yield* providerEventsFromSSELine(buffer, parseState, true)
   }
+
+  protected includeSuccessfulResponseBody() {
+    return false
+  }
+
+  private async successfulResponseBody(response: Response) {
+    if (!this.includeSuccessfulResponseBody()) return {}
+    return { body: await response.clone().text().catch(() => "") }
+  }
 }
 
 function providerEventsFromSSELine(line: string, state: OpenAIStreamParseState, includeRaw = false) {
@@ -177,7 +187,7 @@ function toolCallFromOutputItem(item: OpenAIOutputItem | undefined, state: OpenA
 function toolCallEvent(id: string, name: string, rawArguments: string, state: OpenAIStreamParseState): ProviderEvent | undefined {
   if (state.emittedToolItems.has(id)) return undefined
   state.emittedToolItems.add(id)
-  return { type: "tool_call", call: { id, name, input: JSON.parse(rawArguments) as unknown } }
+  return { type: "tool_call", call: { id, name, input: parseProviderToolArguments(rawArguments, name, id).input } }
 }
 
 function failureFromStreamEvent(parsed: OpenAIStreamEvent, state: OpenAIStreamParseState): ProviderEvent | undefined {

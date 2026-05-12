@@ -12,7 +12,7 @@ type EnvTarget = {
   [key: string]: string | undefined
 }
 
-function parseArgs(argv: string[]) {
+export function parseArgs(argv: string[]) {
   const mode = argv[0]
   if (mode !== "build" && mode !== "plan") throw new Error(usage())
   const providerIndex = argv.indexOf("--provider")
@@ -29,6 +29,7 @@ function parseArgs(argv: string[]) {
     const realIndex = index + 1
     return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session"
   }).join(" ")
+  if (session && prompt) throw new Error("--session is interactive; enter the prompt after the session starts")
   return { mode: mode as AgentMode, prompt, provider, root, logger, session }
 }
 
@@ -95,13 +96,6 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
   const store = new SessionStore(args.root)
   const context = await store.context(args.session ?? "")
   const runner = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, context, onTextDelta: textDeltaWriter(logger) })
-  if (args.prompt) {
-    const result = await runner.run(args.prompt, args.mode)
-    writeResult(result.text, Boolean(logger))
-    await store.save(args.session ?? "", runner.context)
-    return result.status
-  }
-
   const rl = createInterface({ input, output })
   try {
     while (true) {

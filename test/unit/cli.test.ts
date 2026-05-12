@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { loadEnvFile, parseEnvFile } from "../../src/cli"
+import { loadEnvFile, parseArgs, parseEnvFile } from "../../src/cli"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-cli-"))
@@ -31,5 +31,15 @@ describe("cli env loading", () => {
     expect(env.OPENAI_API_KEY).toBe("from-file")
     expect(env.EXISTING).toBe("from-process")
     await rm(root, { recursive: true, force: true })
+  })
+})
+
+describe("cli args", () => {
+  test("session mode does not accept startup prompts", () => {
+    expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("--session is interactive")
+  })
+
+  test("session mode starts without a prompt", () => {
+    expect(parseArgs(["build", "--provider", "fake", "--session", "demo"]).prompt).toBe("")
   })
 })

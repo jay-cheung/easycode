@@ -33,6 +33,7 @@ export type Message = {
 export type ProviderInputMessage = {
   role: MessageRole
   content: string
+  parts?: MessagePart[]
 }
 
 let idCounter = 0
@@ -105,7 +106,7 @@ export function messageToText(message: Message) {
 }
 
 export function messagesToProviderInput(messages: Message[]): ProviderInputMessage[] {
-  return messages.map((message) => ({ role: message.role, content: messageToText(message) }))
+  return messages.map((message) => ({ role: message.role, content: messageToText(message), parts: message.parts }))
 }
 
 export function toolResults(messages: Message[]) {

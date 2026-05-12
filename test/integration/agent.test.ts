@@ -45,7 +45,7 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("logger records provider raw request", async () => {
+  test("logger records request body and skips successful responses", async () => {
     const root = await fixture()
     const events: LogEvent[] = []
     const provider: Provider = {
@@ -60,9 +60,31 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
     expect(result.text).toBe("done")
-    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && event.detail?.body && JSON.stringify(event.detail.body) === "{\"input\":\"raw\"}")).toBe(true)
-    expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.status === 200)).toBe(true)
-    expect(events.some((event) => event.type === "provider" && event.name === "provider.response.raw" && event.detail?.response && JSON.stringify(event.detail.response) === "{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && JSON.stringify(event.detail) === "{\"body\":{\"input\":\"raw\"}}")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && event.detail?.url)).toBe(false)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.status === 200)).toBe(false)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.response.raw" && event.detail?.response && JSON.stringify(event.detail.response) === "{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("logger records provider responses only on errors", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "request", request: { url: "https://example.test", method: "POST", body: { input: "raw" } } }
+        yield { type: "response", response: { url: "https://example.test", status: 429, ok: false, headers: {}, body: "{\"error\":\"quota\"}" } }
+        yield { type: "response_raw", response: { type: "response.failed", response: { error: { code: "quota", message: "quota exceeded" } } } }
+        yield { type: "failure", error: { code: "quota", message: "quota exceeded", output: "{\"error\":\"quota\"}" } }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    expect(result.status).toBe("failed")
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && JSON.stringify(event.detail) === "{\"body\":{\"input\":\"raw\"}}")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.body === "{\"error\":\"quota\"}" && event.detail.status === undefined)).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.response.raw" && event.detail?.response)).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
 

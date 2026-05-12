@@ -114,24 +114,28 @@ export class LoggingRunAspect implements RunAspect {
       run: async (name, input, ctx) => {
         emitLog(logger, { type: "tool", name: "tool.lookup", detail: { tool: name } })
         const tool = registry.get(name)
-        let validated = false
+        let permissionEvaluationLogged = false
         if (!tool) emitLog(logger, { type: "tool", name: "tool.missing", detail: { tool: name } })
         if (tool && !tool.modes.includes(ctx.agentMode)) emitLog(logger, { type: "tool", name: "tool.disabled", detail: { tool: name, mode: ctx.agentMode } })
         if (tool) {
-          emitLog(logger, { type: "tool", name: "tool.validate.start", detail: { tool: name } })
-          const parsed = tool.inputSchema.safeParse(input)
-          if (parsed.success) {
-            validated = true
-            emitLog(logger, { type: "tool", name: "tool.validate.succeeded", detail: { tool: name } })
-            const patterns = tool.patterns(parsed.data, ctx)
-            emitLog(logger, { type: "tool", name: "permission.evaluate", detail: { tool: name, permission: tool.permission, patterns } })
-          } else {
-            emitLog(logger, { type: "tool", name: "tool.validate.failed", detail: { tool: name, issues: parsed.error.issues } })
+          try {
+            emitLog(logger, { type: "tool", name: "tool.validate.start", detail: { tool: name } })
+            const parsed = tool.inputSchema.safeParse(input)
+            if (parsed.success) {
+              emitLog(logger, { type: "tool", name: "tool.validate.succeeded", detail: { tool: name } })
+              const patterns = tool.patterns(parsed.data, ctx)
+              permissionEvaluationLogged = true
+              emitLog(logger, { type: "tool", name: "permission.evaluate", detail: { tool: name, permission: tool.permission, patterns } })
+            } else {
+              emitLog(logger, { type: "tool", name: "tool.validate.failed", detail: { tool: name, issues: parsed.error.issues } })
+            }
+          } catch (error) {
+            emitLog(logger, { type: "tool", name: "tool.inspect.failed", detail: { tool: name, error: error instanceof Error ? error.name : "UnknownError", message: error instanceof Error ? error.message : String(error) } })
           }
         }
         try {
           const result = await registry.run(name, input, ctx)
-          if (tool && validated && result.metadata.status !== "denied") emitLog(logger, { type: "tool", name: "permission.allowed", detail: { tool: name, permission: tool.permission } })
+          if (tool && permissionEvaluationLogged && result.metadata.status !== "denied") emitLog(logger, { type: "tool", name: "permission.allowed", detail: { tool: name, permission: tool.permission } })
           emitLog(logger, { type: "tool", name: "tool.execute.done", detail: { tool: name, status: result.metadata.status, outputLength: result.output.length } })
           return result
         } catch (error) {
@@ -158,9 +162,9 @@ export class LoggingRunAspect implements RunAspect {
 }
 
 function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefore: number) {
-  if (event.type === "request") emitLog(logger, { type: "provider", name: "provider.request", detail: event.request })
-  if (event.type === "response") emitLog(logger, { type: "provider", name: "provider.response", detail: event.response })
-  if (event.type === "response_raw") emitLog(logger, { type: "provider", name: "provider.response.raw", detail: { response: event.response } })
+  if (event.type === "request") emitLog(logger, { type: "provider", name: "provider.request", detail: { body: event.request.body } })
+  if (event.type === "response" && !event.response.ok) emitLog(logger, { type: "provider", name: "provider.response", detail: { body: event.response.body ?? "" } })
+  if (event.type === "response_raw" && rawProviderResponseHasError(event.response)) emitLog(logger, { type: "provider", name: "provider.response.raw", detail: { response: event.response } })
   if (event.type === "failure") {
     emitLog(logger, { type: "provider", name: "provider.failure", detail: event.error })
     emitLog(logger, { type: "error", name: "provider.error", detail: event.error })
@@ -169,6 +173,15 @@ function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefor
   if (event.type === "tool_call") emitLog(logger, { type: "provider", name: "provider.tool_call", detail: { tool: event.call.name, callID: event.call.id } })
   if (event.type === "usage") emitLog(logger, { type: "provider", name: "provider.usage", detail: { inputTokens: event.inputTokens, outputTokens: event.outputTokens } })
   if (event.type === "done") emitLog(logger, { type: "provider", name: "provider.done" })
+}
+
+function rawProviderResponseHasError(response: unknown) {
+  if (!response || typeof response !== "object") return false
+  const record = response as { type?: unknown; error?: unknown; response?: unknown }
+  if (record.type === "error" || record.type === "response.failed") return true
+  if (record.error) return true
+  if (record.response && typeof record.response === "object" && (record.response as { error?: unknown }).error) return true
+  return false
 }
 
 function providerErrorDetail(provider: string, error: unknown) {

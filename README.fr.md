@@ -16,64 +16,70 @@ Un agent de codage léger, piloté par des specs, construit avec Bun et TypeScri
 bun install
 ```
 
-Pour utiliser le provider OpenAI, placez les identifiants dans `.env` ou exportez-les dans le shell :
+Placez les identifiants du provider dans `.env` ou exportez-les dans le shell. Les variables d'environnement du shell ont priorité sur les valeurs de `.env`.
 
 ```env
 OPENAI_API_KEY=...
 EASYCODE_MODEL=gpt-5-mini
+
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-v4-pro
 ```
 
-Les variables d'environnement du shell ont priorité sur les valeurs de `.env`.
+## Providers
+
+Les providers sont enregistrés via `src/provider/registry.ts` ; le code de l'agent, du CLI et de l'évaluation crée des providers via ce registre plutôt que par des vérifications codées en dur.
+
+Providers intégrés :
+
+- `fake` : provider local déterministe pour les tests et les évaluations.
+- `openai` : provider OpenAI Responses API.
+- `deepseek` : provider DeepSeek Chat Completions avec `thinking`, `reasoning_effort: "high"` et `stream: false`.
 
 ## Utilisation
 
-Exécuter une tâche build ponctuelle :
-
 ```bash
 bun run src/cli.ts build "Fix the failing test" --provider fake
-```
-
-Exécuter une tâche plan :
-
-```bash
 bun run src/cli.ts plan "Plan the smallest safe change" --provider fake
-```
-
-Utiliser OpenAI :
-
-```bash
 bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai
+bun run src/cli.ts build "我当前有什么可用的skill" --provider deepseek --logger
 ```
 
-Sans `--logger`, le texte du modèle est diffusé vers stdout au fur et à mesure de sa génération.
+Sans `--logger`, le texte du modèle est diffusé vers stdout au fur et à mesure de sa génération. Avec `--logger`, le texte du modèle est imprimé après la fin de l'exécution pour que les logs structurés ne se mélangent pas avec la réponse.
 
 ## Sessions
 
-Utilisez `--session <id>` pour persister l'historique de conversation dans `.easycode/sessions/`.
-
-Un tour unique avec persistance :
+Utilisez `--session <id>` pour démarrer une session interactive et persister l'historique dans `.easycode/sessions/`. Saisissez les prompts après l'apparition de `> `.
 
 ```bash
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai --session demo
-```
-
-Session interactive :
-
-```bash
-bun run src/cli.ts build --provider openai --session demo
+bun run src/cli.ts build --provider deepseek --session demo
 ```
 
 Quittez avec `exit`, `:exit`, `quit` ou `:quit`.
 
+## Skills
+
+Les skills sont découverts dans ces répertoires :
+
+- `<project>/.agent/skills`
+- `<project>/.easycode/skills`
+- `~/.agent/skills`
+- `~/.easycode/skills`
+
+Les fichiers de skill sont détectés sans tenir compte de la casse comme `skill.md` / `SKILL.md`. Seuls les noms et descriptions des skills sont chargés dans le contexte initialement ; le contenu complet est chargé via l'outil `skill`.
+
 ## Logger
 
-Activez les logs d'exécution structurés avec `--logger` :
-
 ```bash
-bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider openai --logger
+bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider deepseek --logger
 ```
 
-Quand `--logger` est activé, le texte du modèle n'est pas diffusé en streaming. Le résultat final est imprimé après la fin du run. Les logs de transition d'état sont mis en évidence.
+Comportement du logger :
+
+- Les logs de requête réseau et de réponse en erreur sont surlignés en jaune ; `provider.request` et `provider.response` ne contiennent que le body de requête/réponse.
+- Les logs de transition d'état sont surlignés en cyan.
+- Seuls les véritables événements d'erreur sont écrits sur stderr.
+- Les échecs du provider sont remontés dans `provider.output` et renvoyés à l'utilisateur comme texte de résultat final d'échec.
 
 ## Vérifications
 

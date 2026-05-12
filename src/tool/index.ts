@@ -1,9 +1,10 @@
 import path from "node:path"
 import { z } from "zod"
-import type { AgentMode, Message } from "./message"
-import type { PermissionService } from "./permission"
-import type { Sandbox } from "./sandbox"
-import type { SkillServiceLike } from "./skill"
+import type { AgentMode, Message } from "../message"
+import { PermissionDeniedError, PermissionRejectedError, type PermissionService } from "../permission"
+import type { Sandbox } from "../sandbox"
+import type { SkillServiceLike } from "../skill"
+import { invalidProviderToolArguments } from "./utils/arguments"
 
 export type JsonSchema = {
   type: "object"
@@ -65,18 +66,37 @@ export class ToolRegistry implements ToolRegistryLike {
     if (!tool.modes.includes(ctx.agentMode)) {
       return { title: "Tool disabled", output: `Tool ${name} is not available in ${ctx.agentMode} mode`, metadata: { status: "denied" } }
     }
+    const providerArgumentError = invalidProviderToolArguments(input)
+    if (providerArgumentError) {
+      return { title: "Invalid tool input", output: providerArgumentError, metadata: { status: "failed", error: "invalid_tool_arguments" } }
+    }
     const parsed = tool.inputSchema.safeParse(input)
     if (!parsed.success) {
       return { title: "Invalid tool input", output: `Invalid arguments for ${name}: ${parsed.error.message}`, metadata: { status: "failed", validation: parsed.error.issues } }
     }
-    const patterns = tool.patterns(parsed.data, ctx)
-    await ctx.permission.authorize({
-      permission: tool.permission,
-      patterns,
-      always: patterns,
-      metadata: { tool: name },
-    })
-    return tool.execute(parsed.data, ctx)
+    try {
+      const patterns = tool.patterns(parsed.data, ctx)
+      await ctx.permission.authorize({
+        permission: tool.permission,
+        patterns,
+        always: patterns,
+        metadata: { tool: name },
+      })
+      return await tool.execute(parsed.data, ctx)
+    } catch (error) {
+      return toolErrorResult(name, error)
+    }
+  }
+}
+
+function toolErrorResult(name: string, error: unknown): ToolResult {
+  if (error instanceof PermissionDeniedError || error instanceof PermissionRejectedError) {
+    return { title: name, output: error.message, metadata: { status: "denied", error: error.name } }
+  }
+  return {
+    title: name,
+    output: error instanceof Error ? error.message : String(error),
+    metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" },
   }
 }
 

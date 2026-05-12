@@ -49,7 +49,7 @@ bun run src/cli.ts build "我当前有什么可用的skill" --provider deepseek 
 
 ## 会话
 
-使用 `--session <id>` 将对话历史持久化到 `.easycode/sessions/`。
+使用 `--session <id>` 启动交互式会话，并将对话历史持久化到 `.easycode/sessions/`。看到 `> ` 后再输入 prompt。
 
 ```bash
 bun run src/cli.ts build --provider deepseek --session demo
@@ -76,7 +76,7 @@ bun run src/cli.ts build "帮我看看文件夹下有什么文件" --provider de
 
 Logger 行为：
 
-- `provider.request`、`provider.response`、`provider.response.raw` 网络日志黄色高亮。
+- 网络请求和错误响应日志黄色高亮，`provider.request` 和 `provider.response` 只包含请求/响应 body。
 - 状态转换日志青色高亮。
 - 只有真正的 error 事件写入 stderr。
 - Provider 失败会进入 `provider.output`，也会作为最终 failed result 返回给用户。

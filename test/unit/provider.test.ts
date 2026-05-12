@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
-import { textMessage } from "../../src/message"
+import { messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
 describe("provider", () => {
@@ -111,6 +111,37 @@ describe("provider", () => {
     }
   })
 
+  test("maps structured tool history to DeepSeek chat messages", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat")
+      const history = messagesToProviderInput([
+        toolCallMessage({ id: "call_1", name: "list", input: { dirPath: "." } }),
+        toolResultMessage({ callID: "call_1", toolName: "list", status: "succeeded", output: "README.md" }),
+        textMessage("user", "继续"),
+      ])
+      const stream = provider.stream({ mode: "build", prompt: "继续", messages: [], providerMessages: history, tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            messages: [
+              { role: "assistant", content: null, tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\":\".\"}" } }] },
+              { role: "tool", tool_call_id: "call_1", content: "README.md" },
+              { role: "user", content: "继续" },
+            ],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
   test("parses DeepSeek chat completion response", async () => {
     const previousKey = process.env.DEEPSEEK_API_KEY
     const previousFetch = globalThis.fetch
@@ -128,7 +159,7 @@ describe("provider", () => {
       const raw = await stream.next()
       const text = await stream.next()
       const usage = await stream.next()
-      expect(response.value).toMatchObject({ type: "response", response: { url: "https://api.deepseek.com/chat/completions", status: 200, ok: true } })
+      expect(response.value).toMatchObject({ type: "response", response: { url: "https://api.deepseek.com/chat/completions", status: 200, ok: true, body: "{\"choices\":[{\"message\":{\"content\":\"hello\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}" } })
       expect(raw.value).toEqual({ type: "response_raw", response: { choices: [{ message: { content: "hello" } }], usage: { prompt_tokens: 2, completion_tokens: 3 } } })
       expect(text.value).toEqual({ type: "text_delta", text: "hello" })
       expect(usage.value).toEqual({ type: "usage", inputTokens: 2, outputTokens: 3 })
@@ -140,7 +171,7 @@ describe("provider", () => {
     }
   })
 
-  test("turns invalid DeepSeek tool arguments into provider failure", async () => {
+  test("turns invalid DeepSeek tool arguments into a tool call for model feedback", async () => {
     const previousKey = process.env.DEEPSEEK_API_KEY
     const previousFetch = globalThis.fetch
     process.env.DEEPSEEK_API_KEY = "test-key"
@@ -154,10 +185,8 @@ describe("provider", () => {
       await stream.next()
       await stream.next()
       await stream.next()
-      const failure = await stream.next()
-      expect(failure.value).toMatchObject({ type: "failure", error: { code: "invalid_tool_arguments" } })
-      if (!failure.value || failure.value.type !== "failure") throw new Error("missing failure")
-      expect(JSON.parse(failure.value.error.output).arguments).toBe("{\"dirPath\": .}")
+      const toolCall = await stream.next()
+      expect(toolCall.value).toMatchObject({ type: "tool_call", call: { id: "call_1", name: "list", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } } })
       await stream.return?.()
     } finally {
       globalThis.fetch = previousFetch
@@ -214,6 +243,10 @@ describe("provider", () => {
   test("parses Responses function-call arguments done events", () => {
     expect(openAIStreamEventToProviderEvents({ type: "response.function_call_arguments.done", item_id: "call_1", name: "list", arguments: "{\"dirPath\":\".\"}" })).toEqual([{ type: "tool_call", call: { id: "call_1", name: "list", input: { dirPath: "." } } }])
     expect(openAIStreamEventToProviderEvents({ type: "response.output_item.done", item: { id: "item_1", call_id: "call_2", type: "function_call", name: "read", arguments: "{\"filePath\":\"README.md\"}" } })).toEqual([{ type: "tool_call", call: { id: "call_2", name: "read", input: { filePath: "README.md" } } }])
+    expect(openAIStreamEventToProviderEvents({ type: "response.function_call_arguments.done", item_id: "call_3", name: "list", arguments: "{\"dirPath\": .}" })[0]).toMatchObject({
+      type: "tool_call",
+      call: { id: "call_3", name: "list", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } },
+    })
   })
 
   test("parses streamed Responses errors as failures", () => {
