@@ -49,7 +49,7 @@ export function createOpenAIStreamParseState(): OpenAIStreamParseState {
 }
 
 export function normalizeModelName(model: string) {
-  return model.trim().toLowerCase();
+  return model.trim().toLowerCase()
 }
 
 export function providerMessageToResponseInput(message: ProviderInputMessage) {

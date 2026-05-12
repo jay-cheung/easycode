@@ -65,12 +65,17 @@ export class DeepSeekProvider extends OpenAILikeProvider {
     const message = parsed.choices?.[0]?.message
     for (const toolCall of message?.tool_calls ?? []) {
       if (!toolCall.function?.name) continue
+      const parsedInput = parseToolArguments(toolCall.function.arguments ?? "{}", toolCall.function.name, toolCall.id)
+      if (!parsedInput.ok) {
+        yield { type: "failure", error: parsedInput.error }
+        return
+      }
       yield {
         type: "tool_call",
         call: {
           id: toolCall.id ?? `call_${toolCall.function.name}`,
           name: toolCall.function.name,
-          input: JSON.parse(toolCall.function.arguments ?? "{}") as unknown,
+          input: parsedInput.input,
         },
       }
     }
@@ -94,5 +99,21 @@ function toolToChatCompletionTool(tool: Parameters<typeof toolToResponseTool>[0]
       parameters: responseTool.parameters,
       strict: responseTool.strict,
     },
+  }
+}
+
+function parseToolArguments(rawArguments: string, toolName: string, callID: string | undefined) {
+  try {
+    return { ok: true as const, input: JSON.parse(rawArguments) as unknown }
+  } catch (error) {
+    const message = `Invalid tool arguments from provider for ${toolName}: ${error instanceof Error ? error.message : String(error)}`
+    return {
+      ok: false as const,
+      error: {
+        code: "invalid_tool_arguments",
+        message,
+        output: JSON.stringify({ code: "invalid_tool_arguments", message, tool: toolName, callID, arguments: rawArguments }),
+      },
+    }
   }
 }

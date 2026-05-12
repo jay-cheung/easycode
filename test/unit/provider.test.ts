@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeOpenAIModel, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
+import { createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
 import { textMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
@@ -26,8 +26,8 @@ describe("provider", () => {
   })
 
   test("normalizes common OpenAI model display casing", () => {
-    expect(normalizeOpenAIModel("GPT-5.4-mini")).toBe("gpt-5.4-mini")
-    expect(normalizeOpenAIModel("O3")).toBe("o3")
+    expect(normalizeModelName("GPT-5.4-mini")).toBe("gpt-5.4-mini")
+    expect(normalizeModelName("O3")).toBe("o3")
     expect(new OpenAIProvider("GPT-5-mini").model).toBe("gpt-5-mini")
   })
 
@@ -132,6 +132,32 @@ describe("provider", () => {
       expect(raw.value).toEqual({ type: "response_raw", response: { choices: [{ message: { content: "hello" } }], usage: { prompt_tokens: 2, completion_tokens: 3 } } })
       expect(text.value).toEqual({ type: "text_delta", text: "hello" })
       expect(usage.value).toEqual({ type: "usage", inputTokens: 2, outputTokens: 3 })
+      await stream.return?.()
+    } finally {
+      globalThis.fetch = previousFetch
+      if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previousKey
+    }
+  })
+
+  test("turns invalid DeepSeek tool arguments into provider failure", async () => {
+    const previousKey = process.env.DEEPSEEK_API_KEY
+    const previousFetch = globalThis.fetch
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    globalThis.fetch = (async () =>
+      Response.json({
+        choices: [{ message: { tool_calls: [{ id: "call_1", function: { name: "list", arguments: "{\"dirPath\": .}" } }] } }],
+      })) as unknown as typeof fetch
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      await stream.next()
+      await stream.next()
+      await stream.next()
+      const failure = await stream.next()
+      expect(failure.value).toMatchObject({ type: "failure", error: { code: "invalid_tool_arguments" } })
+      if (!failure.value || failure.value.type !== "failure") throw new Error("missing failure")
+      expect(JSON.parse(failure.value.error.output).arguments).toBe("{\"dirPath\": .}")
       await stream.return?.()
     } finally {
       globalThis.fetch = previousFetch
