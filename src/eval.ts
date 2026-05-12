@@ -3,6 +3,7 @@ import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
 import { createRunner } from "./agent"
 import type { AgentMode } from "./message"
+import { hasProvider, listProviders, type ProviderName } from "./provider"
 
 export type EvalTask = {
   id: string
@@ -48,7 +49,7 @@ async function snapshotFiles(root: string) {
   return out
 }
 
-type EvalProvider = "fake" | "openai"
+type EvalProvider = ProviderName
 
 export async function runEval(input: { provider: EvalProvider; root?: string }) {
   const projectRoot = input.root ?? path.resolve(import.meta.dir, "..")
@@ -75,7 +76,7 @@ export async function runEval(input: { provider: EvalProvider; root?: string }) 
 
 if (import.meta.main) {
   const provider = process.argv.includes("--provider") ? process.argv[process.argv.indexOf("--provider") + 1] : "fake"
-  if (provider !== "fake" && provider !== "openai") throw new Error(`Unknown provider: ${provider}`)
+  if (!hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: ${listProviders().join(", ")}`)
   const results = await runEval({ provider })
   for (const result of results) console.log(`${result.passed ? "PASS" : "FAIL"} ${result.id}${result.reason ? ` - ${result.reason}` : ""}`)
   if (results.some((result) => !result.passed)) process.exit(1)

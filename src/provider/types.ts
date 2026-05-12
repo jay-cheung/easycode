@@ -3,6 +3,10 @@ import type { AgentMode, Message, ProviderInputMessage, ToolCall } from "../mess
 import type { ToolDef } from "../tool"
 
 export type ProviderEvent =
+  | { type: "request"; request: { url: string; method: string; body: unknown } }
+  | { type: "response"; response: { url: string; status: number; ok: boolean; headers: Record<string, string>; body?: string } }
+  | { type: "response_raw"; response: unknown }
+  | { type: "failure"; error: { message: string; code?: string; output: string } }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
   | { type: "usage"; inputTokens: number; outputTokens: number }
@@ -22,8 +26,13 @@ export interface Provider {
 }
 
 export class ProviderError extends Error {
-  constructor(message: string) {
+  readonly status?: number
+  readonly output?: string
+
+  constructor(message: string, options: { status?: number; output?: string } = {}) {
     super(message)
     this.name = "ProviderError"
+    this.status = options.status
+    this.output = options.output
   }
 }

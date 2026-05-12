@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { FakeProvider, OpenAIProvider, normalizeOpenAIModel, providerMessageToResponseInput, toolToResponseTool } from "../../src/provider"
+import { createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeOpenAIModel, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
 import { textMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
@@ -31,9 +31,167 @@ describe("provider", () => {
     expect(new OpenAIProvider("GPT-5-mini").model).toBe("gpt-5-mini")
   })
 
+  test("OpenAI and DeepSeek providers share OpenAI-like base", () => {
+    expect(new OpenAIProvider("gpt-5-mini")).toBeInstanceOf(OpenAILikeProvider)
+    expect(new DeepSeekProvider("deepseek-chat")).toBeInstanceOf(OpenAILikeProvider)
+    expect(new DeepSeekProvider("deepseek-chat").name).toBe("deepseek")
+  })
+
+  test("provider registry creates registered providers", () => {
+    expect(listProviders()).toContain("fake")
+    expect(listProviders()).toContain("openai")
+    expect(listProviders()).toContain("deepseek")
+    expect(hasProvider("fake")).toBe(true)
+    expect(createProvider("fake")).toBeInstanceOf(FakeProvider)
+    expect(() => registerProvider("fake", () => new FakeProvider())).toThrow("Provider already registered")
+    expect(() => createProvider("missing")).toThrow("Unknown provider")
+  })
+
   test("maps assistant history to Responses output content", () => {
     expect(providerMessageToResponseInput({ role: "assistant", content: "done" }).content[0].type).toBe("output_text")
     expect(providerMessageToResponseInput({ role: "user", content: "hi" }).content[0].type).toBe("input_text")
     expect(providerMessageToResponseInput({ role: "tool", content: "result" })).toMatchObject({ role: "user", content: [{ type: "input_text", text: "result" }] })
+  })
+
+  test("emits raw OpenAI request before fetch", async () => {
+    const previous = process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY = "test-key"
+    try {
+      const provider = new OpenAIProvider("gpt-5-mini")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toEqual({
+        type: "request",
+        request: {
+          url: "https://api.openai.com/v1/responses",
+          method: "POST",
+          body: {
+            model: "gpt-5-mini",
+            stream: true,
+            input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+            tools: [],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = previous
+    }
+  })
+
+  test("emits raw DeepSeek request before fetch", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat")
+      const readTool = createBuiltinRegistry().get("read")
+      if (!readTool) throw new Error("missing read tool")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [readTool] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          url: "https://api.deepseek.com/chat/completions",
+          method: "POST",
+          body: {
+            model: "deepseek-chat",
+            messages: [{ role: "user", content: "hi" }],
+            thinking: { type: "enabled" },
+            reasoning_effort: "high",
+            stream: false,
+          },
+        },
+      })
+      expect((first.value as { request: { body: { tools: unknown[] } } }).request.body.tools[0]).toMatchObject({ type: "function", function: { name: "read" } })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
+  test("parses DeepSeek chat completion response", async () => {
+    const previousKey = process.env.DEEPSEEK_API_KEY
+    const previousFetch = globalThis.fetch
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    globalThis.fetch = (async () =>
+      Response.json({
+        choices: [{ message: { content: "hello" } }],
+        usage: { prompt_tokens: 2, completion_tokens: 3 },
+      })) as unknown as typeof fetch
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      await stream.next()
+      const response = await stream.next()
+      const raw = await stream.next()
+      const text = await stream.next()
+      const usage = await stream.next()
+      expect(response.value).toMatchObject({ type: "response", response: { url: "https://api.deepseek.com/chat/completions", status: 200, ok: true } })
+      expect(raw.value).toEqual({ type: "response_raw", response: { choices: [{ message: { content: "hello" } }], usage: { prompt_tokens: 2, completion_tokens: 3 } } })
+      expect(text.value).toEqual({ type: "text_delta", text: "hello" })
+      expect(usage.value).toEqual({ type: "usage", inputTokens: 2, outputTokens: 3 })
+      await stream.return?.()
+    } finally {
+      globalThis.fetch = previousFetch
+      if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previousKey
+    }
+  })
+
+  test("emits raw OpenAI response before stream events", async () => {
+    const previousKey = process.env.OPENAI_API_KEY
+    const previousFetch = globalThis.fetch
+    process.env.OPENAI_API_KEY = "test-key"
+    globalThis.fetch = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data: {\"type\":\"response.output_text.delta\",\"item_id\":\"msg_1\",\"delta\":\"hello\"}\n\n"))
+            controller.close()
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream", "x-request-id": "req_1" } },
+      )) as unknown as typeof fetch
+    try {
+      const provider = new OpenAIProvider("gpt-5-mini")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      await stream.next()
+      const response = await stream.next()
+      const raw = await stream.next()
+      const text = await stream.next()
+      expect(response.value).toMatchObject({ type: "response", response: { url: "https://api.openai.com/v1/responses", status: 200, ok: true, headers: { "x-request-id": "req_1" } } })
+      expect(raw.value).toEqual({ type: "response_raw", response: { type: "response.output_text.delta", item_id: "msg_1", delta: "hello" } })
+      expect(text.value).toEqual({ type: "text_delta", text: "hello" })
+      await stream.return?.()
+    } finally {
+      globalThis.fetch = previousFetch
+      if (previousKey === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = previousKey
+    }
+  })
+
+  test("parses Responses text fallback events", () => {
+    expect(openAIStreamEventToProviderEvents({ type: "response.output_text.done", item_id: "msg_1", text: "hello" })).toEqual([{ type: "text_delta", text: "hello" }])
+    expect(openAIStreamEventToProviderEvents({ type: "response.content_part.done", item_id: "msg_2", part: { type: "output_text", text: "world" } })).toEqual([{ type: "text_delta", text: "world" }])
+    expect(openAIStreamEventToProviderEvents({ type: "response.output_item.done", item: { id: "msg_3", type: "message", content: [{ type: "output_text", text: "done" }] } })).toEqual([{ type: "text_delta", text: "done" }])
+  })
+
+  test("does not duplicate done text after deltas", () => {
+    const state = createOpenAIStreamParseState()
+    expect(openAIStreamEventToProviderEvents({ type: "response.output_text.delta", item_id: "msg_1", delta: "he" }, state)).toEqual([{ type: "text_delta", text: "he" }])
+    expect(openAIStreamEventToProviderEvents({ type: "response.output_text.done", item_id: "msg_1", text: "hello" }, state)).toEqual([])
+    expect(openAIStreamEventToProviderEvents({ type: "response.output_item.done", item: { id: "msg_1", type: "message", content: [{ type: "output_text", text: "hello" }] } }, state)).toEqual([])
+  })
+
+  test("parses Responses function-call arguments done events", () => {
+    expect(openAIStreamEventToProviderEvents({ type: "response.function_call_arguments.done", item_id: "call_1", name: "list", arguments: "{\"dirPath\":\".\"}" })).toEqual([{ type: "tool_call", call: { id: "call_1", name: "list", input: { dirPath: "." } } }])
+    expect(openAIStreamEventToProviderEvents({ type: "response.output_item.done", item: { id: "item_1", call_id: "call_2", type: "function_call", name: "read", arguments: "{\"filePath\":\"README.md\"}" } })).toEqual([{ type: "tool_call", call: { id: "call_2", name: "read", input: { filePath: "README.md" } } }])
+  })
+
+  test("parses streamed Responses errors as failures", () => {
+    expect(openAIStreamEventToProviderEvents({ type: "error", error: { type: "insufficient_quota", code: "insufficient_quota", message: "quota exceeded" } })).toEqual([{ type: "failure", error: { code: "insufficient_quota", message: "quota exceeded", output: "{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}" } }])
+    expect(openAIStreamEventToProviderEvents({ type: "response.failed", response: { error: { code: "insufficient_quota", message: "quota exceeded" } } })).toEqual([{ type: "failure", error: { code: "insufficient_quota", message: "quota exceeded", output: "{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}" } }])
   })
 })

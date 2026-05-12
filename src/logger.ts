@@ -16,6 +16,14 @@ export function emitLog(logger: Logger | undefined, event: Omit<LogEvent, "at">)
 
 export function createLogger(): Logger {
   return (event) => {
-    console.info(`[easycode] ${JSON.stringify(event)}`)
+    const write = event.type === "error" ? console.error : console.info
+    write(formatLogEvent(event))
   }
+}
+
+export function formatLogEvent(event: LogEvent) {
+  const line = `[easycode] ${JSON.stringify(event)}`
+  if (event.type === "provider" && (event.name === "provider.request" || event.name === "provider.response" || event.name === "provider.response.raw")) return `\x1b[1;33m${line}\x1b[0m`
+  if (event.type === "state") return `\x1b[1;36m${line}\x1b[0m`
+  return line
 }

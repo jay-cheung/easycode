@@ -1,7 +1,7 @@
 import { ContextManager, type ContextManagerLike } from "./context"
 import { createMessage, textMessage, toolCallMessage, toolResultMessage, type AgentMode, type Message, type ToolCall } from "./message"
 import { defaultPermissionRules, PermissionDeniedError, PermissionRejectedError, PermissionService } from "./permission"
-import { OpenAIProvider, FakeProvider, type Provider } from "./provider"
+import { createProvider, ProviderError, type Provider, type ProviderName } from "./provider"
 import { Sandbox } from "./sandbox"
 import { SkillService, type SkillServiceLike } from "./skill"
 import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
@@ -26,7 +26,7 @@ export type AgentRunResult = {
 
 export type AgentRunnerOptions = {
   root: string
-  provider?: Provider
+  provider: Provider
   registry?: ToolRegistryLike
   permission?: PermissionService
   context?: ContextManagerLike
@@ -35,6 +35,7 @@ export type AgentRunnerOptions = {
   maxSteps?: number
   logger?: Logger
   aspect?: RunAspect
+  onTextDelta?: (text: string) => void
 }
 
 export function createAgent(mode: AgentMode): Agent {
@@ -52,17 +53,19 @@ export class AgentRunner {
   readonly sandbox: Sandbox
   readonly maxSteps: number
   readonly aspect: RunAspect
+  readonly onTextDelta?: (text: string) => void
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
     this.aspect = options.aspect ?? createRunAspect(options.logger)
-    this.provider = this.aspect.instrumentProvider(options.provider ?? new FakeProvider())
+    this.provider = this.aspect.instrumentProvider(options.provider)
     this.registry = this.aspect.instrumentRegistry(options.registry ?? createBuiltinRegistry())
     this.permission = options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))
     this.context = this.aspect.instrumentContext(options.context ?? new ContextManager())
     this.skills = this.aspect.instrumentSkills(options.skills ?? new SkillService(options.root))
     this.sandbox = options.sandbox ?? new Sandbox(options.root)
     this.maxSteps = options.maxSteps ?? 12
+    this.onTextDelta = options.onTextDelta
   }
 
   async run(prompt: string, mode: AgentMode): Promise<AgentRunResult> {
@@ -78,10 +81,33 @@ export class AgentRunner {
       const providerMessages = this.context.compose({ agent, skills, tools })
       let text = ""
       let toolCall: ToolCall | undefined
+      let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
-      for await (const event of this.provider.stream({ mode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
-        if (event.type === "text_delta") text += event.text
-        if (event.type === "tool_call") toolCall = event.call
+      try {
+        for await (const event of this.provider.stream({ mode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
+          if (event.type === "text_delta") {
+            text += event.text
+            this.onTextDelta?.(event.text)
+          }
+          if (event.type === "failure") {
+            failureText = event.error.output || event.error.message
+            this.onTextDelta?.(failureText)
+          }
+          if (event.type === "tool_call") toolCall = event.call
+        }
+      } catch (error) {
+        if (error instanceof ProviderError) {
+          const failureText = providerFailureText(error)
+          this.context.add(textMessage("assistant", failureText))
+          state = this.aspect.runFailed("provider_error", usedTools)
+          return { status: "failed", text: failureText, messages: this.context.state.messages, usedTools, state }
+        }
+        throw error
+      }
+      if (failureText) {
+        this.context.add(textMessage("assistant", failureText))
+        state = this.aspect.runFailed("provider_error", usedTools)
+        return { status: "failed", text: failureText, messages: this.context.state.messages, usedTools, state }
       }
       if (!toolCall) {
         this.context.add(textMessage("assistant", text))
@@ -114,10 +140,10 @@ export class AgentRunner {
   }
 }
 
-export function createProvider(name: "fake" | "openai") {
-  return name === "openai" ? new OpenAIProvider() : new FakeProvider()
+function providerFailureText(error: ProviderError) {
+  return error.output?.trim() || error.message
 }
 
-export function createRunner(input: { root: string; provider?: "fake" | "openai"; mode?: AgentMode; logger?: Logger }) {
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? "fake"), permission: PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger })
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; onTextDelta?: (text: string) => void }) {
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? "fake"), permission: PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta })
 }

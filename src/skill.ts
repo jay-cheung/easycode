@@ -38,7 +38,7 @@ async function skillFiles(dir: string): Promise<string[]> {
     for (const entry of await readdir(current, { withFileTypes: true })) {
       const full = path.join(current, entry.name)
       if (entry.isDirectory()) await walk(full)
-      if (entry.isFile() && entry.name === "SKILL.md") out.push(full)
+      if (entry.isFile() && entry.name.toLowerCase() === "skill.md") out.push(full)
     }
   }
   await walk(dir)
@@ -50,7 +50,12 @@ export class SkillService implements SkillServiceLike {
   private cache?: SkillInfo[]
 
   constructor(projectRoot: string, roots?: string[]) {
-    this.roots = roots ?? [path.join(projectRoot, ".easycode", "skills"), path.join(os.homedir(), ".easycode", "skills")]
+    this.roots = roots ?? [
+      path.join(projectRoot, ".agent", "skills"),
+      path.join(projectRoot, ".easycode", "skills"),
+      path.join(os.homedir(), ".agent", "skills"),
+      path.join(os.homedir(), ".easycode", "skills"),
+    ]
   }
 
   async available() {

@@ -15,4 +15,15 @@ describe("skill", () => {
     expect((await service.load("demo"))?.content).toBe("Full prompt")
     await rm(root, { recursive: true, force: true })
   })
+
+  test("loads project .agent skills with lowercase skill file", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-skill-"))
+    const dir = path.join(root, ".agent", "skills", "demo")
+    await mkdir(dir, { recursive: true })
+    await Bun.write(path.join(dir, "skill.md"), "---\nname: demo\ndescription: Agent skill\n---\nAgent prompt")
+    const service = new SkillService(root)
+    expect(await service.available()).toEqual([{ name: "demo", description: "Agent skill", location: path.join(dir, "skill.md"), content: undefined }])
+    expect((await service.load("demo"))?.content).toBe("Agent prompt")
+    await rm(root, { recursive: true, force: true })
+  })
 })

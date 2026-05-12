@@ -7,6 +7,7 @@ import { ContextManager } from "../../src/context"
 import { toolResults } from "../../src/message"
 import { defaultPermissionRules, PermissionService } from "../../src/permission"
 import { FakeProvider } from "../../src/provider"
+import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
 import type { LogEvent } from "../../src/logger"
 
 async function fixture() {
@@ -40,6 +41,74 @@ describe("agent integration", () => {
     expect(events.some((event) => event.type === "provider" && event.name === "provider.tool_call" && event.detail?.tool === "read")).toBe(true)
     expect(events.some((event) => event.type === "tool" && event.name === "permission.evaluate" && event.detail?.tool === "edit")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.output" && typeof event.detail?.output === "string" && event.detail.output.length > 0)).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("logger records provider raw request", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "request", request: { url: "https://example.test", method: "POST", body: { input: "raw" } } }
+        yield { type: "response", response: { url: "https://example.test", status: 200, ok: true, headers: { "content-type": "text/event-stream" } } }
+        yield { type: "response_raw", response: { type: "response.output_text.delta", delta: "done" } }
+        yield { type: "text_delta", text: "done" }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    expect(result.text).toBe("done")
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.request" && event.detail?.body && JSON.stringify(event.detail.body) === "{\"input\":\"raw\"}")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.status === 200)).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.response.raw" && event.detail?.response && JSON.stringify(event.detail.response) === "{\"type\":\"response.output_text.delta\",\"delta\":\"done\"}")).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("returns provider error output to the user", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        throw new ProviderError("quota exceeded", { status: 429, output: "{\"error\":{\"message\":\"quota exceeded\"}}" })
+      },
+    }
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    expect(result.status).toBe("failed")
+    expect(result.text).toBe("{\"error\":{\"message\":\"quota exceeded\"}}")
+    expect(result.messages.at(-1)?.role).toBe("assistant")
+    expect(events.some((event) => event.type === "error" && event.name === "provider.error" && event.detail?.status === 429 && event.detail.output === "{\"error\":{\"message\":\"quota exceeded\"}}")).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("logs streamed provider failures as errors and output", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "failure", error: { code: "insufficient_quota", message: "quota exceeded", output: "{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}" } }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    expect(result.status).toBe("failed")
+    expect(result.text).toBe("{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}")
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.failure" && event.detail?.code === "insufficient_quota")).toBe(true)
+    expect(events.some((event) => event.type === "error" && event.name === "provider.error" && event.detail?.code === "insufficient_quota")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.output" && event.detail?.output === "{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}")).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("streams assistant text deltas", async () => {
+    const root = await fixture()
+    const chunks: string[] = []
+    const result = await createRunner({ root, provider: "fake", mode: "plan", onTextDelta: (text) => chunks.push(text) }).run("Plan how to fix the failing test", "plan")
+    expect(result.status).toBe("completed")
+    expect(chunks.join("")).toBe(result.text)
+    expect(chunks.length).toBeGreaterThan(0)
     await rm(root, { recursive: true, force: true })
   })
 

@@ -1,6 +1,6 @@
 import type { AgentRunState } from "./agent"
 import type { Message, ToolCall } from "./message"
-import type { Provider, ProviderEvent } from "./provider"
+import { ProviderError, type Provider, type ProviderEvent } from "./provider"
 import type { SkillServiceLike } from "./skill"
 import type { ContextManagerLike } from "./context"
 import type { ToolRegistryLike, ToolResult } from "./tool"
@@ -80,10 +80,27 @@ export class LoggingRunAspect implements RunAspect {
       name: provider.name,
       async *stream(input) {
         let totalLength = 0
-        for await (const event of provider.stream(input)) {
-          logProviderEvent(logger, event, totalLength)
-          if (event.type === "text_delta") totalLength += event.text.length
-          yield event
+        let output = ""
+        const toolCalls: Array<{ tool: string; callID: string }> = []
+        try {
+          for await (const event of provider.stream(input)) {
+            logProviderEvent(logger, event, totalLength)
+            if (event.type === "text_delta") {
+              output += event.text
+              totalLength += event.text.length
+            }
+            if (event.type === "failure") {
+              output += event.error.output
+              totalLength += event.error.output.length
+            }
+            if (event.type === "tool_call") toolCalls.push({ tool: event.call.name, callID: event.call.id })
+            yield event
+          }
+          emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, textLength: output.length, output, toolCalls } })
+        } catch (error) {
+          if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, textLength: error.output.length, output: error.output, toolCalls } })
+          emitLog(logger, { type: "error", name: "provider.error", detail: providerErrorDetail(provider.name, error) })
+          throw error
         }
       },
     }
@@ -141,10 +158,34 @@ export class LoggingRunAspect implements RunAspect {
 }
 
 function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefore: number) {
+  if (event.type === "request") emitLog(logger, { type: "provider", name: "provider.request", detail: event.request })
+  if (event.type === "response") emitLog(logger, { type: "provider", name: "provider.response", detail: event.response })
+  if (event.type === "response_raw") emitLog(logger, { type: "provider", name: "provider.response.raw", detail: { response: event.response } })
+  if (event.type === "failure") {
+    emitLog(logger, { type: "provider", name: "provider.failure", detail: event.error })
+    emitLog(logger, { type: "error", name: "provider.error", detail: event.error })
+  }
   if (event.type === "text_delta") emitLog(logger, { type: "provider", name: "provider.text_delta", detail: { length: event.text.length, totalLength: totalLengthBefore + event.text.length } })
   if (event.type === "tool_call") emitLog(logger, { type: "provider", name: "provider.tool_call", detail: { tool: event.call.name, callID: event.call.id } })
   if (event.type === "usage") emitLog(logger, { type: "provider", name: "provider.usage", detail: { inputTokens: event.inputTokens, outputTokens: event.outputTokens } })
   if (event.type === "done") emitLog(logger, { type: "provider", name: "provider.done" })
+}
+
+function providerErrorDetail(provider: string, error: unknown) {
+  if (error instanceof ProviderError) {
+    return {
+      provider,
+      error: error.name,
+      status: error.status,
+      message: error.message,
+      output: error.output,
+    }
+  }
+  return {
+    provider,
+    error: error instanceof Error ? error.name : "UnknownError",
+    message: error instanceof Error ? error.message : String(error),
+  }
 }
 
 function snapshotContext(context: ContextManagerLike): ContextSnapshot {
