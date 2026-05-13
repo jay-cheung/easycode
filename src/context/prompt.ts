@@ -17,6 +17,7 @@ const DETAILED_ANALYSIS_INSTRUCTION_BASE = `Before providing your final summary,
 // from claude code
 export const BASE_COMPACT_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context.
+Please make sure the length of summary is at least 500 words to ensure depth and completeness but don't over 2000 words.
 
 ${DETAILED_ANALYSIS_INSTRUCTION_BASE}
 
@@ -84,6 +85,8 @@ Here's an example of how your output should be structured:
 
 </summary>
 </example>
+
+Please make sure the length of summary is at least 500 words to ensure depth and completeness but don't over 2000 words.
 
 Please provide your summary based on the conversation so far, following this structure and ensuring precision and thoroughness in your response. 
 

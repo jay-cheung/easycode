@@ -38,7 +38,7 @@ export class ContextManager implements ContextManagerLike {
   constructor(options: ContextOptions = {}) {
     this.compactAt = options.compactAt ?? 0.75
     this.preserveRecentUserTurns = options.preserveRecentUserTurns ?? 2
-    this.state = { messages: [], tokenEstimate: 0, maxTokens: options.maxTokens ?? 10_000 }
+    this.state = { messages: [], tokenEstimate: 0, maxTokens: options.maxTokens ?? 20_000 }
   }
 
   add(message: Message) {
