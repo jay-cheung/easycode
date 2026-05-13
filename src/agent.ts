@@ -92,7 +92,7 @@ export class AgentRunner {
         for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
           if (event.type === "reasoning_delta") {
             reasoningTranscript = appendOutput(reasoningTranscript, event.text)
-            this.onTextDelta?.(formatReasoningText(event.text))
+            this.onTextDelta?.(event.text)
           }
           if (event.type === "text_delta") {
             text += event.text

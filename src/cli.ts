@@ -3,7 +3,7 @@ import path from "node:path"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner } from "./agent"
-import { createLogger, emitLog, type Logger } from "./logger"
+import { createLogger, emitLog, markStdoutText, type Logger } from "./logger"
 import type { AgentMode } from "./message"
 import { defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { hasProvider, listProviders, type ProviderName } from "./provider"
@@ -94,7 +94,7 @@ async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | unde
   const rl = createInterface({ input, output })
   try {
     const permission = permissionService(args.mode, rl)
-    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, onTextDelta: textDeltaWriter(logger) }).run(args.prompt, args.mode)
+    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, onTextDelta: textDeltaWriter() }).run(args.prompt, args.mode)
     writeResult(result.text, Boolean(logger))
     return result.status
   } finally {
@@ -109,7 +109,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
   let runner: ReturnType<typeof createRunner> | undefined
   const rl = createInterface({ input, output })
   const getRunner = () => {
-    runner ??= createRunner({ root: args.root, provider: args.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, rl), onTextDelta: textDeltaWriter(logger) })
+    runner ??= createRunner({ root: args.root, provider: args.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, rl), onTextDelta: textDeltaWriter() })
     return runner
   }
   try {
@@ -180,12 +180,16 @@ function permissionPrompt(request: PermissionRequest) {
   return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
 }
 
-function textDeltaWriter(logger: Logger | undefined) {
-  if (logger) return undefined
-  return (text: string) => process.stdout.write(text)
+function textDeltaWriter() {
+  return (text: string) => {
+    process.stdout.write(text)
+    markStdoutText(text)
+  }
 }
 
 function writeResult(text: string, loggerEnabled: boolean) {
-  if (loggerEnabled && text) process.stdout.write(text)
-  if (text && !text.endsWith("\n")) process.stdout.write("\n")
+  if (text && !text.endsWith("\n")) {
+    process.stdout.write("\n")
+    markStdoutText("\n")
+  }
 }

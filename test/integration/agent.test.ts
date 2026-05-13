@@ -154,7 +154,7 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider, onTextDelta: (text) => chunks.push(text) }).run("Fix", "build")
     expect(result.status).toBe("completed")
     expect(result.text).toBe("<reasoning>\nNeed to inspect first.\n</reasoning>\nDone.")
-    expect(chunks.join("")).toBe(result.text)
+    expect(chunks.join("")).toBe("Need to inspect first.Done.")
     await rm(root, { recursive: true, force: true })
   })
 

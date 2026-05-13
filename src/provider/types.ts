@@ -10,7 +10,7 @@ export type ProviderEvent =
   | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
-  | { type: "usage"; inputTokens: number; outputTokens: number }
+  | { type: "usage"; inputTokens: number; outputTokens: number; cacheHitTokens?: number; cacheMissTokens?: number; totalTokens?: number; reasoningTokens?: number }
   | { type: "done" }
 
 export type ProviderInput = {

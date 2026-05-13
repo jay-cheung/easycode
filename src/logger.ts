@@ -9,6 +9,8 @@ export type LogEvent = {
 
 export type Logger = (event: LogEvent) => void
 
+let stdoutLineOpen = false
+
 export function emitLog(logger: Logger | undefined, event: Omit<LogEvent, "at">) {
   if (!logger) return
   logger({ at: Date.now(), ...event })
@@ -16,9 +18,17 @@ export function emitLog(logger: Logger | undefined, event: Omit<LogEvent, "at">)
 
 export function createLogger(): Logger {
   return (event) => {
+    if (stdoutLineOpen) {
+      process.stdout.write("\n")
+      stdoutLineOpen = false
+    }
     const write = event.type === "error" ? console.error : console.info
     write(formatLogEvent(event))
   }
+}
+
+export function markStdoutText(text: string) {
+  stdoutLineOpen = text.length > 0 && !text.endsWith("\n")
 }
 
 export function formatLogEvent(event: LogEvent) {

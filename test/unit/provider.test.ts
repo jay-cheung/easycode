@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
+import { chatCompletionSSEToProviderEvents, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
 import { messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
@@ -99,8 +99,9 @@ describe("provider", () => {
             model: "deepseek-chat",
             messages: [{ role: "user", content: "hi" }],
             thinking: { type: "enabled" },
-            reasoning_effort: "high",
-            stream: false,
+            reasoning_effort: "max",
+            stream: true,
+            stream_options: { include_usage: true },
           },
         },
       })
@@ -142,15 +143,16 @@ describe("provider", () => {
     }
   })
 
-  test("parses DeepSeek chat completion response", async () => {
+  test("parses DeepSeek streamed chat completion response", async () => {
     const previousKey = process.env.DEEPSEEK_API_KEY
     const previousFetch = globalThis.fetch
     process.env.DEEPSEEK_API_KEY = "test-key"
     globalThis.fetch = (async () =>
-      Response.json({
-        choices: [{ message: { content: "hello" } }],
-        usage: { prompt_tokens: 2, completion_tokens: 3 },
-      })) as unknown as typeof fetch
+      sseResponse([
+        { choices: [{ index: 0, delta: { content: "hel" } }] },
+        { choices: [{ index: 0, delta: { content: "lo" } }] },
+        { choices: [{ index: 0, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5, prompt_cache_hit_tokens: 1, prompt_cache_miss_tokens: 1, completion_tokens_details: { reasoning_tokens: 0 } } },
+      ])) as unknown as typeof fetch
     try {
       const provider = new DeepSeekProvider("deepseek-chat")
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
@@ -158,11 +160,18 @@ describe("provider", () => {
       const response = await stream.next()
       const raw = await stream.next()
       const text = await stream.next()
+      const raw2 = await stream.next()
+      const text2 = await stream.next()
+      const raw3 = await stream.next()
       const usage = await stream.next()
-      expect(response.value).toMatchObject({ type: "response", response: { url: "https://api.deepseek.com/chat/completions", status: 200, ok: true, body: "{\"choices\":[{\"message\":{\"content\":\"hello\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":3}}" } })
-      expect(raw.value).toEqual({ type: "response_raw", response: { choices: [{ message: { content: "hello" } }], usage: { prompt_tokens: 2, completion_tokens: 3 } } })
-      expect(text.value).toEqual({ type: "text_delta", text: "hello" })
-      expect(usage.value).toEqual({ type: "usage", inputTokens: 2, outputTokens: 3 })
+      expect(response.value).toMatchObject({ type: "response", response: { url: "https://api.deepseek.com/chat/completions", status: 200, ok: true } })
+      expect((response.value as { response: { body?: string } }).response.body).toBeUndefined()
+      expect(raw.value).toEqual({ type: "response_raw", response: { choices: [{ index: 0, delta: { content: "hel" } }] } })
+      expect(text.value).toEqual({ type: "text_delta", text: "hel" })
+      expect(raw2.value).toEqual({ type: "response_raw", response: { choices: [{ index: 0, delta: { content: "lo" } }] } })
+      expect(text2.value).toEqual({ type: "text_delta", text: "lo" })
+      expect(raw3.value).toEqual({ type: "response_raw", response: { choices: [{ index: 0, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5, prompt_cache_hit_tokens: 1, prompt_cache_miss_tokens: 1, completion_tokens_details: { reasoning_tokens: 0 } } } })
+      expect(usage.value).toEqual({ type: "usage", inputTokens: 2, outputTokens: 3, cacheHitTokens: 1, cacheMissTokens: 1, totalTokens: 5, reasoningTokens: 0 })
       await stream.return?.()
     } finally {
       globalThis.fetch = previousFetch
@@ -176,9 +185,12 @@ describe("provider", () => {
     const previousFetch = globalThis.fetch
     process.env.DEEPSEEK_API_KEY = "test-key"
     globalThis.fetch = (async () =>
-      Response.json({
-        choices: [{ message: { reasoning_content: "Need list.", tool_calls: [{ id: "call_1", function: { name: "list", arguments: "{\"dirPath\": .}" } }] } }],
-      })) as unknown as typeof fetch
+      sseResponse([
+        { choices: [{ index: 0, delta: { reasoning_content: "Need " } }] },
+        { choices: [{ index: 0, delta: { reasoning_content: "list.", tool_calls: [{ index: 0, id: "call_1", type: "function", function: { name: "list", arguments: "{\"dir" } }] } }] },
+        { choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "Path\": .}" } }] } }] },
+        { choices: [{ index: 0, finish_reason: "tool_calls" }] },
+      ])) as unknown as typeof fetch
     try {
       const provider = new DeepSeekProvider("deepseek-chat")
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
@@ -186,8 +198,13 @@ describe("provider", () => {
       await stream.next()
       await stream.next()
       const reasoning = await stream.next()
+      await stream.next()
+      const reasoning2 = await stream.next()
+      await stream.next()
+      await stream.next()
       const toolCall = await stream.next()
-      expect(reasoning.value).toEqual({ type: "reasoning_delta", text: "Need list." })
+      expect(reasoning.value).toEqual({ type: "reasoning_delta", text: "Need " })
+      expect(reasoning2.value).toEqual({ type: "reasoning_delta", text: "list." })
       expect(toolCall.value).toMatchObject({ type: "tool_call", call: { id: "call_1", name: "list", rawArguments: "{\"dirPath\": .}", reasoningContent: "Need list.", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } } })
       await stream.return?.()
     } finally {
@@ -255,4 +272,30 @@ describe("provider", () => {
     expect(openAIStreamEventToProviderEvents({ type: "error", error: { type: "insufficient_quota", code: "insufficient_quota", message: "quota exceeded" } })).toEqual([{ type: "failure", error: { code: "insufficient_quota", message: "quota exceeded", output: "{\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}" } }])
     expect(openAIStreamEventToProviderEvents({ type: "response.failed", response: { error: { code: "insufficient_quota", message: "quota exceeded" } } })).toEqual([{ type: "failure", error: { code: "insufficient_quota", message: "quota exceeded", output: "{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}" } }])
   })
+
+  test("parses DeepSeek tool call deltas and usage chunks", () => {
+    const state = createDeepSeekStreamParseState()
+    expect(chatCompletionSSEToProviderEvents({ choices: [{ index: 0, delta: { reasoning_content: "Inspect." } }] }, state)).toEqual([{ type: "reasoning_delta", text: "Inspect." }])
+    expect(chatCompletionSSEToProviderEvents({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read", arguments: "{\"file" } }] } }] }, state)).toEqual([])
+    expect(chatCompletionSSEToProviderEvents({ choices: [{ index: 0, delta: { tool_calls: [{ index: 0, function: { arguments: "Path\":\"README.md\"}" } }] } }] }, state)).toEqual([])
+    expect(chatCompletionSSEToProviderEvents({ choices: [{ index: 0, finish_reason: "tool_calls" }] }, state)).toEqual([
+      { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "README.md" }, rawArguments: "{\"filePath\":\"README.md\"}", reasoningContent: "Inspect." } },
+    ])
+    expect(chatCompletionSSEToProviderEvents({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_cache_hit_tokens: 7, prompt_cache_miss_tokens: 3, completion_tokens_details: { reasoning_tokens: 2 } } })).toEqual([
+      { type: "usage", inputTokens: 10, outputTokens: 4, cacheHitTokens: 7, cacheMissTokens: 3, totalTokens: 14, reasoningTokens: 2 },
+    ])
+  })
 })
+
+function sseResponse(events: unknown[]) {
+  return new Response(
+    new ReadableStream({
+      start(controller) {
+        for (const event of events) controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`))
+        controller.enqueue(new TextEncoder().encode("data: [DONE]\n\n"))
+        controller.close()
+      },
+    }),
+    { status: 200, headers: { "content-type": "text/event-stream" } },
+  )
+}

@@ -192,10 +192,21 @@ function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefor
     emitLog(logger, { type: "provider", name: "provider.failure", detail: event.error })
     emitLog(logger, { type: "error", name: "provider.error", detail: event.error })
   }
-  if (event.type === "reasoning_delta") emitLog(logger, { type: "provider", name: "provider.reasoning_delta", detail: { length: event.text.length } })
-  if (event.type === "text_delta") emitLog(logger, { type: "provider", name: "provider.text_delta", detail: { length: event.text.length, totalLength: totalLengthBefore + event.text.length } })
   if (event.type === "tool_call") emitLog(logger, { type: "provider", name: "provider.tool_call", detail: { tool: event.call.name, callID: event.call.id } })
-  if (event.type === "usage") emitLog(logger, { type: "provider", name: "provider.usage", detail: { inputTokens: event.inputTokens, outputTokens: event.outputTokens } })
+  if (event.type === "usage") {
+    emitLog(logger, {
+      type: "provider",
+      name: "provider.usage",
+      detail: {
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheHitTokens: event.cacheHitTokens,
+        cacheMissTokens: event.cacheMissTokens,
+        totalTokens: event.totalTokens,
+        reasoningTokens: event.reasoningTokens,
+      },
+    })
+  }
   if (event.type === "done") emitLog(logger, { type: "provider", name: "provider.done" })
 }
 
