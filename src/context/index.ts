@@ -8,20 +8,22 @@ export type ContextState = {
   summary?: string
   tokenEstimate: number
   maxTokens: number
+  latestActualInputTokens?: number
 }
 
 export type ContextOptions = {
   maxTokens?: number
   compactAt?: number
-  preserveRecentMessages?: number
+  preserveRecentUserTurns?: number
 }
 
 export interface ContextManagerLike {
   readonly state: ContextState
   readonly compactAt: number
-  readonly preserveRecentMessages: number
+  readonly preserveRecentUserTurns: number
   add(message: Message): void
   estimate(messages: Message[]): number
+  recordUsage(inputTokens: number): void
   needsCompaction(): boolean
   compactionInput(): ProviderInputMessage[]
   compact(summary: string): boolean
@@ -31,21 +33,25 @@ export interface ContextManagerLike {
 export class ContextManager implements ContextManagerLike {
   readonly state: ContextState
   readonly compactAt: number
-  readonly preserveRecentMessages: number
+  readonly preserveRecentUserTurns: number
 
   constructor(options: ContextOptions = {}) {
     this.compactAt = options.compactAt ?? 0.75
-    this.preserveRecentMessages = options.preserveRecentMessages ?? 4
+    this.preserveRecentUserTurns = options.preserveRecentUserTurns ?? 2
     this.state = { messages: [], tokenEstimate: 0, maxTokens: options.maxTokens ?? 10_000 }
   }
 
   add(message: Message) {
     this.state.messages.push(message)
-    this.state.tokenEstimate = this.estimate(this.state.messages)
+    this.recalculateTokenEstimate()
   }
 
   estimate(messages: Message[]) {
-    return Math.ceil(messagesToProviderInput(messages).map((message) => message.content).join("\n").length / 4)
+    return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
+  }
+
+  recordUsage(inputTokens: number) {
+    this.state.latestActualInputTokens = inputTokens
   }
 
   needsCompaction() {
@@ -54,7 +60,7 @@ export class ContextManager implements ContextManagerLike {
 
   compactionInput() {
     if (!this.needsCompaction()) return []
-    const compacted = this.state.messages.slice(0, Math.max(0, this.state.messages.length - this.preserveRecentMessages))
+    const { compacted } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
     const messages: Message[] = []
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(`Previous summary:\n${this.state.summary}`)]))
     messages.push(...redactProtectedMessages(compacted))
@@ -63,10 +69,11 @@ export class ContextManager implements ContextManagerLike {
 
   compact(summary: string) {
     if (!this.needsCompaction()) return false
-    const preserved = validProviderMessageSuffix(this.state.messages.slice(-this.preserveRecentMessages))
+    const { recent } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
+    const preserved = validProviderMessageSuffix(recent)
     this.state.summary = summary
     this.state.messages = preserved
-    this.state.tokenEstimate = this.estimate(this.state.messages) + Math.ceil(this.state.summary.length * 2)
+    this.recalculateTokenEstimate()
     return true
   }
 
@@ -82,4 +89,45 @@ export class ContextManager implements ContextManagerLike {
     messages.push(...this.state.messages)
     return messagesToProviderInput(messages)
   }
+
+  private recalculateTokenEstimate() {
+    this.state.tokenEstimate = this.estimate(this.state.messages) + estimateSummaryTokens(this.state.summary)
+  }
+}
+
+export function estimateTextTokens(text: string) {
+  let tokens = 0
+  for (const char of text) tokens += isCJK(char) ? 0.6 : 0.3
+  return Math.ceil(tokens)
+}
+
+export function estimateSummaryTokens(summary: string | undefined) {
+  if (!summary) return 0
+  return estimateTextTokens(messageToSummaryText(summary))
+}
+
+export function recentUserTurnMessages(messages: Message[], preserveRecentUserTurns = 2) {
+  return validProviderMessageSuffix(splitRecentUserTurns(messages, preserveRecentUserTurns).recent)
+}
+
+function splitRecentUserTurns(messages: Message[], preserveRecentUserTurns: number) {
+  if (preserveRecentUserTurns <= 0) return { compacted: messages, recent: [] }
+  let userTurns = 0
+  let start = messages.length
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role !== "user") continue
+    userTurns += 1
+    start = index
+    if (userTurns >= preserveRecentUserTurns) break
+  }
+  if (userTurns === 0) return { compacted: [], recent: validProviderMessageSuffix(messages) }
+  return { compacted: messages.slice(0, start), recent: messages.slice(start) }
+}
+
+function messageToSummaryText(summary: string) {
+  return `<summary>\n${summary}\n</summary>`
+}
+
+function isCJK(char: string) {
+  return /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/u.test(char)
 }

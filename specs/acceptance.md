@@ -8,7 +8,7 @@
 - `easycode build --provider fake` starts the default interactive session.
 - `easycode build --session demo --provider fake` starts the named interactive session.
 - Skills expose title/description before full content is requested.
-- Context compaction preserves summary plus recent messages.
+- Context compaction preserves summary plus the most recent two user turns.
 
 ## Safety
 - Writes outside the project root fail.

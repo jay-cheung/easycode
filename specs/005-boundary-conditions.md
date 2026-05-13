@@ -18,9 +18,9 @@
 - Timed-out processes return `timedOut=true`.
 
 ## Context
-- Token count is estimated with `ceil(chars / 4)`.
+- Token count is estimated with a local mixed-language heuristic: CJK characters count as 0.6 tokens and other characters count as 0.3 tokens.
 - Compaction triggers above `maxTokens * 0.75`.
-- Compaction asks the provider to generate a summary with the compact prompt, then preserves that summary plus the latest 4 messages.
+- Compaction asks the provider to generate a summary with the compact prompt, then preserves that summary plus the latest 2 complete user turns.
 
 ## Provider
 - Network/auth/rate-limit/overflow errors become `ProviderError` or tool feedback.

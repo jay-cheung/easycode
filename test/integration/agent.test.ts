@@ -4,11 +4,12 @@ import path from "node:path"
 import os from "node:os"
 import { AgentRunner, createRunner } from "../../src/agent"
 import { ContextManager } from "../../src/context"
-import { toolResults } from "../../src/message"
+import { textMessage, toolResults } from "../../src/message"
 import { defaultPermissionRules, PermissionService } from "../../src/permission"
 import { FakeProvider } from "../../src/provider"
 import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
 import type { LogEvent } from "../../src/logger"
+import { SessionStore } from "../../src/session"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -317,6 +318,43 @@ describe("agent integration", () => {
     expect(summaryPrompt).toContain("Your task is to create a detailed summary")
     expect(summaryPrompt).toContain("Conversation to summarize:")
     expect(context.state.summary).toBe("Model generated summary.")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("compacted context saves summary and pruned history to session json", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 80, compactAt: 0.5, preserveRecentUserTurns: 2 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"历史内容 ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          yield { type: "text_delta", text: "<summary>\nModel generated summary.\n</summary>" }
+          yield { type: "usage", inputTokens: 123, outputTokens: 12 }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+        yield { type: "usage", inputTokens: 45, outputTokens: 6 }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, context }).run("current request", "build")
+    expect(result.status).toBe("completed")
+    expect(context.state.summary).toBe("Model generated summary.")
+    expect(context.state.latestActualInputTokens).toBe(45)
+
+    const store = new SessionStore(root)
+    await store.save("demo", context)
+    const saved = await store.load("demo")
+    const savedJSON = JSON.stringify(saved)
+    expect(saved?.summary).toBe("Model generated summary.")
+    expect(savedJSON).not.toContain("old turn 0")
+    expect(savedJSON).not.toContain("old turn 1")
+    expect(savedJSON).not.toContain("old turn 2")
+    expect(savedJSON).toContain("old turn 3")
+    expect(savedJSON).toContain("current request")
     await rm(root, { recursive: true, force: true })
   })
 

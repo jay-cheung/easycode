@@ -103,6 +103,7 @@ export class AgentRunner {
             this.onTextDelta?.(failureText)
           }
           if (event.type === "tool_call") toolCall = event.call
+          if (event.type === "usage") this.context.recordUsage(event.inputTokens)
         }
       } catch (error) {
         if (error instanceof ProviderError) {
@@ -165,6 +166,7 @@ export class AgentRunner {
     let summary = ""
     for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [] })) {
       if (event.type === "text_delta") summary += event.text
+      if (event.type === "usage") this.context.recordUsage(event.inputTokens)
       if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
     }
     this.context.compact(extractSummary(summary))

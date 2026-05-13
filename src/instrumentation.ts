@@ -2,7 +2,7 @@ import type { AgentRunState } from "./agent"
 import type { Message, ToolCall } from "./message"
 import { ProviderError, type Provider, type ProviderEvent } from "./provider"
 import type { SkillServiceLike } from "./skill"
-import type { ContextManagerLike } from "./context"
+import { estimateTextTokens, type ContextManagerLike } from "./context"
 import type { ToolRegistryLike, ToolResult } from "./tool"
 import { emitLog, type Logger } from "./logger"
 
@@ -10,6 +10,7 @@ type ContextSnapshot = {
   messages: number
   tokenEstimate: number
   hasSummary?: boolean
+  latestActualInputTokens?: number
 }
 
 export interface RunAspect {
@@ -173,10 +174,8 @@ export class LoggingRunAspect implements RunAspect {
 }
 
 function providerInputTokenEstimate(providerMessages: Array<{ content: string }>, tools: unknown[]) {
-  const messageChars = providerMessages.reduce((sum, message) => sum + message.content.length, 0)
-  const toolChars = tools.length > 0 ? JSON.stringify(tools).length : 0
-  const messageTokens = Math.ceil(messageChars / 4)
-  const toolTokens = Math.ceil(toolChars / 4)
+  const messageTokens = estimateTextTokens(providerMessages.map((message) => message.content).join(""))
+  const toolTokens = estimateTextTokens(tools.length > 0 ? JSON.stringify(tools) : "")
   return {
     tokenEstimate: messageTokens + toolTokens,
     messageTokens,
@@ -231,6 +230,7 @@ function snapshotContext(context: ContextManagerLike): ContextSnapshot {
     messages: context.state.messages.length,
     tokenEstimate: context.state.tokenEstimate,
     hasSummary: Boolean(context.state.summary),
+    latestActualInputTokens: context.state.latestActualInputTokens,
   }
 }
 
@@ -248,8 +248,8 @@ class LoggingContextDecorator implements ContextManagerLike {
     return this.inner.compactAt
   }
 
-  get preserveRecentMessages() {
-    return this.inner.preserveRecentMessages
+  get preserveRecentUserTurns() {
+    return this.inner.preserveRecentUserTurns
   }
 
   add(message: Message) {
@@ -259,6 +259,11 @@ class LoggingContextDecorator implements ContextManagerLike {
 
   estimate(messages: Message[]) {
     return this.inner.estimate(messages)
+  }
+
+  recordUsage(inputTokens: number) {
+    this.inner.recordUsage(inputTokens)
+    emitLog(this.logger, { type: "context", name: "context.actual_input_tokens", detail: { inputTokens, estimatedTokens: this.inner.state.tokenEstimate } })
   }
 
   needsCompaction() {
