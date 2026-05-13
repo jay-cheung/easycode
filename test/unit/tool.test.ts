@@ -1,9 +1,27 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
 import { createBuiltinRegistry, ToolRegistry } from "../../src/tool"
 import { Sandbox } from "../../src/sandbox"
 import { PermissionService, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
+import { mkdtemp, rm } from "node:fs/promises"
+import path from "node:path"
+import os from "node:os"
+
+const tempRoots: string[] = []
+
+async function tmpdir() {
+  const root = await mkdtemp(path.join(os.tmpdir(), "easycode-tool-"))
+  tempRoots.push(root)
+  return root
+}
+
+afterEach(async () => {
+  while (tempRoots.length > 0) {
+    const root = tempRoots.pop()
+    if (root) await rm(root, { recursive: true, force: true })
+  }
+})
 
 describe("tool", () => {
   test("detects registration conflicts", () => {
@@ -75,9 +93,38 @@ describe("tool", () => {
     expect(result.metadata.error).toBe("Error")
     expect(result.output).toContain("missing-file.txt")
   })
+
+  test("describes edit replaceAll behavior in schema", () => {
+    const edit = createBuiltinRegistry().get("edit")
+    expect(edit?.description).toContain("only the first match")
+    expect(edit?.jsonSchema.properties.replaceAll.description).toContain("replace every match")
+  })
+
+  test("edit replaces first match by default and all matches when requested", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "sample.txt"), "one one one")
+    const ctx = toolContext(root)
+
+    await registry.run("edit", { filePath: "sample.txt", oldString: "one", newString: "two" }, ctx)
+    expect(await Bun.file(path.join(root, "sample.txt")).text()).toBe("two one one")
+
+    await registry.run("edit", { filePath: "sample.txt", oldString: "one", newString: "two", replaceAll: true }, ctx)
+    expect(await Bun.file(path.join(root, "sample.txt")).text()).toBe("two two two")
+  })
+
+  test("bash keeps command output out of metadata", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const result = await registry.run("bash", { command: "printf hello" }, toolContext(root))
+    expect(result.output).toBe("hello")
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.command).toBe("printf hello")
+    expect(result.metadata.stdout).toBeUndefined()
+    expect(result.metadata.stderr).toBeUndefined()
+  })
 })
 
-function toolContext() {
-  const root = import.meta.dir
+function toolContext(root = import.meta.dir) {
   return { agentMode: "build" as const, sandbox: new Sandbox(root), permission: PermissionService.autoApprove(defaultPermissionRules("build")), skills: new SkillService(root), messages: [] }
 }

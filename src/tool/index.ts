@@ -191,9 +191,17 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "edit",
-    description: "Replace text in a file inside the project root.",
+    description: "Replace text in a file inside the project root. By default only the first match is replaced.",
     inputSchema: EditInput,
-    jsonSchema: objectSchema({ filePath: { type: "string" }, oldString: { type: "string" }, newString: { type: "string" }, replaceAll: { type: "boolean" } }, ["filePath", "oldString", "newString"]),
+    jsonSchema: objectSchema(
+      {
+        filePath: { type: "string", description: "File path to edit" },
+        oldString: { type: "string", description: "Text to replace" },
+        newString: { type: "string", description: "Replacement text" },
+        replaceAll: { type: "boolean", description: "When true, replace every match instead of only the first match" },
+      },
+      ["filePath", "oldString", "newString"],
+    ),
     permission: "edit",
     modes: ["build"],
     patterns: (input, ctx) => [relativePattern(ctx, EditInput.parse(input).filePath)],
@@ -218,7 +226,8 @@ export function createBuiltinRegistry() {
     execute: async (input, ctx) => {
       const params = BashInput.parse(input)
       const result = await ctx.sandbox.execute(params, ctx.agentMode)
-      return { title: params.command, output: [result.stdout, result.stderr].filter(Boolean).join("\n"), metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...result } }
+      const { stdout, stderr, ...metadata } = result
+      return { title: params.command, output: [stdout, stderr].filter(Boolean).join("\n"), metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...metadata } }
     },
   })
 

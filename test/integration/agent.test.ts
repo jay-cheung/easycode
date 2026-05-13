@@ -251,6 +251,15 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("direct-agent-runner-uses-plan-permissions-for-plan-exit", async () => {
+    const root = await fixture()
+    const result = await new AgentRunner({ root, provider: new FakeProvider() }).run("plan-exit", "plan")
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["plan_exit"])
+    expect(result.text).toContain("<proposed_plan>")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("accepted-plan-runs-build-even-if-requested-mode-stays-plan", async () => {
     const root = await fixture()
     const runner = createRunner({ root, provider: "fake", mode: "plan" })

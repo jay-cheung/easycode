@@ -1,6 +1,6 @@
 import { ContextManager, type ContextManagerLike } from "./context"
 import { createMessage, textMessage, toolCallMessage, toolResultMessage, type AgentMode, type Message, type ToolCall } from "./message"
-import { defaultPermissionRules, PermissionDeniedError, PermissionRejectedError, PermissionService } from "./permission"
+import { defaultPermissionRules, PermissionService } from "./permission"
 import { createProvider, ProviderError, type Provider, type ProviderName } from "./provider"
 import { Sandbox } from "./sandbox"
 import { SkillService, type SkillServiceLike } from "./skill"
@@ -8,6 +8,7 @@ import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
 import { createRunAspect, type RunAspect } from "./instrumentation"
 import type { Logger } from "./logger"
 import { BASE_COMPACT_PROMPT } from "./context/prompt"
+import type { PermissionRule } from "./permission"
 
 export type Agent = {
   name: string
@@ -132,7 +133,7 @@ export class AgentRunner {
       this.context.add(toolCallMessage(toolCall))
       usedTools.push(toolCall.name)
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
-      const result = await this.runTool(toolCall, effectiveMode, mode)
+      const result = await this.runTool(toolCall, effectiveMode)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
         const output = assistantOutput(reasoningTranscript, result.output)
@@ -149,13 +150,10 @@ export class AgentRunner {
     return { status: "failed", failureReason: "max_steps", text, messages: this.context.state.messages, usedTools, state }
   }
 
-  private async runTool(call: ToolCall, mode: AgentMode, requestedMode = mode) {
+  private async runTool(call: ToolCall, mode: AgentMode) {
     try {
-      return await this.registry.run(call.name, call.input, { agentMode: mode, sandbox: this.sandbox, permission: this.permissionFor(mode, requestedMode), skills: this.skills, messages: this.context.state.messages })
+      return await this.registry.run(call.name, call.input, { agentMode: mode, sandbox: this.sandbox, permission: this.permissionFor(mode), skills: this.skills, messages: this.context.state.messages })
     } catch (error) {
-      if (error instanceof PermissionDeniedError || error instanceof PermissionRejectedError) {
-        return { title: call.name, output: error.message, metadata: { status: "denied", error: error.name } }
-      }
       return { title: call.name, output: error instanceof Error ? error.message : String(error), metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" } }
     }
   }
@@ -178,10 +176,19 @@ export class AgentRunner {
     return contextHasProposedPlan(this.context.state.messages) ? "build" : mode
   }
 
-  private permissionFor(mode: AgentMode, requestedMode: AgentMode) {
-    if (mode === requestedMode) return this.permission
-    return this.permission.withRules(defaultPermissionRules(mode))
+  private permissionFor(mode: AgentMode) {
+    const rules = defaultPermissionRules(mode)
+    if (samePermissionRules(this.permission.rules, rules)) return this.permission
+    return this.permission.withRules(rules)
   }
+}
+
+function samePermissionRules(left: PermissionRule[], right: PermissionRule[]) {
+  if (left.length !== right.length) return false
+  return left.every((rule, index) => {
+    const other = right[index]
+    return other && rule.permission === other.permission && rule.pattern === other.pattern && rule.action === other.action
+  })
 }
 
 function providerFailureText(error: ProviderError) {

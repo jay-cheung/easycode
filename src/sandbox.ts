@@ -45,7 +45,8 @@ function truncateBytes(input: string, maxBytes: number) {
 
 export function isDangerousCommand(command: string) {
   const text = command.trim().toLowerCase()
-  return /(^|\s)rm\s+-rf(\s|$|\/)/.test(text) || text.startsWith("sudo ") || text.startsWith("git push") || text.startsWith("docker ") || /curl\b[\s\S]*\|[\s\S]*(sh|bash)\b/.test(text) || /chmod\s+-r\s+\//.test(text)
+  const downloadPipeShell = /\b(curl|wget)\b[\s\S]*\|[\s\S]*(?:\b(?:sh|bash|source)\b|\/bin\/(?:sh|bash)\b)/.test(text)
+  return /(^|\s)rm\s+-rf(\s|$|\/)/.test(text) || text.startsWith("sudo ") || text.startsWith("git push") || text.startsWith("docker ") || downloadPipeShell || /chmod\s+-r\s+\//.test(text)
 }
 
 export function isReadOnlyCommand(command: string) {
