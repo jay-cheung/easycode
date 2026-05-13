@@ -15,12 +15,14 @@ export type ContextOptions = {
   maxTokens?: number
   compactAt?: number
   preserveRecentUserTurns?: number
+  compactPreserveTokens?: number
 }
 
 export interface ContextManagerLike {
   readonly state: ContextState
   readonly compactAt: number
   readonly preserveRecentUserTurns: number
+  readonly compactPreserveTokens: number
   add(message: Message): void
   estimate(messages: Message[]): number
   recordUsage(inputTokens: number): void
@@ -34,10 +36,12 @@ export class ContextManager implements ContextManagerLike {
   readonly state: ContextState
   readonly compactAt: number
   readonly preserveRecentUserTurns: number
+  readonly compactPreserveTokens: number
 
   constructor(options: ContextOptions = {}) {
     this.compactAt = options.compactAt ?? 0.75
     this.preserveRecentUserTurns = options.preserveRecentUserTurns ?? 2
+    this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
     this.state = { messages: [], tokenEstimate: 0, maxTokens: options.maxTokens ?? 20_000 }
   }
 
@@ -70,7 +74,7 @@ export class ContextManager implements ContextManagerLike {
   compact(summary: string) {
     if (!this.needsCompaction()) return false
     const { recent } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
-    const preserved = validProviderMessageSuffix(recent)
+    const preserved = recentProviderMessageSuffix(recent, this.compactPreserveTokens)
     this.state.summary = summary
     this.state.messages = preserved
     this.recalculateTokenEstimate()
@@ -110,6 +114,17 @@ export function recentUserTurnMessages(messages: Message[], preserveRecentUserTu
   return validProviderMessageSuffix(splitRecentUserTurns(messages, preserveRecentUserTurns).recent)
 }
 
+export function recentProviderMessageSuffix(messages: Message[], maxTokens = 1_000) {
+  const suffix: Message[] = []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = validProviderMessageSuffix([messages[index], ...suffix])
+    if (candidate.length === 0) continue
+    if (estimateMessages(candidate) > maxTokens && suffix.length > 0) break
+    suffix.unshift(messages[index])
+  }
+  return validProviderMessageSuffix(suffix)
+}
+
 function splitRecentUserTurns(messages: Message[], preserveRecentUserTurns: number) {
   if (preserveRecentUserTurns <= 0) return { compacted: messages, recent: [] }
   let userTurns = 0
@@ -130,4 +145,8 @@ function messageToSummaryText(summary: string) {
 
 function isCJK(char: string) {
   return /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/u.test(char)
+}
+
+function estimateMessages(messages: Message[]) {
+  return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
 }

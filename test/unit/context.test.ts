@@ -24,7 +24,7 @@ describe("context", () => {
   })
 
   test("compacts and preserves recent user turns", () => {
-    const context = new ContextManager({ maxTokens: 10, compactAt: 0.5, preserveRecentUserTurns: 2 })
+    const context = new ContextManager({ maxTokens: 10, compactAt: 0.5, preserveRecentUserTurns: 2, compactPreserveTokens: 100 })
     for (let i = 0; i < 4; i += 1) {
       context.add(textMessage("user", `message ${i} with enough content`))
       context.add(textMessage("assistant", `response ${i}`))
@@ -34,6 +34,21 @@ describe("context", () => {
     expect(context.state.summary).toBe("model summary")
     expect(context.state.messages.map((message) => message.role)).toEqual(["user", "assistant", "user", "assistant"])
     expect(context.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "message 2 with enough content" })
+  })
+
+  test("compact prunes preserved recent turns to a small provider-safe suffix", () => {
+    const context = new ContextManager({ maxTokens: 100, compactAt: 0.5, preserveRecentUserTurns: 2, compactPreserveTokens: 30 })
+    context.add(textMessage("user", "older user"))
+    context.add(textMessage("assistant", "older assistant"))
+    context.add(textMessage("user", "recent user " + "x".repeat(300)))
+    context.add(textMessage("assistant", "large assistant " + "y".repeat(300)))
+    context.add(textMessage("user", "latest user"))
+    context.add(textMessage("assistant", "latest assistant"))
+
+    expect(context.compact("model summary")).toBe(true)
+    expect(context.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
+    expect(context.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "latest user" })
+    expect(context.state.tokenEstimate).toBeLessThan(80)
   })
 
   test("compact does not preserve an orphan leading tool result", () => {
@@ -82,5 +97,16 @@ describe("context", () => {
 
     expect(context.compact("short summary")).toBe(true)
     expect(context.state.tokenEstimate).toBeLessThan(before)
+  })
+
+  test("large historical tool outputs are truncated for token estimates and provider input", () => {
+    const context = new ContextManager({ maxTokens: 20_000 })
+    context.add(textMessage("user", "show logs"))
+    context.add(toolResultMessage({ callID: "call_logs", toolName: "bash", status: "succeeded", output: "x".repeat(28_000) }))
+
+    expect(context.state.tokenEstimate).toBeLessThan(4_000)
+    const providerInput = context.compose().map((message) => message.content).join("\n")
+    expect(providerInput).toContain("[truncated")
+    expect(providerInput).not.toContain("x".repeat(9_000))
   })
 })

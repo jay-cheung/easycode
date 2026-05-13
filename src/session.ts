@@ -1,7 +1,7 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
-import { ContextManager, estimateSummaryTokens, recentUserTurnMessages, type ContextManagerLike } from "./context"
-import { redactProtectedMessages, type Message } from "./message"
+import { ContextManager, estimateSummaryTokens, recentProviderMessageSuffix, recentUserTurnMessages, type ContextManagerLike } from "./context"
+import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "./message"
 
 export type SessionData = {
   id: string
@@ -25,10 +25,10 @@ export class SessionStore {
 
   async save(id: string, context: ContextManagerLike) {
     await mkdir(this.dir, { recursive: true })
-    const messages = context.state.summary ? recentUserTurnMessages(context.state.messages, context.preserveRecentUserTurns) : context.state.messages
+    const messages = context.state.summary ? recentProviderMessageSuffix(recentUserTurnMessages(context.state.messages, context.preserveRecentUserTurns), context.compactPreserveTokens) : context.state.messages
     const data: SessionData = {
       id,
-      messages: redactProtectedMessages(messages),
+      messages: truncateLargeMessageOutputs(redactProtectedMessages(messages)),
       summary: context.state.summary,
       updatedAt: Date.now(),
     }
@@ -39,8 +39,8 @@ export class SessionStore {
     const context = new ContextManager()
     const session = await this.load(id)
     if (!session) return context
-    const messages = session.summary ? recentUserTurnMessages(session.messages, context.preserveRecentUserTurns) : session.messages
-    for (const message of redactProtectedMessages(messages)) context.add(message)
+    const messages = session.summary ? recentProviderMessageSuffix(recentUserTurnMessages(session.messages, context.preserveRecentUserTurns), context.compactPreserveTokens) : session.messages
+    for (const message of truncateLargeMessageOutputs(redactProtectedMessages(messages))) context.add(message)
     context.state.summary = session.summary
     context.state.tokenEstimate = context.estimate(context.state.messages) + estimateSummaryTokens(context.state.summary)
     return context

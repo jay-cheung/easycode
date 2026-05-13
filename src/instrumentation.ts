@@ -263,6 +263,10 @@ class LoggingContextDecorator implements ContextManagerLike {
     return this.inner.preserveRecentUserTurns
   }
 
+  get compactPreserveTokens() {
+    return this.inner.compactPreserveTokens
+  }
+
   add(message: Message) {
     this.logAdd(message)
     this.inner.add(message)

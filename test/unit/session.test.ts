@@ -28,7 +28,7 @@ describe("session store", () => {
   test("prunes compacted session messages on save", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)
-    const context = new ContextManager({ preserveRecentUserTurns: 2 })
+    const context = new ContextManager({ preserveRecentUserTurns: 2, compactPreserveTokens: 100 })
     for (let i = 0; i < 3; i += 1) {
       context.add(textMessage("user", `message ${i}`))
       context.add(textMessage("assistant", `reply ${i}`))
@@ -49,7 +49,7 @@ describe("session store", () => {
   test("prunes already compacted session messages on restore", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)
-    const context = new ContextManager()
+    const context = new ContextManager({ compactPreserveTokens: 100 })
     for (let i = 0; i < 4; i += 1) {
       context.add(textMessage("user", `message ${i}`))
       context.add(textMessage("assistant", `reply ${i}`))
@@ -94,6 +94,49 @@ describe("session store", () => {
 
     const restored = await store.context("demo")
     expect(JSON.stringify(restored.state.messages)).not.toContain("SECRET=hidden")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("truncates large historical outputs on save and restore", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.add(textMessage("user", "inspect output"))
+    context.add(toolResultMessage({ callID: "call_large", toolName: "bash", status: "succeeded", output: "x".repeat(28_000) }))
+    context.add(textMessage("assistant", "y".repeat(28_000)))
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(JSON.stringify(saved)).toContain("[truncated")
+    expect(JSON.stringify(saved)).not.toContain("x".repeat(9_000))
+    expect(JSON.stringify(saved)).not.toContain("y".repeat(9_000))
+
+    const restored = await store.context("demo")
+    expect(restored.state.tokenEstimate).toBeLessThan(6_000)
+    expect(JSON.stringify(restored.state.messages)).toContain("[truncated")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("saves compacted sessions with only a small recent suffix", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager({ preserveRecentUserTurns: 2, compactPreserveTokens: 30 })
+    context.add(textMessage("user", "older user"))
+    context.add(textMessage("assistant", "older assistant"))
+    context.add(textMessage("user", "recent user " + "x".repeat(300)))
+    context.add(textMessage("assistant", "large assistant " + "y".repeat(300)))
+    context.add(textMessage("user", "latest user"))
+    context.add(textMessage("assistant", "latest assistant"))
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.messages.map((message) => message.role)).toEqual(["user", "assistant"])
+    expect(saved?.messages[0].parts[0]).toMatchObject({ type: "text", text: "latest user" })
+
+    const restored = await store.context("demo")
+    expect(restored.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
+    expect(restored.state.tokenEstimate).toBeLessThan(80)
     await rm(root, { recursive: true, force: true })
   })
 

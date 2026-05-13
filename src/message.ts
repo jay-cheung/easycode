@@ -97,6 +97,9 @@ export function toolResultMessage(input: {
 }
 
 export const protectedToolResultRedaction = "[redacted: permission-gated tool result]"
+export const largeOutputLimit = 8_000
+const largeOutputHead = 4_000
+const largeOutputTail = 3_000
 
 export function isProtectedToolResult(part: MessagePart) {
   return part.type === "tool_result" && part.metadata.permissionAction === "ask"
@@ -141,22 +144,42 @@ export function redactProtectedMessage(message: Message, protectedCallIDs = new 
   }
 }
 
-export function partToText(part: MessagePart, options: { redactProtectedToolResults?: boolean } = {}) {
+export function partToText(part: MessagePart, options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}) {
   if (part.type === "text") return part.text
   if (part.type === "summary") return `<summary>\n${part.text}\n</summary>`
   if (part.type === "tool_call") return `<tool_call name="${part.call.name}" id="${part.call.id}">${JSON.stringify(part.call.input)}</tool_call>`
   const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
-  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${output}\n</tool_result>`
+  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${truncateLargeOutput(output, options.truncateLargeOutputs)}\n</tool_result>`
 }
 
-export function messageToText(message: Message, options: { redactProtectedToolResults?: boolean } = {}) {
-  return message.parts.map((part) => partToText(part, options)).join("\n")
+export function messageToText(message: Message, options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}) {
+  return message.parts.map((part) => {
+    if (message.role === "assistant" && part.type === "text") return truncateLargeOutput(part.text, options.truncateLargeOutputs)
+    return partToText(part, options)
+  }).join("\n")
 }
 
-export function messagesToProviderInput(messages: Message[], options: { redactProtectedToolResults?: boolean } = {}): ProviderInputMessage[] {
+export function messagesToProviderInput(messages: Message[], options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}): ProviderInputMessage[] {
   return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: message.parts }))
 }
 
 export function toolResults(messages: Message[]) {
   return messages.flatMap((message) => message.parts.filter((part): part is ToolResultPart => part.type === "tool_result"))
+}
+
+export function truncateLargeMessageOutputs(messages: Message[]): Message[] {
+  return messages.map((message) => ({
+    ...message,
+    parts: message.parts.map((part) => {
+      if (part.type === "tool_result") return { ...part, output: truncateLargeOutput(part.output, true) }
+      if (message.role === "assistant" && part.type === "text") return { ...part, text: truncateLargeOutput(part.text, true) }
+      return part
+    }),
+  }))
+}
+
+function truncateLargeOutput(text: string, enabled = true) {
+  if (!enabled || text.length <= largeOutputLimit) return text
+  const omitted = text.length - largeOutputHead - largeOutputTail
+  return `${text.slice(0, largeOutputHead)}\n\n[truncated ${omitted} chars from large historical output]\n\n${text.slice(-largeOutputTail)}`
 }
