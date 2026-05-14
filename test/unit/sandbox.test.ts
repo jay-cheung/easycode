@@ -2,13 +2,41 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { Sandbox, SandboxBoundaryError, SandboxCommandError } from "../../src/sandbox"
+import { looksLikeNativeSandboxDenial, macosSandboxProfile, Sandbox, SandboxBoundaryError, SandboxCommandError, SandboxPathEscapeError } from "../../src/sandbox"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-sandbox-"))
 }
 
 describe("sandbox", () => {
+  test("native write sandbox permits dev null while blocking external writes", () => {
+    const profile = macosSandboxProfile("/tmp/easycode-root")
+    expect(profile).toContain('(require-not (subpath "/tmp/easycode-root"))')
+    expect(profile).toContain('(require-not (literal "/dev/null"))')
+    expect(profile).toContain('(require-not (literal "/private/dev/null"))')
+  })
+
+  test("detects native sandbox denial from command output", () => {
+    expect(
+      looksLikeNativeSandboxDenial({
+        exitCode: 1,
+        stdout: "",
+        stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
+        nativeWriteSandbox: true,
+        sandboxBypassed: false,
+      }),
+    ).toBe(true)
+    expect(
+      looksLikeNativeSandboxDenial({
+        exitCode: 1,
+        stdout: "",
+        stderr: "regular command failure",
+        nativeWriteSandbox: true,
+        sandboxBypassed: false,
+      }),
+    ).toBe(false)
+  })
+
   test("blocks writes outside root", async () => {
     const root = await tmpdir()
     const sandbox = new Sandbox(root)
@@ -45,9 +73,18 @@ describe("sandbox", () => {
     const outsideName = `${path.basename(root)}-outside.txt`
     const outside = path.join(path.dirname(root), outsideName)
     const sandbox = new Sandbox(root)
-    await expect(sandbox.execute({ command: `printf x > ../${outsideName}` })).rejects.toThrow(SandboxCommandError)
+    await expect(sandbox.execute({ command: `printf x > ../${outsideName}` })).rejects.toThrow(SandboxPathEscapeError)
     expect(await Bun.file(outside).exists()).toBe(false)
     await rm(outside, { force: true })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("can bypass bash path boundary without disabling native write sandbox", async () => {
+    const root = await tmpdir()
+    const sandbox = new Sandbox(root)
+    const result = await sandbox.execute({ command: "ls /var/folders" }, "build", { bypassPathBoundary: true })
+    expect(result.pathBoundaryBypassed).toBe(true)
+    expect(result.sandboxBypassed).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
 

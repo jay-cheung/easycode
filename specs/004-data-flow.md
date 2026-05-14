@@ -2,9 +2,12 @@
 
 ```text
 user input
+ -> slash command parse or prompt dispatch
+ -> optional image attachment merge
  -> message append
  -> context compose (static agent/skill/tool descriptions on first provider turn only)
  -> provider stream
+ -> UI event stream (non-logger timeline)
  -> model text/tool_call
  -> tool schema validate
  -> permission evaluate
@@ -31,4 +34,18 @@ sequenceDiagram
   S-->>T: ToolResult
   T-->>A: ToolResult
   A->>M: tool_result message
+```
+
+```mermaid
+sequenceDiagram
+  participant U as User
+  participant C as CLI
+  participant A as AgentRunner
+  participant R as TimelineRenderer
+  U->>C: /image path
+  C->>C: validate capability and queue image
+  U->>C: prompt
+  C->>A: run(prompt, images)
+  A->>R: reasoning_delta / tool_call / text_delta
+  R-->>U: Thought / Tool / Answer timeline
 ```

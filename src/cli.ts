@@ -3,11 +3,16 @@ import path from "node:path"
 import { createInterface } from "node:readline/promises"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner } from "./agent"
+import { imageLabel, imagePartFromInput } from "./image"
 import { createLogger, emitLog, markStdoutText, type Logger } from "./logger"
-import type { AgentMode } from "./message"
+import type { AgentMode, ImagePart } from "./message"
 import { defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
-import { hasProvider, listProviders, type ProviderName } from "./provider"
+import { createProvider, defaultProviderCapabilities, hasProvider, listProviders, type ProviderName } from "./provider"
 import { SessionStore } from "./session"
+import { defaultSessionSettings, isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
+import { parseSlashCommand, slashHelpText, type SlashCommand } from "./slash"
+import { SkillService } from "./skill"
+import { TimelineRenderer } from "./ui/timeline"
 
 type EnvTarget = {
   [key: string]: string | undefined
@@ -21,24 +26,28 @@ export function parseArgs(argv: string[]) {
   const providerIndex = argv.indexOf("--provider")
   const rootIndex = argv.indexOf("--root")
   const sessionIndex = argv.indexOf("--session")
+  const modelIndex = argv.indexOf("--model")
   const once = argv.includes("--once")
   const logger = argv.includes("--logger")
+  const providerExplicit = providerIndex !== -1
   const rawProvider = providerIndex === -1 ? "fake" : argv[providerIndex + 1]
   if (!hasProvider(rawProvider)) throw new Error(`Unknown provider: ${rawProvider}. Available providers: ${listProviders().join(", ")}`)
   const provider = rawProvider
   const root = rootIndex === -1 ? process.cwd() : path.resolve(argv[rootIndex + 1])
   const explicitSession = sessionIndex === -1 ? undefined : argv[sessionIndex + 1]
   if (sessionIndex !== -1 && (!explicitSession || explicitSession.startsWith("--"))) throw new Error("--session requires an id")
+  const model = modelIndex === -1 ? undefined : argv[modelIndex + 1]
+  if (modelIndex !== -1 && (!model || model.startsWith("--"))) throw new Error("--model requires an id")
   const prompt = argv.slice(1).filter((arg, index, items) => {
     const realIndex = index + 1
-    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session"
+    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model"
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, root, logger, session: explicitSession ?? "default", once }
+  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, root, logger, session: explicitSession ?? "default", once }
 }
 
 function usage() {
-  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--root path] [--logger] [--session id]`
+  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--root path] [--logger] [--session id]`
 }
 
 function unquoteEnvValue(value: string) {
@@ -92,10 +101,13 @@ if (import.meta.main) {
 async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   if (!args.prompt) throw new Error("Prompt is required")
   const rl = createInterface({ input, output })
+  const settings = normalizeSessionSettings({ provider: args.provider, model: args.model }, args.provider)
+  const timeline = logger ? undefined : new TimelineRenderer(output)
   try {
     const permission = permissionService(args.mode, rl)
-    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, onTextDelta: textDeltaWriter() }).run(args.prompt, args.mode)
-    writeResult(result.text, Boolean(logger))
+    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: timeline ? (event) => timeline.event(event) : undefined }).run(args.prompt, args.mode)
+    timeline?.finish()
+    if (logger) writeResult(result.text, true)
     return result.status
   } finally {
     rl.close()
@@ -105,29 +117,47 @@ async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | unde
 async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   const store = new SessionStore(args.root)
   const context = await store.context(args.session ?? "")
+  const storedSettings = await store.settings(args.session ?? "", args.provider)
+  let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model }, args.provider)
+  if (!args.providerExplicit && !storedSettings.provider) activeSettings = defaultSessionSettings(args.provider)
+  const skillService = new SkillService(args.root)
+  let pendingImages: ImagePart[] = []
   let activeMode = args.mode
   let runner: ReturnType<typeof createRunner> | undefined
   const rl = createInterface({ input, output })
   const getRunner = () => {
-    runner ??= createRunner({ root: args.root, provider: args.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, rl), onTextDelta: textDeltaWriter() })
+    runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, rl), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: logger ? undefined : (event) => timeline.event(event) })
     return runner
   }
+  const timeline = new TimelineRenderer(output)
   try {
     while (true) {
       const prompt = (await question(rl)).trim()
       if (prompt === eofPrompt) {
-        await store.save(args.session ?? "", runner?.context ?? context)
+        await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
         return "completed"
       }
       if (["exit", ":exit", "quit", ":quit"].includes(prompt.toLowerCase())) {
-        await store.save(args.session ?? "", runner?.context ?? context)
+        await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
         return "completed"
       }
       if (!prompt) continue
+      const command = parseSlashCommand(prompt)
+      if (command.type !== "prompt") {
+        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService })
+        activeSettings = changed.settings
+        pendingImages = changed.pendingImages
+        if (changed.resetRunner) runner = undefined
+        await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
+        continue
+      }
       const activeRunner = getRunner()
-      const result = await activeRunner.run(prompt, activeMode)
-      writeResult(result.text, Boolean(logger))
-      await store.save(args.session ?? "", activeRunner.context)
+      const images = pendingImages
+      pendingImages = []
+      const result = await activeRunner.run(command.text, activeMode, { images })
+      timeline.finish()
+      if (logger) writeResult(result.text, true)
+      await store.save(args.session ?? "", activeRunner.context, activeSettings)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
         activeMode = "build"
         runner = undefined
@@ -138,6 +168,96 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
   } finally {
     rl.close()
   }
+}
+
+async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService }) {
+  const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
+  let pendingImages = input.pendingImages
+  let resetRunner = false
+  if (command.type === "help") output.write(`${slashHelpText()}\n`)
+  if (command.type === "settings") output.write(`${settingsText(next, pendingImages)}\n`)
+  if (command.type === "unknown") output.write(`Unknown command: /${command.name}. Use /help.\n`)
+  if (command.type === "error") output.write(`${command.message}\n`)
+  if (command.type === "model") {
+    if (!hasProvider(command.provider)) output.write(`Unknown provider: ${command.provider}. Available providers: ${listProviders().join(", ")}\n`)
+    else {
+      next.provider = command.provider
+      next.model = command.model
+      resetRunner = true
+      output.write(`Model set to ${next.provider}${next.model ? ` ${next.model}` : ""}\n`)
+    }
+  }
+  if (command.type === "thinking") {
+    const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
+    if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) output.write(`Provider ${next.provider} does not support thinking controls.\n`)
+    else {
+      next.thinking = command.value === "on"
+      resetRunner = true
+      output.write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.\n`)
+    }
+  }
+  if (command.type === "effort") {
+    if (!isReasoningEffort(command.value)) output.write("/effort requires low, medium, high, or max\n")
+    else {
+      const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
+      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) output.write(`Provider ${next.provider} does not support effort controls.\n`)
+      else {
+        next.effort = command.value
+        resetRunner = true
+        output.write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.\n`)
+      }
+    }
+  }
+  if (command.type === "image") {
+    if (command.action === "clear") {
+      pendingImages = []
+      output.write("Pending images cleared.\n")
+    } else {
+      const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
+      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) output.write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.\n`)
+      else {
+        try {
+          const part = await imagePartFromInput(command.value, input.root)
+          pendingImages = [...pendingImages, part]
+          output.write(`Attached image: ${imageLabel(part.source)}\n`)
+        } catch (error) {
+          output.write(`${error instanceof Error ? error.message : String(error)}\n`)
+        }
+      }
+    }
+  }
+  if (command.type === "skill") {
+    if (command.action === "list") {
+      const skills = await input.skills.available()
+      output.write(`${skills.map((skill) => `${skill.name}: ${skill.description}`).join("\n") || "No skills found."}\n`)
+    }
+    if (command.action === "clear") {
+      next.selectedSkills = []
+      resetRunner = true
+      output.write("Active skills cleared.\n")
+    }
+    if (command.action === "use") {
+      const skill = await input.skills.load(command.name)
+      if (!skill) output.write(`Skill not found: ${command.name}\n`)
+      else {
+        next.selectedSkills = [...new Set([...next.selectedSkills, skill.name])]
+        resetRunner = true
+        output.write(`Skill active: ${skill.name}\n`)
+      }
+    }
+  }
+  return { settings: next, pendingImages, resetRunner }
+}
+
+function settingsText(settings: SessionSettings, images: ImagePart[]) {
+  return [
+    `provider: ${settings.provider}`,
+    `model: ${settings.model ?? "(provider default)"}`,
+    `thinking: ${settings.thinking ? "on" : "off"}`,
+    `effort: ${settings.effort}`,
+    `skills: ${settings.selectedSkills.join(", ") || "(none)"}`,
+    `pending images: ${images.length}`,
+  ].join("\n")
 }
 
 function hasProposedPlan(text: string) {
@@ -177,6 +297,16 @@ async function questionWithPrompt(rl: ReturnType<typeof createInterface>, prompt
 
 function permissionPrompt(request: PermissionRequest) {
   const patterns = request.patterns.join(", ")
+  if (request.permission === "sandbox_bypass") {
+    const risk = typeof request.metadata.risk === "string" ? request.metadata.risk : "This command will be retried without the native write sandbox."
+    const reason = typeof request.metadata.reason === "string" ? `Reason: ${request.metadata.reason}\n` : ""
+    const command = typeof request.metadata.command === "string" ? request.metadata.command : patterns
+    const failure = typeof request.metadata.failure === "string" && request.metadata.failure ? `\nFailure: ${request.metadata.failure}` : ""
+    return `EasyCode sandbox blocked this command.
+${reason}Risk: ${risk}
+Command: ${command}${failure}
+Allow sandbox bypass for this command? [Y]es/[a]lways/[n]o`
+  }
   return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
 }
 

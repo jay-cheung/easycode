@@ -1,9 +1,9 @@
 import { DeepSeekProvider } from "./deepseek"
 import { FakeProvider } from "./fake"
 import { OpenAIProvider } from "./openai"
-import type { Provider } from "./types"
+import type { Provider, ProviderOptions } from "./types"
 
-export type ProviderFactory = () => Provider
+export type ProviderFactory = (options?: ProviderOptions) => Provider
 export type ProviderName = string
 
 const providers = new Map<ProviderName, ProviderFactory>()
@@ -21,12 +21,12 @@ export function listProviders() {
   return [...providers.keys()].sort((left, right) => left.localeCompare(right))
 }
 
-export function createProvider(name: ProviderName) {
+export function createProvider(name: ProviderName, options?: ProviderOptions) {
   const factory = providers.get(name)
   if (!factory) throw new Error(`Unknown provider: ${name}`)
-  return factory()
+  return factory(options)
 }
 
-registerProvider("fake", () => new FakeProvider())
-registerProvider("openai", () => new OpenAIProvider())
-registerProvider("deepseek", () => new DeepSeekProvider())
+registerProvider("fake", (options) => new FakeProvider(options))
+registerProvider("openai", (options) => new OpenAIProvider(options?.model, options))
+registerProvider("deepseek", (options) => new DeepSeekProvider(options?.model, options))

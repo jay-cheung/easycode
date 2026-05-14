@@ -1,5 +1,5 @@
 import { ContextManager, type ContextManagerLike } from "./context"
-import { createMessage, textMessage, toolCallMessage, toolResultMessage, type AgentMode, type Message, type ToolCall } from "./message"
+import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
 import { createProvider, ProviderError, type Provider, type ProviderName } from "./provider"
 import { Sandbox } from "./sandbox"
@@ -9,6 +9,8 @@ import { createRunAspect, type RunAspect } from "./instrumentation"
 import type { Logger } from "./logger"
 import { BASE_COMPACT_PROMPT } from "./context/prompt"
 import type { PermissionRule } from "./permission"
+import { defaultSessionSettings, type SessionSettings } from "./settings"
+import type { RunUiEvent } from "./ui/timeline"
 
 export type Agent = {
   name: string
@@ -22,6 +24,7 @@ export type AgentRunResult = {
   status: "completed" | "failed"
   failureReason?: "provider_error" | "max_steps"
   text: string
+  reasoning?: string
   messages: Message[]
   usedTools: string[]
   state: AgentRunState
@@ -39,6 +42,8 @@ export type AgentRunnerOptions = {
   logger?: Logger
   aspect?: RunAspect
   onTextDelta?: (text: string) => void
+  onEvent?: (event: RunUiEvent) => void
+  settings?: SessionSettings
 }
 
 export function createAgent(mode: AgentMode): Agent {
@@ -57,6 +62,8 @@ export class AgentRunner {
   readonly maxSteps: number
   readonly aspect: RunAspect
   readonly onTextDelta?: (text: string) => void
+  readonly onEvent?: (event: RunUiEvent) => void
+  readonly settings: SessionSettings
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -69,22 +76,26 @@ export class AgentRunner {
     this.sandbox = options.sandbox ?? new Sandbox(options.root)
     this.maxSteps = options.maxSteps ?? 12
     this.onTextDelta = options.onTextDelta
+    this.onEvent = options.onEvent
+    this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
   }
 
-  async run(prompt: string, mode: AgentMode): Promise<AgentRunResult> {
+  async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[] } = {}): Promise<AgentRunResult> {
     const effectiveMode = this.effectiveMode(prompt, mode)
     const agent = createAgent(effectiveMode)
     const usedTools: string[] = []
     let latestAssistantText = ""
     let reasoningTranscript = ""
     let state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
-    this.context.add(textMessage("user", prompt))
+    this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
+    this.context.add(userMessage(prompt, input.images ?? []))
     const tools = this.registry.list(effectiveMode)
     const skills = await this.skills.available()
+    const selectedSkills = await this.selectedSkills()
     for (let step = 0; step < this.maxSteps; step += 1) {
       this.aspect.step(step + 1, this.maxSteps)
       await this.compactContext(effectiveMode)
-      const providerMessages = this.context.compose(step === 0 ? { agent, skills, tools } : undefined)
+      const providerMessages = this.context.compose(step === 0 ? { agent, skills, selectedSkills, tools } : undefined)
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
@@ -93,41 +104,51 @@ export class AgentRunner {
         for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
           if (event.type === "reasoning_delta") {
             reasoningTranscript = appendOutput(reasoningTranscript, event.text)
+            this.onEvent?.({ type: "reasoning_delta", text: event.text })
             this.onTextDelta?.(event.text)
           }
           if (event.type === "text_delta") {
             text += event.text
+            this.onEvent?.({ type: "text_delta", text: event.text })
             this.onTextDelta?.(event.text)
           }
           if (event.type === "failure") {
             failureText = event.error.output || event.error.message
+            this.onEvent?.({ type: "failure", text: failureText })
             this.onTextDelta?.(failureText)
           }
-          if (event.type === "tool_call") toolCall = event.call
+          if (event.type === "tool_call") {
+            toolCall = event.call
+            this.onEvent?.({ type: "tool_call", call: event.call })
+          }
           if (event.type === "usage") this.context.recordUsage(event.inputTokens)
         }
       } catch (error) {
         if (error instanceof ProviderError) {
           const failureText = providerFailureText(error)
-          const output = assistantOutput(reasoningTranscript, text, failureText)
-          this.context.add(textMessage("assistant", output))
+          this.onEvent?.({ type: "failure", text: failureText })
+          const output = appendOutput(text, failureText)
+          this.context.add(assistantMessage(reasoningTranscript, output))
           state = this.aspect.runFailed("provider_error", usedTools)
-          return { status: "failed", failureReason: "provider_error", text: output, messages: this.context.state.messages, usedTools, state }
+          this.onEvent?.({ type: "run_done", status: "failed" })
+          return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
         }
         throw error
       }
       if (failureText) {
-        const output = assistantOutput(reasoningTranscript, text, failureText)
-        this.context.add(textMessage("assistant", output))
+        const output = appendOutput(text, failureText)
+        this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.runFailed("provider_error", usedTools)
-        return { status: "failed", failureReason: "provider_error", text: output, messages: this.context.state.messages, usedTools, state }
+        this.onEvent?.({ type: "run_done", status: "failed" })
+        return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       if (text) latestAssistantText = text
       if (!toolCall) {
-        const output = assistantOutput(reasoningTranscript, text)
-        this.context.add(textMessage("assistant", output))
+        const output = text
+        this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.transition("completed", { usedTools })
-        return { status: "completed", text: output, messages: this.context.state.messages, usedTools, state }
+        this.onEvent?.({ type: "run_done", status: "completed" })
+        return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       state = this.aspect.transition("tool_pending", { tool: toolCall.name, callID: toolCall.id })
       this.context.add(toolCallMessage(toolCall))
@@ -135,19 +156,23 @@ export class AgentRunner {
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
       const result = await this.runTool(toolCall, effectiveMode)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
+      this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output })
       if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
-        const output = assistantOutput(reasoningTranscript, result.output)
+        const output = result.output
+        this.onEvent?.({ type: "text_delta", text: result.output })
         this.onTextDelta?.(result.output)
-        this.context.add(textMessage("assistant", output))
+        this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.transition("completed", { usedTools })
-        return { status: "completed", text: output, messages: this.context.state.messages, usedTools, state }
+        this.onEvent?.({ type: "run_done", status: "completed" })
+        return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }
-    const text = assistantOutput(reasoningTranscript, latestAssistantText || `Stopped after max steps: ${this.maxSteps}`)
-    this.context.add(createMessage("assistant", [{ type: "text", text }]))
+    const text = latestAssistantText || `Stopped after max steps: ${this.maxSteps}`
+    this.context.add(assistantMessage(reasoningTranscript, text))
     state = this.aspect.runFailed("max_steps", usedTools)
-    return { status: "failed", failureReason: "max_steps", text, messages: this.context.state.messages, usedTools, state }
+    this.onEvent?.({ type: "run_done", status: "failed" })
+    return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
   }
 
   private async runTool(call: ToolCall, mode: AgentMode) {
@@ -168,6 +193,12 @@ export class AgentRunner {
       if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
     }
     this.context.compact(extractSummary(summary))
+  }
+
+  private async selectedSkills() {
+    const selected = this.settings.selectedSkills ?? []
+    const loaded = await Promise.all(selected.map((name) => this.skills.load(name)))
+    return loaded.filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
   }
 
   private effectiveMode(prompt: string, mode: AgentMode): AgentMode {
@@ -195,18 +226,16 @@ function providerFailureText(error: ProviderError) {
   return error.output?.trim() || error.message
 }
 
-function formatReasoningText(text: string) {
-  return `<reasoning>\n${text}\n</reasoning>\n`
-}
-
-function assistantOutput(reasoningText: string, text: string, failureText?: string) {
-  const parts = [reasoningText ? formatReasoningText(reasoningText) : "", text, failureText ?? ""].filter((part) => part.length > 0)
-  return parts.reduce<string>(appendOutput, "")
-}
-
 function appendOutput(output: string, part: string) {
   if (!output || output.endsWith("\n")) return `${output}${part}`
   return `${output}\n${part}`
+}
+
+function assistantMessage(reasoningText: string, text: string) {
+  const parts: MessagePart[] = []
+  if (reasoningText) parts.push(reasoningPart(reasoningText))
+  if (text) parts.push(textPart(text))
+  return createMessage("assistant", parts.length > 0 ? parts : [textPart("")])
 }
 
 function compactPrompt(messages: Array<{ role: string; content: string }>) {
@@ -227,6 +256,7 @@ function contextHasProposedPlan(messages: Message[]) {
   return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void }) {
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? "fake"), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta })
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; settings?: SessionSettings }) {
+  const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, settings })
 }

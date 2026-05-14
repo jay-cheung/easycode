@@ -1,6 +1,27 @@
 
 import type { AgentMode, Message, ProviderInputMessage, ToolCall } from "../message"
+import type { ReasoningEffort } from "../settings"
 import type { ToolDef } from "../tool"
+
+export type ProviderCapabilities = {
+  supportsImages: boolean
+  supportsThinking: boolean
+  supportsReasoningEffort: boolean
+  effortValues: ReasoningEffort[]
+}
+
+export const defaultProviderCapabilities: ProviderCapabilities = {
+  supportsImages: false,
+  supportsThinking: false,
+  supportsReasoningEffort: false,
+  effortValues: [],
+}
+
+export type ProviderOptions = {
+  model?: string
+  thinking?: boolean
+  effort?: ReasoningEffort
+}
 
 export type ProviderEvent =
   | { type: "request"; request: { url: string; method: string; body: unknown } }
@@ -23,6 +44,8 @@ export type ProviderInput = {
 
 export interface Provider {
   readonly name: string
+  readonly model?: string
+  readonly capabilities?: ProviderCapabilities
   stream(input: ProviderInput): AsyncIterable<ProviderEvent>
 }
 

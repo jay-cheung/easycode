@@ -15,6 +15,8 @@
 - Default timeout is 120 seconds.
 - Default output cap is 64KB.
 - Dangerous commands are denied: `rm -rf`, `sudo`, `git push`, `docker`, `curl | sh`, recursive chmod on `/`.
+- macOS native write-sandbox denials may be retried without the native write sandbox only after an explicit `sandbox_bypass` permission prompt.
+- Explicit command paths outside the project may be retried only after an explicit `sandbox_bypass` permission prompt. Dangerous-command checks still apply.
 - Timed-out processes return `timedOut=true`.
 
 ## Context

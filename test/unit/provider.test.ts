@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { chatCompletionSSEToProviderEvents, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
-import { messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
+import { imagePart, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
 describe("provider", () => {
@@ -70,6 +70,7 @@ describe("provider", () => {
             model: "gpt-5-mini",
             stream: true,
             input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
+            reasoning: { effort: "high" },
             tools: [],
           },
         },
@@ -77,6 +78,52 @@ describe("provider", () => {
     } finally {
       if (previous === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = previous
+    }
+  })
+
+  test("maps image parts to OpenAI Responses input_image content", async () => {
+    const previous = process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY = "test-key"
+    try {
+      const provider = new OpenAIProvider("gpt-5-mini", { effort: "max" })
+      const messages = messagesToProviderInput([userMessage("describe", [imagePart({ type: "url", url: "https://example.test/image.png" })])])
+      const stream = provider.stream({ mode: "build", prompt: "describe", messages: [], providerMessages: messages, tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            reasoning: { effort: "high" },
+            input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "describe" }, { type: "input_image", image_url: "https://example.test/image.png" }] }],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = previous
+    }
+  })
+
+  test("rejects image input for DeepSeek before fetch", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat")
+      const messages = messagesToProviderInput([userMessage("describe", [imagePart({ type: "url", url: "https://example.test/image.png" })])])
+      let error: unknown
+      try {
+        for await (const _ of provider.stream({ mode: "build", prompt: "describe", messages: [], providerMessages: messages, tools: [] })) {
+          // consume stream
+        }
+      } catch (caught) {
+        error = caught
+      }
+      expect(error).toBeInstanceOf(Error)
+      expect(String((error as Error).message)).toContain("does not support image input")
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
     }
   })
 

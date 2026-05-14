@@ -1,8 +1,15 @@
 import { Provider, ProviderInput, ProviderEvent } from "./types"
 import { hasToolResult, call, latestToolResult } from "./utils"
+import type { ProviderCapabilities, ProviderOptions } from "./types"
 
 export class FakeProvider implements Provider {
   readonly name = "fake"
+  readonly model?: string
+  readonly capabilities: ProviderCapabilities = { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high", "max"] }
+
+  constructor(options: ProviderOptions = {}) {
+    this.model = options.model
+  }
 
   async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
     const prompt = input.prompt.toLowerCase()
@@ -65,6 +72,12 @@ export class FakeProvider implements Provider {
         return
       }
       yield { type: "text_delta", text: "Skill loaded." }
+      yield { type: "done" }
+      return
+    }
+    if (input.providerMessages.some((message) => message.parts?.some((part) => part.type === "image"))) {
+      yield { type: "reasoning_delta", text: "I should inspect the attached image." }
+      yield { type: "text_delta", text: "Image received." }
       yield { type: "done" }
       return
     }

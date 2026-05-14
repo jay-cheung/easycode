@@ -103,4 +103,54 @@ describe("cli args", () => {
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })
+
+  test("non-logger session renders image reasoning as a timeline", async () => {
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "pic.png"), "image-bytes")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("/image pic.png\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write("Describe it\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Attached image:")
+    expect(stdout).toContain("● Thought")
+    expect(stdout).toContain("I should inspect the attached image.")
+    expect(stdout).toContain("● Answer")
+    expect(stdout).toContain("Image received.")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("logger session does not enable timeline rendering", async () => {
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "pic.png"), "image-bytes")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--logger", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("/image pic.png\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write("Describe it\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).not.toContain("● Thought")
+    expect(stdout).toContain("I should inspect the attached image.")
+    expect(stdout).toContain("[easycode]")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
 })

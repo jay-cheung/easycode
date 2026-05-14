@@ -11,7 +11,10 @@ export type ToolCall = {
   reasoningContent?: string
 }
 
+export type ImageSource = { type: "path"; path: string; mimeType: string } | { type: "url"; url: string; mimeType?: string }
 export type TextPart = { type: "text"; text: string }
+export type ReasoningPart = { type: "reasoning"; text: string }
+export type ImagePart = { type: "image"; source: ImageSource }
 export type SummaryPart = { type: "summary"; text: string }
 export type ToolCallPart = { type: "tool_call"; call: ToolCall; status: ToolCallStatus }
 export type ToolResultPart = {
@@ -23,7 +26,7 @@ export type ToolResultPart = {
   metadata: Record<string, unknown>
 }
 
-export type MessagePart = TextPart | SummaryPart | ToolCallPart | ToolResultPart
+export type MessagePart = TextPart | ReasoningPart | ImagePart | SummaryPart | ToolCallPart | ToolResultPart
 
 export type Message = {
   id: string
@@ -47,6 +50,14 @@ export function createID(prefix: string) {
 
 export function textPart(text: string): TextPart {
   return { type: "text", text }
+}
+
+export function reasoningPart(text: string): ReasoningPart {
+  return { type: "reasoning", text }
+}
+
+export function imagePart(source: ImageSource): ImagePart {
+  return { type: "image", source }
 }
 
 export function summaryPart(text: string): SummaryPart {
@@ -80,6 +91,13 @@ export function createMessage(role: MessageRole, parts: MessagePart[], id = crea
 
 export function textMessage(role: MessageRole, text: string, id?: string): Message {
   return createMessage(role, [textPart(text)], id)
+}
+
+export function userMessage(text: string, images: ImagePart[] = [], id?: string): Message {
+  const parts: MessagePart[] = []
+  if (text) parts.push(textPart(text))
+  parts.push(...images)
+  return createMessage("user", parts, id)
 }
 
 export function toolCallMessage(call: ToolCall): Message {
@@ -146,6 +164,8 @@ export function redactProtectedMessage(message: Message, protectedCallIDs = new 
 
 export function partToText(part: MessagePart, options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}) {
   if (part.type === "text") return part.text
+  if (part.type === "reasoning") return `<reasoning>\n${part.text}\n</reasoning>`
+  if (part.type === "image") return `<image source="${imageSourceLabel(part.source)}" />`
   if (part.type === "summary") return `<summary>\n${part.text}\n</summary>`
   if (part.type === "tool_call") return `<tool_call name="${part.call.name}" id="${part.call.id}">${JSON.stringify(part.call.input)}</tool_call>`
   const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
@@ -173,6 +193,7 @@ export function truncateLargeMessageOutputs(messages: Message[]): Message[] {
     parts: message.parts.map((part) => {
       if (part.type === "tool_result") return { ...part, output: truncateLargeOutput(part.output, true) }
       if (message.role === "assistant" && part.type === "text") return { ...part, text: truncateLargeOutput(part.text, true) }
+      if (message.role === "assistant" && part.type === "reasoning") return { ...part, text: truncateLargeOutput(part.text, true) }
       return part
     }),
   }))
@@ -182,4 +203,8 @@ function truncateLargeOutput(text: string, enabled = true) {
   if (!enabled || text.length <= largeOutputLimit) return text
   const omitted = text.length - largeOutputHead - largeOutputTail
   return `${text.slice(0, largeOutputHead)}\n\n[truncated ${omitted} chars from large historical output]\n\n${text.slice(-largeOutputTail)}`
+}
+
+function imageSourceLabel(source: ImageSource) {
+  return source.type === "url" ? source.url : source.path
 }

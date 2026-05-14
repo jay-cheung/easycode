@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
 import { createBuiltinRegistry, ToolRegistry } from "../../src/tool"
-import { Sandbox } from "../../src/sandbox"
+import { type BashResult, Sandbox } from "../../src/sandbox"
 import { PermissionService, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -123,8 +123,130 @@ describe("tool", () => {
     expect(result.metadata.stdout).toBeUndefined()
     expect(result.metadata.stderr).toBeUndefined()
   })
+
+  test("bash asks before bypassing native write sandbox failures", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const requests: string[] = []
+    const calls: Array<{ bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean } | undefined> = []
+    const sandbox = {
+      root,
+      execute: async (_input: unknown, _mode: unknown, options?: { bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean }) => {
+        calls.push(options)
+        return options?.bypassNativeWriteSandbox
+          ? bashResult({ command: "git log", exitCode: 0, stdout: "ok", nativeWriteSandbox: false, sandboxBypassed: true })
+          : bashResult({
+              command: "git log",
+              exitCode: 1,
+              stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
+              nativeWriteSandbox: true,
+              sandboxBypassed: false,
+            })
+      },
+    } as unknown as Sandbox
+    const permission = new PermissionService(
+      [
+        { permission: "bash", pattern: "*", action: "allow" },
+        { permission: "sandbox_bypass", pattern: "*", action: "ask" },
+      ],
+      (request) => {
+        requests.push(request.permission)
+        expect(request.metadata.reason).toBe("native_write_sandbox_denial")
+        expect(request.metadata.risk).toContain("without the macOS write sandbox")
+        return "once"
+      },
+    )
+
+    const result = await registry.run("bash", { command: "git log" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
+
+    expect(requests).toEqual(["sandbox_bypass"])
+    expect(calls.map((call) => Boolean(call?.bypassNativeWriteSandbox))).toEqual([false, true])
+    expect(result.output).toBe("ok")
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.sandboxBypassed).toBe(true)
+  })
+
+  test("bash does not retry sandbox bypass when rejected", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const calls: Array<{ bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean } | undefined> = []
+    const sandbox = {
+      root,
+      execute: async (_input: unknown, _mode: unknown, options?: { bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean }) => {
+        calls.push(options)
+        return bashResult({
+          command: "git log",
+          exitCode: 1,
+          stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
+          nativeWriteSandbox: true,
+          sandboxBypassed: false,
+        })
+      },
+    } as unknown as Sandbox
+    const permission = new PermissionService(
+      [
+        { permission: "bash", pattern: "*", action: "allow" },
+        { permission: "sandbox_bypass", pattern: "*", action: "ask" },
+      ],
+      () => "reject",
+    )
+
+    const result = await registry.run("bash", { command: "git log" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
+
+    expect(calls).toHaveLength(1)
+    expect(result.metadata.status).toBe("failed")
+    expect(result.output).toContain("Sandbox bypass was not approved")
+  })
+
+  test("bash asks before bypassing explicit path boundary", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const requests: string[] = []
+    const result = await registry.run(
+      "bash",
+      { command: "ls /var/folders" },
+      {
+        agentMode: "build",
+        sandbox: new Sandbox(root),
+        permission: new PermissionService(
+          [
+            { permission: "bash", pattern: "*", action: "allow" },
+            { permission: "sandbox_bypass", pattern: "*", action: "ask" },
+          ],
+          (request) => {
+            requests.push(request.permission)
+            expect(request.metadata.reason).toBe("path_boundary_escape")
+            expect(request.metadata.risk).toContain("project-root path boundary")
+            expect(request.metadata.reference).toBe("/var/folders")
+            return "once"
+          },
+        ),
+        skills: new SkillService(root),
+        messages: [],
+      },
+    )
+
+    expect(requests).toEqual(["sandbox_bypass"])
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.pathBoundaryBypassed).toBe(true)
+    expect(result.metadata.sandboxBypassed).toBe(false)
+  })
 })
 
 function toolContext(root = import.meta.dir) {
   return { agentMode: "build" as const, sandbox: new Sandbox(root), permission: PermissionService.autoApprove(defaultPermissionRules("build")), skills: new SkillService(root), messages: [] }
+}
+
+function bashResult(input: Partial<BashResult> & Pick<BashResult, "command" | "exitCode">): BashResult {
+  return {
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    truncated: false,
+    durationMs: 1,
+    nativeWriteSandbox: false,
+    sandboxBypassed: false,
+    pathBoundaryBypassed: false,
+    ...input,
+  }
 }

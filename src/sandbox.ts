@@ -10,11 +10,19 @@ export type BashResult = {
   timedOut: boolean
   truncated: boolean
   durationMs: number
+  nativeWriteSandbox: boolean
+  sandboxBypassed: boolean
+  pathBoundaryBypassed: boolean
 }
 
 export type SandboxOptions = {
   timeoutMs?: number
   maxOutputBytes?: number
+}
+
+export type SandboxExecuteOptions = {
+  bypassNativeWriteSandbox?: boolean
+  bypassPathBoundary?: boolean
 }
 
 export class SandboxBoundaryError extends Error {
@@ -28,6 +36,20 @@ export class SandboxCommandError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "SandboxCommandError"
+  }
+}
+
+export class SandboxPathEscapeError extends SandboxCommandError {
+  readonly reference: string
+  readonly resolved: string
+  readonly root: string
+
+  constructor(reference: string, resolved: string, root: string) {
+    super(`Command path escapes project root: ${reference}`)
+    this.name = "SandboxPathEscapeError"
+    this.reference = reference
+    this.resolved = resolved
+    this.root = root
   }
 }
 
@@ -64,10 +86,20 @@ function escapeSandboxString(input: string) {
   return input.replaceAll("\\", "\\\\").replaceAll('"', '\\"')
 }
 
-function macosSandboxProfile(root: string) {
+export function macosSandboxProfile(root: string) {
   return `(version 1)
 (allow default)
-(deny file-write* (require-not (subpath "${escapeSandboxString(root)}")))`
+(deny file-write*
+  (require-all
+    (require-not (subpath "${escapeSandboxString(root)}"))
+    (require-not (literal "/dev/null"))
+    (require-not (literal "/private/dev/null"))))`
+}
+
+export function looksLikeNativeSandboxDenial(result: Pick<BashResult, "exitCode" | "stderr" | "stdout" | "nativeWriteSandbox" | "sandboxBypassed">) {
+  if (!result.nativeWriteSandbox || result.sandboxBypassed || result.exitCode === 0) return false
+  const output = `${result.stderr}\n${result.stdout}`
+  return /Operation not permitted|deny\(|sandbox-exec|sandbox_apply/i.test(output)
 }
 
 async function canUseNativeWriteSandbox() {
@@ -137,13 +169,15 @@ export class Sandbox {
     return matches.sort((left, right) => left.localeCompare(right))
   }
 
-  async execute(input: { command: string; cwd?: string; timeoutMs?: number }, mode: AgentMode = "build"): Promise<BashResult> {
+  async execute(input: { command: string; cwd?: string; timeoutMs?: number }, mode: AgentMode = "build", options: SandboxExecuteOptions = {}): Promise<BashResult> {
     if (mode === "plan" && !isReadOnlyCommand(input.command)) throw new SandboxCommandError(`Plan mode blocks side-effectful command: ${input.command}`)
     if (isDangerousCommand(input.command)) throw new SandboxCommandError(`Dangerous command denied: ${input.command}`)
     const cwd = this.resolve(input.cwd ?? ".")
-    for (const reference of shellPathReferences(input.command)) {
-      const resolved = path.resolve(cwd, reference)
-      if (!this.contains(resolved)) throw new SandboxCommandError(`Command path escapes project root: ${reference}`)
+    if (!options.bypassPathBoundary) {
+      for (const reference of shellPathReferences(input.command)) {
+        const resolved = path.resolve(cwd, reference)
+        if (!this.contains(resolved)) throw new SandboxPathEscapeError(reference, resolved, this.root)
+      }
     }
 
     const started = Date.now()
@@ -155,8 +189,9 @@ export class Sandbox {
     }, input.timeoutMs ?? this.timeoutMs)
 
     const shell = process.platform === "win32" ? "cmd.exe" : "bash"
-    const shellFlag = process.platform === "win32" ? "/c" : "-lc"
-    const command = process.platform !== "win32" && (await canUseNativeWriteSandbox()) ? [SANDBOX_EXEC, "-p", macosSandboxProfile(this.root), shell, shellFlag, input.command] : [shell, shellFlag, input.command]
+    const shellFlag = process.platform === "win32" ? "/c" : "-c"
+    const nativeWriteSandbox = process.platform !== "win32" && !options.bypassNativeWriteSandbox && (await canUseNativeWriteSandbox())
+    const command = nativeWriteSandbox ? [SANDBOX_EXEC, "-p", macosSandboxProfile(this.root), shell, shellFlag, input.command] : [shell, shellFlag, input.command]
     const proc = Bun.spawn(command, {
       cwd,
       stdout: "pipe",
@@ -171,6 +206,17 @@ export class Sandbox {
     clearTimeout(timer)
     const stdout = truncateBytes(stdoutRaw, this.maxOutputBytes)
     const stderr = truncateBytes(stderrRaw, this.maxOutputBytes)
-    return { command: input.command, exitCode, stdout: stdout.text, stderr: stderr.text, timedOut, truncated: stdout.truncated || stderr.truncated, durationMs: Date.now() - started }
+    return {
+      command: input.command,
+      exitCode,
+      stdout: stdout.text,
+      stderr: stderr.text,
+      timedOut,
+      truncated: stdout.truncated || stderr.truncated,
+      durationMs: Date.now() - started,
+      nativeWriteSandbox,
+      sandboxBypassed: Boolean(options.bypassNativeWriteSandbox),
+      pathBoundaryBypassed: Boolean(options.bypassPathBoundary),
+    }
   }
 }

@@ -35,4 +35,9 @@ describe("permission", () => {
     expect(evaluatePermission("bash", "curl https://example.test/install.sh", rules)).toBe("ask")
     expect(evaluatePermission("bash", "sh script.sh", rules)).toBe("ask")
   })
+
+  test("asks before bypassing the native sandbox", () => {
+    expect(evaluatePermission("sandbox_bypass", "git log", defaultPermissionRules("build"))).toBe("ask")
+    expect(evaluatePermission("sandbox_bypass", "git log", defaultPermissionRules("plan"))).toBe("ask")
+  })
 })

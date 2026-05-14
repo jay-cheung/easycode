@@ -153,7 +153,9 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, onTextDelta: (text) => chunks.push(text) }).run("Fix", "build")
     expect(result.status).toBe("completed")
-    expect(result.text).toBe("<reasoning>\nNeed to inspect first.\n</reasoning>\nDone.")
+    expect(result.text).toBe("Done.")
+    expect(result.reasoning).toBe("Need to inspect first.")
+    expect(result.messages.at(-1)?.parts).toMatchObject([{ type: "reasoning", text: "Need to inspect first." }, { type: "text", text: "Done." }])
     expect(chunks.join("")).toBe("Need to inspect first.Done.")
     await rm(root, { recursive: true, force: true })
   })
@@ -176,7 +178,8 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider }).run("Fix", "build")
     expect(result.status).toBe("completed")
-    expect(result.text).toBe("<reasoning>\nFirst thought.\nSecond thought.\n</reasoning>\nDone.")
+    expect(result.text).toBe("Done.")
+    expect(result.reasoning).toBe("First thought.\nSecond thought.")
     await rm(root, { recursive: true, force: true })
   })
 

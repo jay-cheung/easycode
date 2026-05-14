@@ -33,8 +33,8 @@ Providers are registered through `src/provider/registry.ts`; agent, CLI, and eva
 Built-in providers:
 
 - `fake`: deterministic local provider for tests and evals.
-- `openai`: OpenAI Responses API provider.
-- `deepseek`: DeepSeek Chat Completions provider with `thinking`, `reasoning_effort: "high"`, and `stream: false`.
+- `openai`: OpenAI Responses API provider with image input and reasoning effort controls.
+- `deepseek`: DeepSeek Chat Completions provider with `thinking`, `reasoning_effort`, and streaming enabled.
 
 ## Usage
 
@@ -45,7 +45,7 @@ bun run src/cli.ts build --provider openai
 bun run src/cli.ts build --provider deepseek --logger
 ```
 
-Without `--logger`, model text is streamed to stdout as it arrives. With `--logger`, model text is printed after the run completes so structured logs do not mix with the response.
+Without `--logger`, EasyCode renders a lightweight timeline with model thinking, tool calls, tool results, and the final answer. With `--logger`, structured diagnostic logs are emitted instead of the timeline.
 
 Use `--once` to run a single prompt without entering an interactive session.
 
@@ -65,6 +65,29 @@ bun run src/cli.ts build --provider deepseek --session demo
 
 Exit with `exit`, `:exit`, `quit`, or `:quit`.
 
+## Slash Commands
+
+Interactive sessions support a small command set:
+
+```text
+/image <path-or-url>    attach an image to the next prompt
+/image clear            clear pending images
+/skill list             list available skills
+/skill use <name>       keep a skill active for this session
+/skill clear            clear active skills
+/model <provider> [id]  switch provider/model
+/effort <level>         set thinking strength: low, medium, high, max
+/thinking on|off        enable or disable model thinking
+/settings               show current session settings
+/help                   show command help
+```
+
+Image input is capability-gated. OpenAI Responses receives image parts directly; providers without vision support, such as DeepSeek, return a local error asking you to switch provider.
+
+## Sandbox Recovery
+
+On macOS, bash commands run with a native write sandbox that blocks writes outside the project root, and EasyCode also preflights explicit command paths so they stay inside the project. If either guard blocks a command, EasyCode prompts before retrying with the relevant guard bypassed. The retry still keeps dangerous-command checks. Native sandbox bypass may let the command write to temp, cache, or home directories outside the project; path-boundary bypass may let the command read from or reference paths outside the project.
+
 ## Skills
 
 Skills are discovered from these roots:
@@ -75,6 +98,8 @@ Skills are discovered from these roots:
 - `~/.easycode/skills`
 
 Skill files are matched case-insensitively as `skill.md` / `SKILL.md`. Only skill names and descriptions are loaded into context up front; full content is loaded through the `skill` tool.
+
+`/skill use <name>` makes a skill active for the current session and injects its full instructions into future requests. Active skill names are saved in `.easycode/sessions/`.
 
 ## Logger
 

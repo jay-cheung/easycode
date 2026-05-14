@@ -2,11 +2,13 @@ import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import { ContextManager, estimateSummaryTokens, recentProviderMessageSuffix, recentUserTurnMessages, type ContextManagerLike } from "./context"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "./message"
+import { normalizeSessionSettings, type SessionSettings } from "./settings"
 
 export type SessionData = {
   id: string
   messages: Message[]
   summary?: string
+  settings?: SessionSettings
   updatedAt: number
 }
 
@@ -23,16 +25,21 @@ export class SessionStore {
     return JSON.parse(await file.text()) as SessionData
   }
 
-  async save(id: string, context: ContextManagerLike) {
+  async save(id: string, context: ContextManagerLike, settings?: SessionSettings) {
     await mkdir(this.dir, { recursive: true })
     const messages = context.state.summary ? recentProviderMessageSuffix(recentUserTurnMessages(context.state.messages, context.preserveRecentUserTurns), context.compactPreserveTokens) : context.state.messages
     const data: SessionData = {
       id,
       messages: truncateLargeMessageOutputs(redactProtectedMessages(messages)),
       summary: context.state.summary,
+      ...(settings ? { settings: normalizeSessionSettings(settings, settings.provider) } : {}),
       updatedAt: Date.now(),
     }
     await Bun.write(this.filePath(id), `${JSON.stringify(data, null, 2)}\n`)
+  }
+
+  async settings(id: string, fallbackProvider = "fake") {
+    return normalizeSessionSettings((await this.load(id))?.settings, fallbackProvider)
   }
 
   async context(id: string) {

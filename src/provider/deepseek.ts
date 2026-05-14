@@ -1,7 +1,8 @@
 import { OpenAILikeProvider, normalizeModelName } from "./openai-like"
-import type { ProviderEvent, ProviderInput } from "./types"
+import { ProviderError, type ProviderEvent, type ProviderInput } from "./types"
+import type { ProviderOptions } from "./types"
 import { toolToResponseTool } from "./utils"
-import { partToText, type ToolCallPart, type ToolResultPart } from "../message"
+import { partToText, type ReasoningPart, type TextPart, type SummaryPart, type ToolCallPart, type ToolResultPart } from "../message"
 import { parseProviderToolArguments } from "../tool/utils/arguments"
 
 type DeepSeekMessage =
@@ -70,23 +71,33 @@ type DeepSeekStreamParseState = {
 }
 
 export class DeepSeekProvider extends OpenAILikeProvider {
-  constructor(model = process.env.DEEPSEEK_MODEL ?? process.env.EASYCODE_MODEL ?? "deepseek-v4-pro") {
+  constructor(model = process.env.DEEPSEEK_MODEL ?? process.env.EASYCODE_MODEL ?? "deepseek-v4-pro", runtime: ProviderOptions = {}) {
     super({
       name: "deepseek",
       model: normalizeModelName(model),
       apiKeyEnv: "DEEPSEEK_API_KEY",
       url: process.env.DEEPSEEK_API_URL ?? "https://api.deepseek.com/chat/completions",
+      runtime,
+      capabilities: { supportsImages: false, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["high", "max"] },
       missingApiKeyMessage: "DEEPSEEK_API_KEY is required for DeepSeekProvider",
       errorPrefix: "DeepSeek API failed",
     })
   }
 
+  override async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
+    if (input.providerMessages.some((message) => message.parts?.some((part) => part.type === "image"))) {
+      throw new ProviderError("Provider deepseek does not support image input. Use /model openai with a vision-capable model.")
+    }
+    yield* super.stream(input)
+  }
+
   protected override buildRequestBody(input: ProviderInput) {
+    const thinkingEnabled = this.runtime.thinking !== false
     return {
       model: this.model,
       messages: input.providerMessages.flatMap(chatMessagesFromProviderMessage),
-      thinking: { type: "enabled" },
-      reasoning_effort: process.env.DEEPSEEK_REASONING_EFFORT ?? "max",
+      thinking: { type: thinkingEnabled ? "enabled" : "disabled" },
+      ...(thinkingEnabled ? { reasoning_effort: deepSeekReasoningEffort(this.runtime.effort ?? (process.env.DEEPSEEK_REASONING_EFFORT === "high" ? "high" : "max")) } : {}),
       stream: true,
       stream_options: { include_usage: true },
       tools: input.tools.map(toolToChatCompletionTool),
@@ -195,8 +206,8 @@ function chatMessagesFromProviderMessage(message: ProviderInput["providerMessage
   const parts = message.parts ?? []
   const toolCalls = parts.filter((part): part is ToolCallPart => part.type === "tool_call")
   if (message.role === "assistant" && toolCalls.length > 0) {
-    const text = parts.filter((part) => part.type !== "tool_call").map((part) => partToText(part)).join("\n")
-    const reasoningContent = toolCalls.find((part) => part.call.reasoningContent)?.call.reasoningContent
+    const text = parts.filter((part): part is TextPart | SummaryPart => part.type === "text" || part.type === "summary").map((part) => partToText(part)).join("\n")
+    const reasoningContent = toolCalls.find((part) => part.call.reasoningContent)?.call.reasoningContent ?? parts.filter((part): part is ReasoningPart => part.type === "reasoning").map((part) => part.text).join("")
     return [
       {
         role: "assistant",
@@ -215,6 +226,11 @@ function chatMessagesFromProviderMessage(message: ProviderInput["providerMessage
     return toolResults.map((part) => ({ role: "tool", tool_call_id: part.callID, content: toolResultContent(part) }))
   }
   const role = message.role === "system" || message.role === "assistant" ? message.role : "user"
+  if (role === "assistant") {
+    const text = parts.filter((part): part is TextPart | SummaryPart => part.type === "text" || part.type === "summary").map((part) => partToText(part)).join("\n")
+    const reasoningContent = parts.filter((part): part is ReasoningPart => part.type === "reasoning").map((part) => part.text).join("")
+    return [{ role, content: text || null, ...(reasoningContent ? { reasoning_content: reasoningContent } : {}) }]
+  }
   return [{ role, content: message.content }]
 }
 
@@ -234,4 +250,8 @@ function toolToChatCompletionTool(tool: Parameters<typeof toolToResponseTool>[0]
       strict: responseTool.strict,
     },
   }
+}
+
+function deepSeekReasoningEffort(effort: string) {
+  return effort === "max" ? "max" : "high"
 }

@@ -2,10 +2,13 @@ import { toolToResponseTool } from "./utils"
 import { Provider, ProviderInput, ProviderEvent, ProviderError } from "./types"
 import type { ProviderInputMessage } from "../message"
 import { parseProviderToolArguments } from "../tool/utils/arguments"
+import { imageSourceToDataURL } from "../image"
+import type { ProviderCapabilities, ProviderOptions } from "./types"
 
 type OpenAIContentPart = {
   type?: string
   text?: string
+  image_url?: string
 }
 
 type OpenAIOutputItem = {
@@ -41,6 +44,8 @@ export type OpenAILikeProviderOptions = {
   model: string
   apiKeyEnv: string
   url: string
+  capabilities?: ProviderCapabilities
+  runtime?: ProviderOptions
   missingApiKeyMessage?: string
   errorPrefix?: string
 }
@@ -55,10 +60,11 @@ export function normalizeModelName(model: string) {
 
 export function providerMessageToResponseInput(message: ProviderInputMessage) {
   const role = message.role === "tool" ? "user" : message.role
+  const content = responseInputContent(message, role)
   return {
     type: "message",
     role,
-    content: [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }],
+    content,
   }
 }
 
@@ -95,16 +101,20 @@ export function openAIStreamEventToProviderEvents(parsed: OpenAIStreamEvent, sta
 export class OpenAILikeProvider implements Provider {
   readonly name: string
   readonly model: string
+  readonly capabilities: ProviderCapabilities
   private readonly apiKeyEnv: string
   private readonly url: string
+  protected readonly runtime: ProviderOptions
   private readonly missingApiKeyMessage: string
   private readonly errorPrefix: string
 
   constructor(options: OpenAILikeProviderOptions) {
     this.name = options.name
     this.model = options.model
+    this.capabilities = options.capabilities ?? { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high"] }
     this.apiKeyEnv = options.apiKeyEnv
     this.url = options.url
+    this.runtime = options.runtime ?? {}
     this.missingApiKeyMessage = options.missingApiKeyMessage ?? `${options.apiKeyEnv} is required for ${options.name} provider`
     this.errorPrefix = options.errorPrefix ?? "OpenAI-like API failed"
   }
@@ -130,12 +140,23 @@ export class OpenAILikeProvider implements Provider {
   }
 
   protected buildRequestBody(input: ProviderInput): unknown {
-    return {
+    const body: Record<string, unknown> = {
       model: this.model,
       stream: true,
       input: input.providerMessages.map(providerMessageToResponseInput),
       tools: input.tools.map(toolToResponseTool),
     }
+    const reasoning = this.responseReasoning()
+    if (reasoning) body.reasoning = reasoning
+    return body
+  }
+
+  protected responseReasoning() {
+    if (!this.capabilities.supportsThinking || this.runtime.thinking === false) return undefined
+    const requested = this.runtime.effort ?? "high"
+    const effort = requested === "max" ? "high" : requested
+    if (!this.capabilities.effortValues.includes(effort)) return undefined
+    return { effort }
   }
 
   protected async *readResponseEvents(response: Response): AsyncIterable<ProviderEvent> {
@@ -163,6 +184,24 @@ export class OpenAILikeProvider implements Provider {
     if (!this.includeSuccessfulResponseBody()) return {}
     return { body: await response.clone().text().catch(() => "") }
   }
+}
+
+function responseInputContent(message: ProviderInputMessage, role: string) {
+  if (!message.parts) return [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }]
+  const content: Array<{ type: string; text?: string; image_url?: string }> = []
+  for (const part of message.parts) {
+    if (part.type === "image" && role !== "assistant") {
+      content.push({ type: "input_image", image_url: imageSourceToDataURL(part.source) })
+      continue
+    }
+    if (part.type === "tool_call" || part.type === "tool_result") continue
+    if (part.type === "text" || part.type === "summary" || part.type === "reasoning") {
+      const text = part.type === "summary" ? `<summary>\n${part.text}\n</summary>` : part.type === "reasoning" ? `<reasoning>\n${part.text}\n</reasoning>` : part.text
+      if (text) content.push({ type: role === "assistant" ? "output_text" : "input_text", text })
+    }
+  }
+  if (content.length === 0) return [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }]
+  return content
 }
 
 function providerEventsFromSSELine(line: string, state: OpenAIStreamParseState, includeRaw = false) {

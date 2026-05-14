@@ -25,6 +25,19 @@ describe("session store", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("saves and restores session settings", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.add(textMessage("user", "hello"))
+    await store.save("demo", context, { provider: "openai", model: "gpt-5-mini", thinking: false, effort: "max", selectedSkills: ["demo"] })
+
+    const saved = await store.load("demo")
+    expect(saved?.settings).toMatchObject({ provider: "openai", model: "gpt-5-mini", thinking: false, effort: "max", selectedSkills: ["demo"] })
+    expect(await store.settings("demo", "fake")).toMatchObject({ provider: "openai", model: "gpt-5-mini", thinking: false, effort: "max", selectedSkills: ["demo"] })
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("prunes compacted session messages on save", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)

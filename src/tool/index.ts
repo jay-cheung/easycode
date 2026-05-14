@@ -2,7 +2,7 @@ import path from "node:path"
 import { z } from "zod"
 import type { AgentMode, Message } from "../message"
 import { PermissionDeniedError, PermissionRejectedError, type PermissionService } from "../permission"
-import type { Sandbox } from "../sandbox"
+import { looksLikeNativeSandboxDenial, SandboxPathEscapeError, type BashResult, type Sandbox, type SandboxExecuteOptions } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
 import { invalidProviderToolArguments } from "./utils/arguments"
 
@@ -225,9 +225,8 @@ export function createBuiltinRegistry() {
     patterns: (input) => [BashInput.parse(input).command],
     execute: async (input, ctx) => {
       const params = BashInput.parse(input)
-      const result = await ctx.sandbox.execute(params, ctx.agentMode)
-      const { stdout, stderr, ...metadata } = result
-      return { title: params.command, output: [stdout, stderr].filter(Boolean).join("\n"), metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...metadata } }
+      const result = await executeBashWithSandboxRecovery(params, ctx)
+      return bashResultToToolResult(params.command, result)
     },
   })
 
@@ -262,4 +261,70 @@ export function createBuiltinRegistry() {
   })
 
   return registry
+}
+
+async function executeBashWithSandboxRecovery(params: z.infer<typeof BashInput>, ctx: ToolContext) {
+  const options: SandboxExecuteOptions = {}
+  let result: BashResult
+  try {
+    result = await ctx.sandbox.execute(params, ctx.agentMode, options)
+  } catch (error) {
+    if (!(error instanceof SandboxPathEscapeError)) throw error
+    const approved = await requestSandboxBypass(ctx, params, {
+      reason: "path_boundary_escape",
+      risk: "Reruns this command without EasyCode's explicit project-root path boundary check. The command may read from or reference paths outside the project root.",
+      failure: error.message,
+      reference: error.reference,
+      resolved: error.resolved,
+    })
+    if (!approved) throw error
+    options.bypassPathBoundary = true
+    result = await ctx.sandbox.execute(params, ctx.agentMode, options)
+  }
+  if (!looksLikeNativeSandboxDenial(result)) return result
+
+  const approved = await requestSandboxBypass(ctx, params, {
+    reason: "native_write_sandbox_denial",
+    risk: "Reruns this command without the macOS write sandbox. The command may write outside the project root, including temp, cache, or home directories.",
+    failure: sandboxFailureSummary(result),
+  })
+  if (!approved) {
+    return { ...result, stderr: appendLine(result.stderr, "Sandbox bypass was not approved; command was not retried.") }
+  }
+
+  const retried = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, bypassNativeWriteSandbox: true })
+  return { ...retried, stderr: retried.stderr, sandboxBypassed: true }
+}
+
+async function requestSandboxBypass(ctx: ToolContext, params: z.infer<typeof BashInput>, metadata: Record<string, unknown>) {
+  const reason = typeof metadata.reason === "string" ? metadata.reason : "sandbox_bypass"
+  try {
+    await ctx.permission.authorize({
+      permission: "sandbox_bypass",
+      patterns: [`${reason}:${params.command}`],
+      always: [`${reason}:${params.command}`],
+      metadata: {
+        tool: "bash",
+        command: params.command,
+        cwd: params.cwd,
+        ...metadata,
+      },
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function bashResultToToolResult(command: string, result: BashResult): ToolResult {
+  const { stdout, stderr, ...metadata } = result
+  return { title: command, output: [stdout, stderr].filter(Boolean).join("\n"), metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...metadata } }
+}
+
+function sandboxFailureSummary(result: BashResult) {
+  return [result.stderr, result.stdout].filter(Boolean).join("\n").trim().slice(0, 1_000)
+}
+
+function appendLine(text: string, line: string) {
+  return text ? `${text}\n${line}` : line
 }

@@ -29,7 +29,7 @@ export interface ContextManagerLike {
   needsCompaction(): boolean
   compactionInput(): ProviderInputMessage[]
   compact(summary: string): boolean
-  compose(input?: { agent: Agent; skills: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
+  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
 }
 
 export class ContextManager implements ContextManagerLike {
@@ -81,12 +81,13 @@ export class ContextManager implements ContextManagerLike {
     return true
   }
 
-  compose(input?: { agent: Agent; skills: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
+  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
     const messages: Message[] = []
     if (input) {
       const skillList = input.skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
+      const selectedSkillList = input.selectedSkills?.map((skill) => `<skill name="${skill.name}" location="${skill.location}">\n${skill.content ?? ""}\n</skill>`).join("\n\n") || "(none)"
       const toolList = input.tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")
-      const system = [input.agent.systemPrompt, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Available tools:\n${toolList}`].join("\n\n")
+      const system = [input.agent.systemPrompt, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`].join("\n\n")
       messages.push(textMessage("system", system))
     }
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))

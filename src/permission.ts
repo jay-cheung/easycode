@@ -156,6 +156,7 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     // The pipe is literal here: deny curl-pipe-shell, but do not deny curl or shell commands by themselves.
     { permission: "bash", pattern: "*curl*|*sh*", action: "deny" },
     { permission: "bash", pattern: "*curl*|*bash*", action: "deny" },
+    { permission: "sandbox_bypass", pattern: "*", action: "ask" },
     { permission: "skill", pattern: "*", action: "ask" },
     { permission: "plan_exit", pattern: "*", action: mode === "plan" ? "allow" : "deny" },
   ]
