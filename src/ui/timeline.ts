@@ -11,15 +11,29 @@ export type RunUiEvent =
 
 type Writable = {
   write(text: string): unknown
+  isTTY?: boolean
 }
+
+type TimelineTitle = "thought" | "tool" | "answer"
+
+const titleColors: Record<TimelineTitle, string> = {
+  thought: "\x1b[36m",
+  tool: "\x1b[33m",
+  answer: "\x1b[32m",
+}
+
+const resetColor = "\x1b[0m"
 
 export class TimelineRenderer {
   private phase: "idle" | "thought" | "answer" = "idle"
   private thoughtStartedAt = 0
   private thoughtText = ""
   private answerOpen = false
+  private readonly colorEnabled: boolean
 
-  constructor(private readonly output: Writable = process.stdout) {}
+  constructor(private readonly output: Writable = process.stdout) {
+    this.colorEnabled = output.isTTY === true
+  }
 
   event(event: RunUiEvent) {
     if (event.type === "reasoning_delta") {
@@ -37,13 +51,13 @@ export class TimelineRenderer {
     if (event.type === "tool_call") {
       this.closeThought()
       this.closeAnswer()
-      this.output.write(`\n● ${event.call.name} ${summarizeInput(event.call.input)}\n`)
+      this.output.write(`\n${this.title("tool", `● ${event.call.name}`)} ${summarizeInput(event.call.input)}\n`)
       return
     }
     if (event.type === "tool_result") {
       const icon = event.status === "succeeded" ? "✓" : event.status === "denied" ? "!" : "×"
       const preview = previewOutput(event.output)
-      this.output.write(`  ${icon} ${event.title}${preview ? `\n${indent(preview, "    ")}` : ""}\n`)
+      this.output.write(`  ${icon} ${this.title("tool", event.title)}${preview ? `\n${indent(preview, "    ")}` : ""}\n`)
       return
     }
     if (event.type === "failure") {
@@ -66,7 +80,7 @@ export class TimelineRenderer {
     this.phase = "thought"
     this.thoughtStartedAt = Date.now()
     this.thoughtText = ""
-    this.output.write(`\n● Thought\n`)
+    this.output.write(`\n${this.title("thought", "● Thought")}\n`)
   }
 
   private closeThought() {
@@ -81,7 +95,7 @@ export class TimelineRenderer {
     if (this.phase === "answer") return
     this.phase = "answer"
     this.answerOpen = true
-    this.output.write(`\n● Answer\n`)
+    this.output.write(`\n${this.title("answer", "● Answer")}\n`)
   }
 
   private closeAnswer() {
@@ -89,6 +103,11 @@ export class TimelineRenderer {
     this.output.write("\n")
     this.answerOpen = false
     if (this.phase === "answer") this.phase = "idle"
+  }
+
+  private title(type: TimelineTitle, text: string) {
+    if (!this.colorEnabled) return text
+    return `${titleColors[type]}${text}${resetColor}`
   }
 }
 
@@ -108,4 +127,3 @@ function previewOutput(output: string) {
 function indent(text: string, prefix: string) {
   return text.split(/\r?\n/).map((line) => `${prefix}${line}`).join("\n")
 }
-
