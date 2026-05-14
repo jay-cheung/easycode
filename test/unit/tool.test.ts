@@ -4,7 +4,7 @@ import { createBuiltinRegistry, ToolRegistry } from "../../src/tool"
 import { type BashResult, Sandbox } from "../../src/sandbox"
 import { PermissionService, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 
@@ -166,6 +166,26 @@ describe("tool", () => {
     expect(result.metadata.sandboxBypassed).toBe(true)
   })
 
+  test("bash repeats reuse the first approval in the same permission service", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    let asks = 0
+    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+      asks += 1
+      return "once"
+    })
+    const ctx = { agentMode: "build" as const, sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] }
+
+    const first = await registry.run("bash", { command: "printf hello" }, ctx)
+    const second = await registry.run("bash", { command: "printf hello" }, ctx)
+    const third = await registry.run("bash", { command: "printf bye" }, ctx)
+
+    expect(first.metadata.status).toBe("succeeded")
+    expect(second.metadata.status).toBe("succeeded")
+    expect(third.metadata.status).toBe("succeeded")
+    expect(asks).toBe(2)
+  })
+
   test("bash does not retry sandbox bypass when rejected", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
@@ -230,6 +250,30 @@ describe("tool", () => {
     expect(result.metadata.status).toBe("succeeded")
     expect(result.metadata.pathBoundaryBypassed).toBe(true)
     expect(result.metadata.sandboxBypassed).toBe(false)
+  })
+
+  test("read-only ls approvals reuse scoped outside-path approvals", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const outside = await mkdtemp(path.join(os.tmpdir(), "easycode-outside-"))
+    tempRoots.push(outside)
+    await mkdir(path.join(outside, "a"))
+    await mkdir(path.join(outside, "b"))
+    const requests: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requests.push(`${request.permission}:${String(request.metadata.approvalScope ?? "")}`)
+      return "once"
+    })
+    const ctx = { agentMode: "build" as const, sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] }
+
+    const first = await registry.run("bash", { command: `ls ${path.join(outside, "a")}` }, ctx)
+    const second = await registry.run("bash", { command: `ls ${path.join(outside, "b")}` }, ctx)
+
+    expect(first.metadata.status).toBe("succeeded")
+    expect(second.metadata.status).toBe("succeeded")
+    expect(requests).toHaveLength(2)
+    expect(requests[0]).toContain("bash:readonly ls")
+    expect(requests[1]).toContain("sandbox_bypass:path_boundary_escape readonly ls")
   })
 })
 

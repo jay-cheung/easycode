@@ -88,6 +88,8 @@ Image input is capability-gated. OpenAI Responses receives image parts directly;
 
 On macOS, bash commands run with a native write sandbox that blocks writes outside the project root, and EasyCode also preflights explicit command paths so they stay inside the project. If either guard blocks a command, EasyCode prompts before retrying with the relevant guard bypassed. The retry still keeps dangerous-command checks. Native sandbox bypass may let the command write to temp, cache, or home directories outside the project; path-boundary bypass may let the command read from or reference paths outside the project.
 
+Repeated bash and sandbox-bypass approvals are cached for the current session by reviewed scope. Simple read-only commands such as `ls` can reuse a narrow path scope like `readonly ls /tmp/work/*`; complex or side-effectful commands stay scoped to the exact command. The cache is in memory only and is not saved to session files.
+
 ## Skills
 
 Skills are discovered from these roots:

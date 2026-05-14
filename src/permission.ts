@@ -132,10 +132,25 @@ export class PermissionService {
       throw error
     }
     if (reply === "always") {
-      for (const pattern of request.always) this.approved.push({ permission: request.permission, pattern, action: "allow" })
+      this.remember(request.permission, request.always)
+    }
+    if (reply === "once" && request.metadata.rememberOnApprove === true) {
+      this.remember(request.permission, metadataStringList(request.metadata.rememberPatterns) ?? request.patterns)
     }
     pending?.resolve()
   }
+
+  private remember(permission: string, patterns: string[]) {
+    for (const pattern of patterns) {
+      if (this.approved.some((rule) => rule.permission === permission && rule.pattern === pattern && rule.action === "allow")) continue
+      this.approved.push({ permission, pattern, action: "allow" })
+    }
+  }
+}
+
+function metadataStringList(value: unknown) {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return undefined
+  return value
 }
 
 export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[] {

@@ -20,6 +20,7 @@
 - Plan-mode edit/write attempts fail.
 - Dangerous bash commands fail.
 - Native write-sandbox bypass and explicit outside-path bypass require a risk prompt and user approval.
+- Repeated approved bash commands reuse the current session approval and do not prompt again.
 - Bash timeout returns structured metadata.
 - Large command output is truncated.
 

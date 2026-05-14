@@ -88,6 +88,8 @@ bun run src/cli.ts build --provider deepseek --session demo
 
 在 macOS 上，bash 命令会通过 native write sandbox 运行，默认禁止写入项目根目录之外的位置；EasyCode 也会预检查命令中的显式路径，默认要求它们留在项目内。如果任一保护拦住命令，EasyCode 会先提示风险，再询问是否绕过对应保护重试。重试仍保留危险命令检查。绕过 native sandbox 后，命令可能写入项目外的临时目录、缓存目录或用户目录；绕过路径边界后，命令可能读取或引用项目外路径。
 
+重复的 bash 和 sandbox-bypass 授权会按审查后的 scope 缓存在当前 session 内。简单只读命令如 `ls` 可以复用较窄的路径 scope，例如 `readonly ls /tmp/work/*`；复杂或有副作用的命令仍然只按精确命令授权。缓存只保存在内存中，不会写入 session 文件。
+
 ## Skills
 
 Skill 会从以下目录发现：

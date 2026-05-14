@@ -13,6 +13,7 @@ pending -> permission_check -> denied | running -> succeeded | failed
 ## Permission
 ```text
 evaluate -> allow | deny | ask -> once | always | reject
+once + repeat-safe metadata -> session approval cache
 ```
 
 ## Context

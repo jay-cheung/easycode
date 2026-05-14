@@ -1,8 +1,9 @@
 import path from "node:path"
+import { statSync } from "node:fs"
 import { z } from "zod"
 import type { AgentMode, Message } from "../message"
-import { PermissionDeniedError, PermissionRejectedError, type PermissionService } from "../permission"
-import { looksLikeNativeSandboxDenial, SandboxPathEscapeError, type BashResult, type Sandbox, type SandboxExecuteOptions } from "../sandbox"
+import { PermissionDeniedError, PermissionRejectedError, type PermissionRequest, type PermissionService } from "../permission"
+import { isDangerousCommand, looksLikeNativeSandboxDenial, SandboxPathEscapeError, type BashResult, type Sandbox, type SandboxExecuteOptions } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
 import { invalidProviderToolArguments } from "./utils/arguments"
 
@@ -76,15 +77,11 @@ export class ToolRegistry implements ToolRegistryLike {
     }
     try {
       const patterns = tool.patterns(parsed.data, ctx)
-      const permissionAction = permissionActionFor(patterns.map((pattern) => ctx.permission.evaluate(tool.permission, pattern)))
-      await ctx.permission.authorize({
-        permission: tool.permission,
-        patterns,
-        always: patterns,
-        metadata: { tool: name },
-      })
+      const request = permissionRequestForTool(tool, parsed.data, ctx, patterns)
+      const permissionAction = permissionActionFor(request.patterns.map((pattern) => ctx.permission.evaluate(tool.permission, pattern)))
+      await ctx.permission.authorize(request)
       const result = await tool.execute(parsed.data, ctx)
-      return { ...result, metadata: { ...result.metadata, permission: tool.permission, permissionAction, patterns } }
+      return { ...result, metadata: { ...result.metadata, permission: tool.permission, permissionAction, patterns: request.patterns } }
     } catch (error) {
       return toolErrorResult(name, error)
     }
@@ -127,6 +124,119 @@ const PlanExitInput = z.object({ markdown: z.string() })
 function relativePattern(ctx: ToolContext, filePath: string) {
   const resolved = path.resolve(ctx.sandbox.root, filePath)
   return ctx.sandbox.contains(resolved) ? path.relative(ctx.sandbox.root, resolved) || "." : resolved
+}
+
+type BashApproval = {
+  target: string
+  rememberPatterns: string[]
+  label: string
+  repeatSafe: boolean
+}
+
+const exactBashApprovalPrefix = "bash:exact:"
+
+function bashApprovalForCommand(command: string, cwd = process.cwd()): BashApproval {
+  const trimmed = command.trim()
+  if (!trimmed) return exactBashApproval(trimmed)
+  if (isDangerousCommand(trimmed)) return rawBashApproval(trimmed, false)
+  const words = shellWords(trimmed)
+  if (!words || words.length === 0) return exactBashApproval(trimmed)
+  const [program = "", ...args] = words
+  const normalizedProgram = path.basename(program)
+  if (normalizedProgram === "git") return gitBashApproval(trimmed, args)
+  if (normalizedProgram === "pwd") return scopedBashApproval("pwd", "project", [])
+  if (!["ls", "cat", "wc", "find"].includes(normalizedProgram)) return exactBashApproval(trimmed)
+  const pathArgs = args.filter((arg) => !arg.startsWith("-"))
+  if (pathArgs.length > 1) return exactBashApproval(trimmed)
+  const rawPath = pathArgs[0] ?? "."
+  const resolved = path.resolve(cwd, rawPath)
+  return scopedBashApproval(normalizedProgram, normalizedPath(resolved), pathRememberPatterns(normalizedProgram, resolved))
+}
+
+function gitBashApproval(command: string, args: string[]) {
+  const subcommand = args.find((arg) => !arg.startsWith("-"))
+  if (!subcommand || !["status", "diff", "log"].includes(subcommand)) return exactBashApproval(command)
+  return scopedBashApproval(`git:${subcommand}`, "project", [])
+}
+
+function exactBashApproval(command: string): BashApproval {
+  return {
+    target: `${exactBashApprovalPrefix}${command}`,
+    rememberPatterns: [`${exactBashApprovalPrefix}${command}`],
+    label: "exact command",
+    repeatSafe: true,
+  }
+}
+
+function rawBashApproval(command: string, repeatSafe: boolean): BashApproval {
+  return {
+    target: command,
+    rememberPatterns: [command],
+    label: "raw command",
+    repeatSafe,
+  }
+}
+
+function scopedBashApproval(kind: string, scope: string, rememberPatterns: string[]): BashApproval {
+  const target = `bash:readonly:${kind}:${scope}`
+  const labelScope = rememberPatterns.length > 0 ? rememberPatterns.map((pattern) => pattern.replace(`bash:readonly:${kind}:`, "")).join(", ") : scope
+  return {
+    target,
+    rememberPatterns: rememberPatterns.length > 0 ? rememberPatterns : [target],
+    label: `readonly ${kind} ${labelScope}`,
+    repeatSafe: true,
+  }
+}
+
+function pathRememberPatterns(kind: string, resolved: string) {
+  const normalized = normalizedPath(resolved)
+  const parent = normalizedPath(path.dirname(resolved))
+  const patterns = new Set([`bash:readonly:${kind}:${normalized}`])
+  if (kind === "ls") patterns.add(`bash:readonly:${kind}:${parent}/*`)
+  if (pathLooksDirectory(resolved)) patterns.add(`bash:readonly:${kind}:${normalized}/*`)
+  return [...patterns]
+}
+
+function pathLooksDirectory(filePath: string) {
+  try {
+    return statSync(filePath).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function normalizedPath(filePath: string) {
+  return filePath.replaceAll("\\", "/").replace(/\/+$/, "") || "/"
+}
+
+function shellWords(command: string) {
+  if (/[;&><`$|]/.test(command)) return undefined
+  const words: string[] = []
+  let current = ""
+  let quote: "'" | '"' | undefined
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index]
+    if (quote) {
+      if (char === quote) quote = undefined
+      else current += char
+      continue
+    }
+    if (char === "'" || char === '"') {
+      quote = char
+      continue
+    }
+    if (/\s/.test(char)) {
+      if (current) {
+        words.push(current)
+        current = ""
+      }
+      continue
+    }
+    current += char
+  }
+  if (quote) return undefined
+  if (current) words.push(current)
+  return words
 }
 
 export function createBuiltinRegistry() {
@@ -222,7 +332,10 @@ export function createBuiltinRegistry() {
     jsonSchema: objectSchema({ command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "number" } }, ["command"]),
     permission: "bash",
     modes: ["build", "plan"],
-    patterns: (input) => [BashInput.parse(input).command],
+    patterns: (input, ctx) => {
+      const params = BashInput.parse(input)
+      return [bashApprovalForCommand(params.command, bashCwd(ctx, params.cwd)).target]
+    },
     execute: async (input, ctx) => {
       const params = BashInput.parse(input)
       const result = await executeBashWithSandboxRecovery(params, ctx)
@@ -263,6 +376,34 @@ export function createBuiltinRegistry() {
   return registry
 }
 
+function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContext, patterns: string[]): Omit<PermissionRequest, "id"> {
+  if (tool.name === "bash") {
+    const params = BashInput.parse(input)
+    const approval = bashApprovalForCommand(params.command, bashCwd(ctx, params.cwd))
+    return {
+      permission: tool.permission,
+      patterns: [approval.target],
+      always: approval.rememberPatterns,
+      metadata: {
+        tool: tool.name,
+        command: params.command,
+        approvalScope: approval.label,
+        rememberOnApprove: approval.repeatSafe,
+        rememberPatterns: approval.rememberPatterns,
+      },
+    }
+  }
+  return { permission: tool.permission, patterns, always: patterns, metadata: { tool: tool.name } }
+}
+
+function bashCwd(ctx: ToolContext, cwd: string | undefined) {
+  try {
+    return ctx.sandbox.resolve(cwd ?? ".")
+  } catch {
+    return ctx.sandbox.root
+  }
+}
+
 async function executeBashWithSandboxRecovery(params: z.infer<typeof BashInput>, ctx: ToolContext) {
   const options: SandboxExecuteOptions = {}
   let result: BashResult
@@ -298,21 +439,44 @@ async function executeBashWithSandboxRecovery(params: z.infer<typeof BashInput>,
 
 async function requestSandboxBypass(ctx: ToolContext, params: z.infer<typeof BashInput>, metadata: Record<string, unknown>) {
   const reason = typeof metadata.reason === "string" ? metadata.reason : "sandbox_bypass"
+  const approval = sandboxBypassApproval(reason, params.command, bashCwd(ctx, params.cwd))
   try {
     await ctx.permission.authorize({
       permission: "sandbox_bypass",
-      patterns: [`${reason}:${params.command}`],
-      always: [`${reason}:${params.command}`],
+      patterns: [approval.target],
+      always: approval.rememberPatterns,
       metadata: {
         tool: "bash",
         command: params.command,
         cwd: params.cwd,
+        approvalScope: approval.label,
+        rememberOnApprove: true,
+        rememberPatterns: approval.rememberPatterns,
         ...metadata,
       },
     })
     return true
   } catch {
     return false
+  }
+}
+
+function sandboxBypassApproval(reason: string, command: string, cwd: string): BashApproval {
+  if (reason === "path_boundary_escape") {
+    const approval = bashApprovalForCommand(command, cwd)
+    return {
+      target: `${reason}:${approval.target}`,
+      rememberPatterns: approval.rememberPatterns.map((pattern) => `${reason}:${pattern}`),
+      label: `${reason} ${approval.label}`,
+      repeatSafe: approval.repeatSafe,
+    }
+  }
+  const exact = exactBashApproval(command)
+  return {
+    target: `${reason}:${exact.target}`,
+    rememberPatterns: exact.rememberPatterns.map((pattern) => `${reason}:${pattern}`),
+    label: `${reason} ${exact.label}`,
+    repeatSafe: true,
   }
 }
 
