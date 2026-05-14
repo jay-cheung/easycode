@@ -48,6 +48,11 @@ describe("cli args", () => {
     expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ once: true, session: "default", prompt: "hello" })
   })
 
+  test("cache strategy can be set at startup", () => {
+    expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--cache-strategy", "cache-heavy"])).toMatchObject({ cacheStrategy: "cache-heavy", prompt: "hello" })
+    expect(() => parseArgs(["build", "--cache-strategy", "missing"])).toThrow("--cache-strategy requires auto, balanced, or cache-heavy")
+  })
+
   test("session startup waits for input before running provider", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "deepseek", "--logger", "--session", "startup", "--root", root], {

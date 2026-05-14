@@ -78,6 +78,7 @@ Interactive sessions support a small command set:
 /model <provider> [id]  switch provider/model
 /effort <level>         set thinking strength: low, medium, high, max
 /thinking on|off        enable or disable model thinking
+/cache <strategy>       set cache strategy: auto, balanced, cache-heavy
 /settings               show current session settings
 /help                   show command help
 ```
@@ -121,8 +122,17 @@ Logger behavior:
 ```bash
 bun test
 bun run eval --provider fake
+bun run cache:bench
 bun run typecheck
 ```
+
+Cache benchmark can compare balanced, cache-heavy, and auto prompt strategies:
+
+```bash
+bun run cache:bench -- --provider openai --profile auto
+```
+
+It prints input tokens, cached tokens, cache misses, output tokens, hit rate, and an effective token total using cached-input and output multipliers. The defaults are `0.02` for cached input and `2` for output, matching cached input 0.02 per 1M tokens, cache-miss input 1.00 per 1M tokens, and output 2.00 per 1M tokens. Override with `--cached-input-multiplier` and `--output-token-multiplier`.
 
 Real provider smoke tests are opt-in so the default test suite stays offline and deterministic:
 

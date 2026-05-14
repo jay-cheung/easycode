@@ -61,7 +61,7 @@ describe("provider", () => {
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
       const first = await stream.next()
       await stream.return?.()
-      expect(first.value).toEqual({
+      expect(first.value).toMatchObject({
         type: "request",
         request: {
           url: "https://api.openai.com/v1/responses",
@@ -72,6 +72,7 @@ describe("provider", () => {
             input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
             reasoning: { effort: "high" },
             tools: [],
+            prompt_cache_key: expect.stringMatching(/^easycode-build-[a-f0-9]{16}$/),
           },
         },
       })
@@ -96,6 +97,29 @@ describe("provider", () => {
           body: {
             reasoning: { effort: "high" },
             input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "describe" }, { type: "input_image", image_url: "https://example.test/image.png" }] }],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = previous
+    }
+  })
+
+  test("allows explicit OpenAI prompt cache routing and retention", async () => {
+    const previous = process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY = "test-key"
+    try {
+      const provider = new OpenAIProvider("gpt-5-mini", { promptCacheKey: "project-cache-key", promptCacheRetention: "24h" })
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            prompt_cache_key: "project-cache-key",
+            prompt_cache_retention: "24h",
           },
         },
       })
@@ -313,6 +337,21 @@ describe("provider", () => {
       type: "tool_call",
       call: { id: "call_3", name: "list", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } },
     })
+  })
+
+  test("parses Responses usage cache details", () => {
+    expect(openAIStreamEventToProviderEvents({
+      type: "response.completed",
+      response: {
+        usage: {
+          input_tokens: 100,
+          output_tokens: 20,
+          total_tokens: 120,
+          input_tokens_details: { cached_tokens: 80 },
+          output_tokens_details: { reasoning_tokens: 5 },
+        },
+      },
+    })).toEqual([{ type: "usage", inputTokens: 100, outputTokens: 20, cacheHitTokens: 80, cacheMissTokens: 20, totalTokens: 120, reasoningTokens: 5 }])
   })
 
   test("parses streamed Responses errors as failures", () => {

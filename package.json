@@ -14,6 +14,7 @@
     "test": "bun test",
     "test:real": "EASYCODE_TEST_PROVIDER=deepseek bun test test/integration/real-provider.test.ts",
     "eval": "bun run src/eval.ts",
+    "cache:bench": "bun run src/cache-benchmark.ts",
     "typecheck": "bunx tsc --noEmit"
   },
   "dependencies": {

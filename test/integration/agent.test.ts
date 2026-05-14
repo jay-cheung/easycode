@@ -205,6 +205,27 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("can send static composed context on every provider turn for cache experiments", async () => {
+    const root = await fixture()
+    const providerMessageContents: string[][] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        providerMessageContents.push(input.providerMessages.map((message) => message.content))
+        if (providerMessageContents.length === 1) {
+          yield { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, staticContextStrategy: "every-step" }).run("Fix", "build")
+    expect(result.status).toBe("completed")
+    expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(true)
+    expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("streams assistant text deltas", async () => {
     const root = await fixture()
     const chunks: string[] = []

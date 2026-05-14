@@ -1,0 +1,14 @@
+{
+  "id": "CACHE-002-stable-large-prefix",
+  "mode": "build",
+  "fixture": "evals/fixtures/cache-bench",
+  "tools": "none",
+  "settings": {
+    "selectedSkills": ["cache-context"]
+  },
+  "turns": [
+    "Answer with one short sentence about the add function.",
+    "Answer with one short sentence about the test file.",
+    "Answer with one short sentence about the package script."
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "id": "CACHE-003-tool-loop-prefix",
+  "mode": "build",
+  "fixture": "evals/fixtures/cache-bench",
+  "tools": "builtin",
+  "providers": ["simulated"],
+  "settings": {
+    "selectedSkills": ["cache-context"]
+  },
+  "syntheticToolLoop": "read-once",
+  "turns": [
+    "Inspect src/add.ts and answer with one short sentence.",
+    "Inspect src/add.ts again and answer with one short sentence."
+  ]
+}

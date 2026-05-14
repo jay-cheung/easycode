@@ -1,3 +1,4 @@
+import { AdaptiveCachePolicy, defaultCachePricing, type CacheStrategy, type StaticContextStrategy } from "./cache-policy"
 import { ContextManager, type ContextManagerLike } from "./context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
@@ -44,6 +45,8 @@ export type AgentRunnerOptions = {
   onTextDelta?: (text: string) => void
   onEvent?: (event: RunUiEvent) => void
   settings?: SessionSettings
+  staticContextStrategy?: StaticContextStrategy
+  cachePolicy?: AdaptiveCachePolicy
 }
 
 export function createAgent(mode: AgentMode): Agent {
@@ -64,6 +67,7 @@ export class AgentRunner {
   readonly onTextDelta?: (text: string) => void
   readonly onEvent?: (event: RunUiEvent) => void
   readonly settings: SessionSettings
+  readonly cachePolicy: AdaptiveCachePolicy
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -78,6 +82,7 @@ export class AgentRunner {
     this.onTextDelta = options.onTextDelta
     this.onEvent = options.onEvent
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
+    this.cachePolicy = options.cachePolicy ?? new AdaptiveCachePolicy({ strategy: cacheStrategyFor(options.staticContextStrategy, this.settings.cacheStrategy), pricing: defaultCachePricing() })
   }
 
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[] } = {}): Promise<AgentRunResult> {
@@ -95,7 +100,8 @@ export class AgentRunner {
     for (let step = 0; step < this.maxSteps; step += 1) {
       this.aspect.step(step + 1, this.maxSteps)
       await this.compactContext(effectiveMode)
-      const providerMessages = this.context.compose(step === 0 ? { agent, skills, selectedSkills, tools } : undefined)
+      const providerMessages = this.context.compose(this.cachePolicy.shouldSendStaticContext(step) ? { agent, skills, selectedSkills, tools } : undefined)
+      this.cachePolicy.observeRequest({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools })
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
@@ -121,7 +127,10 @@ export class AgentRunner {
             toolCall = event.call
             this.onEvent?.({ type: "tool_call", call: event.call })
           }
-          if (event.type === "usage") this.context.recordUsage(event.inputTokens)
+          if (event.type === "usage") {
+            this.context.recordUsage(event.inputTokens)
+            this.cachePolicy.observeUsage(event)
+          }
         }
       } catch (error) {
         if (error instanceof ProviderError) {
@@ -256,7 +265,13 @@ function contextHasProposedPlan(messages: Message[]) {
   return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; settings?: SessionSettings }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; settings?: SessionSettings; staticContextStrategy?: StaticContextStrategy }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, settings })
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, settings, staticContextStrategy: input.staticContextStrategy })
+}
+
+function cacheStrategyFor(staticContextStrategy: StaticContextStrategy | undefined, fallback: CacheStrategy) {
+  if (staticContextStrategy === "every-step") return "cache-heavy"
+  if (staticContextStrategy === "first-step") return "balanced"
+  return fallback
 }

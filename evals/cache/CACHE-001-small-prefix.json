@@ -1,0 +1,11 @@
+{
+  "id": "CACHE-001-small-prefix",
+  "mode": "build",
+  "fixture": "evals/fixtures/cache-bench",
+  "tools": "none",
+  "turns": [
+    "Answer with one short sentence about the add function.",
+    "Answer with one short sentence about the test file.",
+    "Answer with one short sentence about the package script."
+  ]
+}

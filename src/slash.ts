@@ -10,6 +10,7 @@ export type SlashCommand =
   | { type: "model"; provider: string; model?: string }
   | { type: "effort"; value: string }
   | { type: "thinking"; value: "on" | "off"; aliasUsed?: boolean }
+  | { type: "cache"; value: string }
   | { type: "unknown"; name: string }
   | { type: "error"; message: string }
 
@@ -51,6 +52,10 @@ export function parseSlashCommand(input: string): SlashCommand {
     if (value !== "on" && value !== "off") return { type: "error", message: "/thinking requires on or off" }
     return { type: "thinking", value, aliasUsed: name === "thingking" }
   }
+  if (name === "cache") {
+    const value = args[0]?.toLowerCase()
+    return value ? { type: "cache", value } : { type: "error", message: "/cache requires auto, balanced, or cache-heavy" }
+  }
   return { type: "unknown", name: rawName }
 }
 
@@ -65,8 +70,8 @@ export function slashHelpText() {
     "  /model <provider> [id]  switch provider/model",
     "  /effort <level>         set thinking strength: low, medium, high, max",
     "  /thinking on|off        enable or disable model thinking",
+    "  /cache <strategy>       set cache strategy: auto, balanced, cache-heavy",
     "  /settings               show current session settings",
     "  //text                  send /text as a normal prompt",
   ].join("\n")
 }
-

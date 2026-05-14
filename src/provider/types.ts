@@ -21,6 +21,8 @@ export type ProviderOptions = {
   model?: string
   thinking?: boolean
   effort?: ReasoningEffort
+  promptCacheKey?: string
+  promptCacheRetention?: "in_memory" | "24h"
 }
 
 export type ProviderEvent =

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { toolToResponseTool } from "./utils"
 import { Provider, ProviderInput, ProviderEvent, ProviderError } from "./types"
 import type { ProviderInputMessage } from "../message"
@@ -30,7 +31,19 @@ type OpenAIStreamEvent = {
   item?: OpenAIOutputItem
   part?: OpenAIContentPart
   error?: { type?: string; code?: string; message?: string; param?: string | null }
-  response?: { usage?: { input_tokens?: number; output_tokens?: number }; error?: { code?: string; message?: string } }
+  response?: { usage?: OpenAIUsage; error?: { code?: string; message?: string } }
+}
+
+type OpenAIUsage = {
+  input_tokens?: number
+  output_tokens?: number
+  total_tokens?: number
+  input_tokens_details?: {
+    cached_tokens?: number
+  }
+  output_tokens_details?: {
+    reasoning_tokens?: number
+  }
 }
 
 type OpenAIStreamParseState = {
@@ -94,7 +107,7 @@ export function openAIStreamEventToProviderEvents(parsed: OpenAIStreamEvent, sta
   if (parsed.type === "response.function_call_arguments.done" && parsed.name) {
     return [toolCallEvent(parsed.item_id ?? `call_${parsed.name}`, parsed.name, parsed.arguments ?? "{}", state)].filter((event): event is ProviderEvent => Boolean(event))
   }
-  if (parsed.type === "response.completed") return [{ type: "usage", inputTokens: parsed.response?.usage?.input_tokens ?? 0, outputTokens: parsed.response?.usage?.output_tokens ?? 0 }]
+  if (parsed.type === "response.completed") return [usageEvent(parsed.response?.usage)]
   return []
 }
 
@@ -145,10 +158,20 @@ export class OpenAILikeProvider implements Provider {
       stream: true,
       input: input.providerMessages.map(providerMessageToResponseInput),
       tools: input.tools.map(toolToResponseTool),
+      prompt_cache_key: this.promptCacheKey(input),
     }
+    if (this.runtime.promptCacheRetention) body.prompt_cache_retention = this.runtime.promptCacheRetention
     const reasoning = this.responseReasoning()
     if (reasoning) body.reasoning = reasoning
     return body
+  }
+
+  private promptCacheKey(input: ProviderInput) {
+    if (this.runtime.promptCacheKey) return this.runtime.promptCacheKey
+    const stablePrefix = input.providerMessages[0]?.role === "system" ? input.providerMessages[0].content : ""
+    const toolNames = input.tools.map((tool) => tool.name).join(",")
+    const digest = createHash("sha256").update(`${this.model}\n${input.mode}\n${stablePrefix}\n${toolNames}`).digest("hex").slice(0, 16)
+    return `easycode-${input.mode}-${digest}`
   }
 
   protected responseReasoning() {
@@ -183,6 +206,20 @@ export class OpenAILikeProvider implements Provider {
   private async successfulResponseBody(response: Response) {
     if (!this.includeSuccessfulResponseBody()) return {}
     return { body: await response.clone().text().catch(() => "") }
+  }
+}
+
+function usageEvent(usage: OpenAIUsage | undefined): ProviderEvent {
+  const inputTokens = usage?.input_tokens ?? 0
+  const cacheHitTokens = usage?.input_tokens_details?.cached_tokens
+  return {
+    type: "usage",
+    inputTokens,
+    outputTokens: usage?.output_tokens ?? 0,
+    cacheHitTokens,
+    cacheMissTokens: cacheHitTokens === undefined ? undefined : Math.max(0, inputTokens - cacheHitTokens),
+    totalTokens: usage?.total_tokens,
+    reasoningTokens: usage?.output_tokens_details?.reasoning_tokens,
   }
 }
 

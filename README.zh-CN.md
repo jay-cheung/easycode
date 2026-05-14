@@ -78,6 +78,7 @@ bun run src/cli.ts build --provider deepseek --session demo
 /model <provider> [id]  切换 provider/model
 /effort <level>         设置思考强度：low、medium、high、max
 /thinking on|off        开启或关闭模型 thinking
+/cache <strategy>       设置缓存策略：auto、balanced、cache-heavy
 /settings               查看当前 session 设置
 /help                   查看命令帮助
 ```
@@ -121,8 +122,17 @@ Logger 行为：
 ```bash
 bun test
 bun run eval --provider fake
+bun run cache:bench
 bun run typecheck
 ```
+
+缓存 benchmark 可以对比 balanced、cache-heavy 和 auto prompt 策略：
+
+```bash
+bun run cache:bench -- --provider openai --profile auto
+```
+
+它会输出 input tokens、cached tokens、cache miss、output tokens、命中率，以及按 cached-input/output multiplier 折算后的有效 token 总量。默认 cached-input multiplier 是 `0.02`、output multiplier 是 `2`，对应缓存命中输入 0.02/百万 tokens、缓存未命中输入 1.00/百万 tokens、输出 2.00/百万 tokens；可用 `--cached-input-multiplier` 和 `--output-token-multiplier` 覆盖。
 
 真实 provider smoke test 默认不运行，以保持测试离线且确定性；需要时显式启用：
 
