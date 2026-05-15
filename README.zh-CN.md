@@ -128,13 +128,14 @@ bun run cache:bench
 bun run typecheck
 ```
 
-缓存 benchmark 可以对比 balanced、cache-heavy 和 auto prompt 策略。默认是 cache-heavy/every-step；auto 也从 every-step 起步，再由上下文控制器决定保留或回退候选预算调整：
+缓存 benchmark 可以对比 balanced、cache-heavy、auto-frozen 和 auto prompt 策略。默认运行 `real` suite，也就是所有 profile 使用同一批非 synthetic 任务。用 `adaptive` suite 单独验证控制器 accept/rollback：
 
 ```bash
-bun run cache:bench -- --provider openai --profile auto
+bun run cache:bench -- --provider deepseek --suite real
+bun run cache:bench -- --provider simulated --suite adaptive
 ```
 
-它会输出 input tokens、cached tokens、cache miss、output tokens、命中率，以及按 cached-input/output multiplier 折算后的有效 token 总量。默认 cached-input multiplier 是 `0.02`、output multiplier 是 `2`，对应缓存命中输入 0.02/百万 tokens、缓存未命中输入 1.00/百万 tokens、输出 2.00/百万 tokens；可用 `--cached-input-multiplier` 和 `--output-token-multiplier` 覆盖。
+它会输出 input tokens、cached tokens、cache miss、output tokens、命中率，以及有效 input 成本。output tokens 只展示，不计入 effective cost，因为输出长度不由缓存策略控制。默认 cached-input multiplier 是 `0.02`，对应缓存命中输入 0.02/百万 tokens、缓存未命中输入 1.00/百万 tokens；可用 `--cached-input-multiplier` 覆盖。
 
 Benchmark 默认把进度日志写到 stderr，包括 profile/task/turn 进度、provider request、usage chunk、adaptive accept/rollback 状态，以及等待真实 provider 响应时每 10 秒一次的心跳。可用 `--quiet` 关闭进度日志，或用 `--heartbeat-ms 30000` 调整心跳间隔。
 

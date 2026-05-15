@@ -128,13 +128,14 @@ bun run cache:bench
 bun run typecheck
 ```
 
-Cache benchmark can compare balanced, cache-heavy, and auto prompt strategies. Defaults are cache-heavy/every-step; auto also starts every-step and then lets the context controller keep or roll back candidate budget changes:
+Cache benchmark can compare balanced, cache-heavy, auto-frozen, and auto prompt strategies. By default it runs the `real` suite, which uses the same non-synthetic tasks for every profile. Use the `adaptive` suite for deterministic controller accept/rollback cases:
 
 ```bash
-bun run cache:bench -- --provider openai --profile auto
+bun run cache:bench -- --provider deepseek --suite real
+bun run cache:bench -- --provider simulated --suite adaptive
 ```
 
-It prints input tokens, cached tokens, cache misses, output tokens, hit rate, and an effective token total using cached-input and output multipliers. The defaults are `0.02` for cached input and `2` for output, matching cached input 0.02 per 1M tokens, cache-miss input 1.00 per 1M tokens, and output 2.00 per 1M tokens. Override with `--cached-input-multiplier` and `--output-token-multiplier`.
+It prints input tokens, cached tokens, cache misses, output tokens, hit rate, and effective input cost. Output tokens are shown for visibility but are not included in the effective cost because model output length is not controlled by the cache strategy. The default cached-input multiplier is `0.02`, matching cached input 0.02 per 1M tokens and cache-miss input 1.00 per 1M tokens. Override with `--cached-input-multiplier`.
 
 Benchmark progress logs are written to stderr by default, including profile/task/turn progress, provider requests, usage chunks, adaptive accept/rollback state, and a 10s heartbeat while waiting for real provider responses. Use `--quiet` to suppress progress logs or `--heartbeat-ms 30000` to change the heartbeat interval.
 

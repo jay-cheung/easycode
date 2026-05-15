@@ -24,6 +24,7 @@ export type ContextOptions = {
   responseReserveTokens?: number
   contextWindowTokens?: number
   pricing?: CachePricing
+  adaptiveEnabled?: boolean
 }
 
 export type ContextStrategyState = {
@@ -141,6 +142,7 @@ export class ContextManager implements ContextManagerLike {
   private readonly minTokenFloor: number
   private responseReserveTokens: number
   private contextWindowTokens: number
+  private readonly adaptiveEnabled: boolean
   private lastCacheStrategy: CacheStrategy = "cache-heavy"
   private acceptedStrategyRevision = 0
   private acceptedStrategyState: ContextStrategyState
@@ -160,6 +162,7 @@ export class ContextManager implements ContextManagerLike {
     this.minTokenFloor = options.maxTokens !== undefined && options.maxTokens < minMaxTokens ? Math.max(1, Math.round(options.maxTokens)) : minMaxTokens
     const maxTokens = clampInt(options.maxTokens ?? defaultMaxTokens, this.minTokenFloor, options.contextWindowTokens ?? Number.MAX_SAFE_INTEGER)
     this.contextWindowTokens = options.contextWindowTokens ?? maxTokens
+    this.adaptiveEnabled = options.adaptiveEnabled ?? true
     this.responseReserveTokens = options.responseReserveTokens ?? Math.max(2_000, Math.min(8_000, Math.floor(maxTokens * 0.2)))
     this.pricing = options.pricing ?? defaultCachePricing()
     this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
@@ -225,14 +228,14 @@ export class ContextManager implements ContextManagerLike {
     const normalized = { calls: 1, inputTokens: observation.inputTokens, outputTokens: observation.outputTokens, cacheHitTokens: hit, cacheMissTokens: miss, maxStepFailures: 0 }
     addWindowStats(this.totalStats, normalized)
     addWindowStats(this.currentWindow, normalized)
-    if (this.lastCacheStrategy === "auto" && this.currentWindow.calls >= evaluationWindowCalls) this.evaluateAdaptiveWindow()
+    if (this.adaptiveEnabled && this.lastCacheStrategy === "auto" && this.currentWindow.calls >= evaluationWindowCalls) this.evaluateAdaptiveWindow()
   }
 
   recordRunOutcome(outcome: ContextRunOutcome) {
     if (outcome.failureReason === "max_steps") {
       this.currentWindow.maxStepFailures += 1
       this.totalStats.maxStepFailures += 1
-      if (this.lastCacheStrategy === "auto") this.handleMaxStepPressure()
+      if (this.adaptiveEnabled && this.lastCacheStrategy === "auto") this.handleMaxStepPressure()
     }
   }
 
@@ -572,7 +575,7 @@ function isDegradedWindow(current: ReturnType<typeof windowMetrics>, accepted: R
 }
 
 function effectiveWindowCost(input: WindowStats, pricing: CachePricing) {
-  return input.cacheMissTokens * pricing.inputCacheMiss + input.cacheHitTokens * pricing.inputCacheHit + input.outputTokens * pricing.output
+  return input.cacheMissTokens * pricing.inputCacheMiss + input.cacheHitTokens * pricing.inputCacheHit
 }
 
 function truncateToTokenBudget(text: string, tokenBudget: number) {
