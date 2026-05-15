@@ -1,29 +1,42 @@
 import { describe, expect, test } from "bun:test"
-import { AdaptiveCachePolicy, extraCachedTokenBudget } from "../../src/cache-policy"
+import { extraCachedTokenBudget } from "../../src/cache-policy"
+import { ContextManager } from "../../src/context"
+import { createAgent } from "../../src/agent"
 
 describe("cache policy", () => {
-  test("promotes auto strategy when price ratio makes extra cached prefix worthwhile", () => {
-    const policy = new AdaptiveCachePolicy({
-      strategy: "auto",
-      pricing: { inputCacheHit: 0.02, inputCacheMiss: 1, output: 2 },
-      minCalls: 1,
-      minMissTokens: 100,
-      minStaticPrefixTokens: 10,
-    })
+  test("plans auto from every-step by default", () => {
+    const context = new ContextManager()
+    const plan = context.planRequest({ step: 1, cacheStrategy: "auto", agent: createAgent("build"), skills: [], tools: [] })
 
-    policy.observeRequest({
-      mode: "build",
-      prompt: "fix",
-      messages: [],
-      providerMessages: [{ role: "system", content: "stable prefix ".repeat(100) }, { role: "user", content: "fix" }],
-      tools: [],
-    })
-    expect(policy.shouldSendStaticContext(1)).toBe(false)
+    expect(plan.strategyState.staticContextStrategy).toBe("every-step")
+    expect(plan.providerMessages[0]?.content).toContain("Available tools:")
+  })
 
-    policy.observeUsage({ type: "usage", inputTokens: 2_000, outputTokens: 20, cacheHitTokens: 400, cacheMissTokens: 1_600 })
+  test("auto observes before proposing an adaptive candidate", () => {
+    const context = new ContextManager()
+    context.planRequest({ step: 1, cacheStrategy: "auto", agent: createAgent("build"), skills: [], tools: [] })
+    for (let i = 0; i < 5; i += 1) context.observeUsage({ inputTokens: 1_000, outputTokens: 10, cacheHitTokens: 700, cacheMissTokens: 300 })
+    expect(context.strategyState.toolResultTokenBudget).toBe(1_200)
 
-    expect(policy.shouldSendStaticContext(1)).toBe(true)
-    expect(policy.snapshot()).toMatchObject({ activeStaticContextStrategy: "every-step", cacheHitCostRatio: 0.02 })
+    for (let i = 0; i < 5; i += 1) context.observeUsage({ inputTokens: 1_000, outputTokens: 10, cacheHitTokens: 500, cacheMissTokens: 500 })
+    expect(context.strategyState.toolResultTokenBudget).toBe(1_200)
+
+    for (let i = 0; i < 5; i += 1) context.observeUsage({ inputTokens: 1_000, outputTokens: 10, cacheHitTokens: 500, cacheMissTokens: 500 })
+    const candidate = context.strategyState
+    expect(candidate.toolResultTokenBudget).toBeLessThan(1_200)
+  })
+
+  test("rolls back a negative adaptive candidate after observed degradation", () => {
+    const context = new ContextManager()
+    context.planRequest({ step: 1, cacheStrategy: "auto", agent: createAgent("build"), skills: [], tools: [] })
+    for (let i = 0; i < 5; i += 1) context.observeUsage({ inputTokens: 1_000, outputTokens: 10, cacheHitTokens: 700, cacheMissTokens: 300 })
+    for (let i = 0; i < 10; i += 1) context.observeUsage({ inputTokens: 1_000, outputTokens: 10, cacheHitTokens: 500, cacheMissTokens: 500 })
+
+    expect(context.strategyState.toolResultTokenBudget).toBeLessThan(1_200)
+
+    for (let i = 0; i < 5; i += 1) context.observeUsage({ inputTokens: 1_000, outputTokens: 10, cacheHitTokens: 600, cacheMissTokens: 400 })
+
+    expect(context.strategyState.toolResultTokenBudget).toBe(1_200)
   })
 
   test("computes cached token budget from pricing ratio", () => {

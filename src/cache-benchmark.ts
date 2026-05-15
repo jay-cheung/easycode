@@ -3,7 +3,7 @@ import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
 import { AgentRunner } from "./agent"
 import { defaultCachePricing, type CacheStrategy, type StaticContextStrategy } from "./cache-policy"
-import { ContextManager, estimateTextTokens } from "./context"
+import { ContextManager, estimateTextTokens, type ContextAdaptiveState, type ContextStrategyState } from "./context"
 import { loadEnvFile } from "./cli"
 import type { AgentMode, Message } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
@@ -20,8 +20,10 @@ type CacheBenchmarkTask = {
   fixture: string
   tools?: "builtin" | "none"
   providers?: BenchmarkProviderName[]
+  profiles?: CacheBenchmarkProfile[]
   settings?: Partial<SessionSettings>
-  syntheticToolLoop?: "read-once"
+  syntheticToolLoop?: "read-once" | "read-always"
+  syntheticUsagePattern?: Array<{ inputTokens: number; outputTokens: number; cacheHitTokens?: number; cacheMissTokens?: number }>
   turns: string[]
 }
 
@@ -32,6 +34,8 @@ type BenchmarkOptions = {
   cachedInputMultiplier?: number
   outputTokenMultiplier?: number
   json?: boolean
+  quiet?: boolean
+  heartbeatMs?: number
 }
 
 type ProviderCallObservation = {
@@ -58,7 +62,23 @@ type ProfileSummary = {
   effectiveInputTokens: number
   effectiveOutputTokens: number
   effectiveTotalTokens: number
+  acceptedRevisions: number
+  acceptedAdjustments: number
+  rollbacks: number
+  finalStrategyState?: ContextStrategyState
 }
+
+type AdaptiveObservation = {
+  profile: CacheBenchmarkProfile
+  taskID: string
+  acceptedStrategyRevision: number
+  acceptedAdjustments: number
+  rollbacks: number
+  finalStrategyState: ContextStrategyState
+  finalAdaptiveState: ContextAdaptiveState
+}
+
+type BenchmarkLogger = (message: string) => void
 
 const profileStrategies: Record<Exclude<CacheBenchmarkProfile, "auto">, StaticContextStrategy> = {
   balanced: "first-step",
@@ -125,6 +145,9 @@ class RecordingProvider implements Provider {
     private readonly options: {
       inner?: Provider
       syntheticToolLoop?: CacheBenchmarkTask["syntheticToolLoop"]
+      syntheticUsagePattern?: CacheBenchmarkTask["syntheticUsagePattern"]
+      logger?: BenchmarkLogger
+      heartbeatMs?: number
     },
   ) {
     this.name = options.inner?.name ?? "simulated"
@@ -134,13 +157,36 @@ class RecordingProvider implements Provider {
 
   async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
     const observation = this.recorder.observe(input)
+    this.log(`call start profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} est_input=${observation.estimatedInputTokens} est_cached_prefix=${observation.estimatedCachedPrefixTokens} provider=${this.name}`)
     if (!this.options.inner) {
       yield* this.syntheticStream(input, observation)
+      this.log(`call done profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex}`)
       return
     }
-    for await (const event of this.options.inner.stream(input)) {
-      if (event.type === "usage") this.recorder.recordUsage(observation, event)
-      yield event
+    let lastEventAt = Date.now()
+    const heartbeat = setInterval(() => {
+      const idleSeconds = Math.round((Date.now() - lastEventAt) / 1000)
+      this.log(`waiting profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} idle=${idleSeconds}s provider=${this.name}`)
+    }, this.options.heartbeatMs ?? 10_000)
+    try {
+      for await (const event of this.options.inner.stream(input)) {
+        lastEventAt = Date.now()
+        if (event.type === "usage") {
+          const usage = this.patternedUsage(observation) ?? event
+          this.recorder.recordUsage(observation, usage)
+          this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${usage.inputTokens} cached=${usage.cacheHitTokens ?? 0} miss=${usage.cacheMissTokens ?? Math.max(0, usage.inputTokens - (usage.cacheHitTokens ?? 0))} output=${usage.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+          yield usage
+          continue
+        }
+        if (event.type === "request") this.log(`request profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} url=${event.request.url}`)
+        if (event.type === "response") this.log(`response profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} status=${event.response.status} ok=${event.response.ok}`)
+        if (event.type === "tool_call") this.log(`tool_call profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} tool=${event.call.name}`)
+        if (event.type === "failure") this.log(`failure profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} code=${event.error.code ?? "-"} message=${oneLine(event.error.message)}`)
+        if (event.type === "done") this.log(`call done profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex}`)
+        yield event
+      }
+    } finally {
+      clearInterval(heartbeat)
     }
   }
 
@@ -148,76 +194,123 @@ class RecordingProvider implements Provider {
     const usage: Extract<ProviderEvent, { type: "usage" }> = {
       type: "usage",
       inputTokens: observation.estimatedInputTokens,
-      outputTokens: this.options.syntheticToolLoop && !latestTurnHasToolResult(input.messages, "read") ? 4 : 12,
+      outputTokens: this.shouldRead(input) ? 4 : 12,
       cacheHitTokens: observation.estimatedCachedPrefixTokens,
       cacheMissTokens: Math.max(0, observation.estimatedInputTokens - observation.estimatedCachedPrefixTokens),
     }
+    const patterned = this.patternedUsage(observation) ?? usage
 
-    if (this.options.syntheticToolLoop === "read-once" && !latestTurnHasToolResult(input.messages, "read")) {
+    if (this.shouldRead(input)) {
       yield { type: "tool_call", call: { id: `call_cache_read_${observation.callIndex}`, name: "read", input: { filePath: "src/add.ts" } } }
-      this.recorder.recordUsage(observation, usage)
-      yield usage
+      this.recorder.recordUsage(observation, patterned)
+      this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+      yield patterned
       yield { type: "done" }
       return
     }
 
     yield { type: "text_delta", text: "Cache benchmark response." }
-    this.recorder.recordUsage(observation, usage)
-    yield usage
+    this.recorder.recordUsage(observation, patterned)
+    this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+    yield patterned
     yield { type: "done" }
+  }
+
+  private shouldRead(input: ProviderInput) {
+    if (this.options.syntheticToolLoop === "read-always") return true
+    return this.options.syntheticToolLoop === "read-once" && !latestTurnHasToolResult(input.messages, "read")
+  }
+
+  private patternedUsage(observation: ProviderCallObservation): Extract<ProviderEvent, { type: "usage" }> | undefined {
+    const pattern = this.options.syntheticUsagePattern
+    if (!pattern || pattern.length === 0) return undefined
+    const item = pattern[Math.min(observation.callIndex - 1, pattern.length - 1)]
+    const hit = item.cacheHitTokens ?? 0
+    return {
+      type: "usage",
+      inputTokens: item.inputTokens,
+      outputTokens: item.outputTokens,
+      cacheHitTokens: item.cacheHitTokens,
+      cacheMissTokens: item.cacheMissTokens ?? (item.cacheHitTokens === undefined ? undefined : Math.max(0, item.inputTokens - hit)),
+    }
+  }
+
+  private log(message: string) {
+    this.options.logger?.(message)
   }
 }
 
 export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
   const projectRoot = options.root ?? path.resolve(import.meta.dir, "..")
   await loadEnvFile(projectRoot)
-  const provider = options.provider ?? "simulated"
+  const provider = options.provider ?? "deepseek"
   const profiles = options.profiles ?? ["balanced", "cache-heavy", "auto"]
   const defaultPricing = defaultCachePricing()
   const cachedInputMultiplier = options.cachedInputMultiplier ?? defaultPricing.inputCacheHit / defaultPricing.inputCacheMiss
   const outputTokenMultiplier = options.outputTokenMultiplier ?? defaultPricing.output / defaultPricing.inputCacheMiss
   const tasks = await loadTasks(projectRoot, provider)
   const observations: ProviderCallObservation[] = []
+  const adaptiveObservations: AdaptiveObservation[] = []
+  const logger = options.quiet === false ? benchmarkLogger() : undefined
+  logger?.(`start provider=${provider} profiles=${profiles.join(",")} tasks=${tasks.map((task) => task.id).join(",")} heartbeat_ms=${options.heartbeatMs ?? 10_000}`)
 
   for (const profile of profiles) {
+    logger?.(`profile start profile=${profile}`)
     for (const task of tasks) {
+      if (task.profiles && !task.profiles.includes(profile)) continue
+      logger?.(`task start profile=${profile} task=${task.id} turns=${task.turns.length} tools=${task.tools ?? "builtin"} synthetic_usage=${task.syntheticUsagePattern ? "yes" : "no"}`)
       const workdir = path.join(os.tmpdir(), `easycode-cache-${task.id}-${profile}-${Date.now()}`)
       await copyDir(path.join(projectRoot, task.fixture), workdir)
       const recorder = new CacheBenchmarkRecorder(profile, task.id)
       const inner = provider === "simulated" ? undefined : createProvider(provider)
-      const wrappedProvider = new RecordingProvider(recorder, { inner, syntheticToolLoop: task.syntheticToolLoop })
+      const wrappedProvider = new RecordingProvider(recorder, { inner, syntheticToolLoop: task.syntheticToolLoop, syntheticUsagePattern: task.syntheticUsagePattern, logger, heartbeatMs: options.heartbeatMs })
       const settings = normalizeSessionSettings({ ...task.settings, provider, cacheStrategy: profile }, provider)
+      const context = new ContextManager()
       const runner = new AgentRunner({
         root: workdir,
         provider: wrappedProvider,
         registry: task.tools === "none" ? emptyRegistry : createBuiltinRegistry(),
-        context: new ContextManager(),
+        context,
         permission: PermissionService.autoApprove(defaultPermissionRules(task.mode)),
         settings,
-        staticContextStrategy: profile === "auto" ? undefined : profileStrategies[profile],
       })
 
       for (const [turnIndex, prompt] of task.turns.entries()) {
+        logger?.(`turn start profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} prompt=${oneLine(prompt)}`)
         recorder.startTurn(turnIndex)
         await runner.run(prompt, task.mode)
+        logger?.(`turn done profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} strategy=${strategyLabel(context.strategyState)} rev=${context.adaptiveState.acceptedStrategyRevision} accept=${context.adaptiveState.acceptedAdjustments} rollback=${context.adaptiveState.rollbacks}${context.adaptiveState.pendingAdjustment ? ` pending=${context.adaptiveState.pendingAdjustment}` : ""}`)
       }
 
       observations.push(...recorder.snapshot())
+      adaptiveObservations.push({
+        profile,
+        taskID: task.id,
+        acceptedStrategyRevision: context.adaptiveState.acceptedStrategyRevision,
+        acceptedAdjustments: context.adaptiveState.acceptedAdjustments,
+        rollbacks: context.adaptiveState.rollbacks,
+        finalStrategyState: context.strategyState,
+        finalAdaptiveState: context.adaptiveState,
+      })
       await rm(workdir, { recursive: true, force: true })
+      logger?.(`task done profile=${profile} task=${task.id} calls=${recorder.snapshot().length} strategy=${strategyLabel(context.strategyState)}`)
     }
+    logger?.(`profile done profile=${profile}`)
   }
 
   return {
     provider,
     cachedInputMultiplier,
     outputTokenMultiplier,
-    summaries: profiles.map((profile) => summarizeProfile(profile, observations, cachedInputMultiplier, outputTokenMultiplier)),
+    summaries: profiles.map((profile) => summarizeProfile(profile, observations, adaptiveObservations, cachedInputMultiplier, outputTokenMultiplier)),
     observations,
+    adaptiveObservations,
   }
 }
 
-function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number): ProfileSummary {
+function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], adaptiveObservations: AdaptiveObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number): ProfileSummary {
   const calls = observations.filter((observation) => observation.profile === profile)
+  const adaptive = adaptiveObservations.filter((observation) => observation.profile === profile)
   let inputTokens = 0
   let outputTokens = 0
   let cacheHitTokens = 0
@@ -243,6 +336,10 @@ function summarizeProfile(profile: CacheBenchmarkProfile, observations: Provider
     effectiveInputTokens,
     effectiveOutputTokens,
     effectiveTotalTokens: effectiveInputTokens + effectiveOutputTokens,
+    acceptedRevisions: adaptive.reduce((total, item) => total + item.acceptedStrategyRevision, 0),
+    acceptedAdjustments: adaptive.reduce((total, item) => total + item.acceptedAdjustments, 0),
+    rollbacks: adaptive.reduce((total, item) => total + item.rollbacks, 0),
+    finalStrategyState: adaptive.at(-1)?.finalStrategyState,
   }
 }
 
@@ -306,19 +403,22 @@ function commonPrefixLength(left: string, right: string) {
 }
 
 function parseArgs(argv: string[]): BenchmarkOptions {
-  const provider = valueAfter(argv, "--provider") ?? "simulated"
+  const provider = valueAfter(argv, "--provider") ?? "deepseek"
   if (provider !== "simulated" && !hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: simulated, ${listProviders().join(", ")}`)
   const profile = valueAfter(argv, "--profile")
   const profiles = profile && profile !== "both" ? [profile as CacheBenchmarkProfile] : undefined
   if (profiles?.some((item) => item !== "auto" && !(item in profileStrategies))) throw new Error(`Unknown profile: ${profile}. Use balanced, cache-heavy, auto, or both.`)
   const cachedMultiplier = valueAfter(argv, "--cached-input-multiplier")
   const outputMultiplier = valueAfter(argv, "--output-token-multiplier")
+  const heartbeatMs = valueAfter(argv, "--heartbeat-ms")
   return {
     provider,
     profiles,
     cachedInputMultiplier: cachedMultiplier === undefined ? undefined : Number(cachedMultiplier),
     outputTokenMultiplier: outputMultiplier === undefined ? undefined : Number(outputMultiplier),
     json: argv.includes("--json"),
+    quiet: argv.includes("--quiet"),
+    heartbeatMs: heartbeatMs === undefined ? undefined : Number(heartbeatMs),
   }
 }
 
@@ -332,14 +432,37 @@ function formatReport(report: Awaited<ReturnType<typeof runCacheBenchmark>>) {
   const lines = [
     `Cache benchmark provider=${report.provider} cached_input_multiplier=${report.cachedInputMultiplier} output_token_multiplier=${report.outputTokenMultiplier}`,
     `cost ratio: 1 cache-miss input token ~= ${(1 / report.cachedInputMultiplier).toFixed(1)} cached input tokens`,
-    "profile       calls  input  cached  hit%   miss   output  effective_total",
+    "profile       calls  input  cached  hit%   miss   output  effective_total  rev accept rollback final",
   ]
   for (const summary of report.summaries) {
-    lines.push(`${summary.profile.padEnd(13)} ${String(summary.calls).padStart(5)} ${String(Math.round(summary.inputTokens)).padStart(6)} ${String(Math.round(summary.cacheHitTokens)).padStart(7)} ${(summary.hitRate * 100).toFixed(1).padStart(5)} ${String(Math.round(summary.cacheMissTokens)).padStart(6)} ${String(Math.round(summary.outputTokens)).padStart(7)} ${String(Math.round(summary.effectiveTotalTokens)).padStart(16)}`)
+    lines.push(`${summary.profile.padEnd(13)} ${String(summary.calls).padStart(5)} ${String(Math.round(summary.inputTokens)).padStart(6)} ${String(Math.round(summary.cacheHitTokens)).padStart(7)} ${(summary.hitRate * 100).toFixed(1).padStart(5)} ${String(Math.round(summary.cacheMissTokens)).padStart(6)} ${String(Math.round(summary.outputTokens)).padStart(7)} ${String(Math.round(summary.effectiveTotalTokens)).padStart(16)} ${String(summary.acceptedRevisions).padStart(4)} ${String(summary.acceptedAdjustments).padStart(6)} ${String(summary.rollbacks).padStart(8)} ${strategyLabel(summary.finalStrategyState)}`)
+  }
+  if (report.adaptiveObservations.length > 0) {
+    lines.push("adaptive:")
+    for (const observation of report.adaptiveObservations.filter((item) => item.acceptedAdjustments > 0 || item.rollbacks > 0 || item.acceptedStrategyRevision > 0)) {
+      lines.push(`  ${observation.profile}/${observation.taskID}: rev=${observation.acceptedStrategyRevision} accept=${observation.acceptedAdjustments} rollback=${observation.rollbacks} final=${strategyLabel(observation.finalStrategyState)}${observation.finalAdaptiveState.lastAdjustment ? ` last=${observation.finalAdaptiveState.lastAdjustment}` : ""}`)
+    }
   }
   const best = [...report.summaries].sort((left, right) => left.effectiveTotalTokens - right.effectiveTotalTokens)[0]
   if (best) lines.push(`recommendation: ${best.profile} minimizes effective token cost in this benchmark.`)
   return lines.join("\n")
+}
+
+function strategyLabel(strategy: ContextStrategyState | undefined) {
+  if (!strategy) return "-"
+  return `${strategy.staticContextStrategy},maxTok=${strategy.maxTokens},tool=${strategy.toolResultTokenBudget},steps=${strategy.maxSteps}`
+}
+
+function benchmarkLogger(): BenchmarkLogger {
+  const startedAt = Date.now()
+  return (message) => {
+    const elapsed = ((Date.now() - startedAt) / 1000).toFixed(1).padStart(6)
+    console.error(`[cache-bench +${elapsed}s] ${message}`)
+  }
+}
+
+function oneLine(value: string) {
+  return value.replace(/\s+/g, " ").trim().slice(0, 120)
 }
 
 if (import.meta.main) {

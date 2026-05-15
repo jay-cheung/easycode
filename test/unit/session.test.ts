@@ -62,7 +62,7 @@ describe("session store", () => {
   test("prunes already compacted session messages on restore", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)
-    const context = new ContextManager({ compactPreserveTokens: 100 })
+    const context = new ContextManager({ activeWindowUserTurns: 2, compactPreserveTokens: 100 })
     for (let i = 0; i < 4; i += 1) {
       context.add(textMessage("user", `message ${i}`))
       context.add(textMessage("assistant", `reply ${i}`))

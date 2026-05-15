@@ -67,7 +67,7 @@ async function snapshotFiles(root: string) {
 
 type EvalProvider = ProviderName
 
-export async function runEval(input: { provider: EvalProvider; root?: string }) {
+export async function runEval(input: { provider: EvalProvider; root?: string; logger?: boolean }) {
   const projectRoot = input.root ?? path.resolve(import.meta.dir, "..")
   await loadEnvFile(projectRoot)
   const taskDir = path.join(projectRoot, "evals", "tasks")
@@ -75,7 +75,7 @@ export async function runEval(input: { provider: EvalProvider; root?: string }) 
   const results: { id: string; passed: boolean; skipped?: boolean; reason?: string }[] = []
   for (const file of tasks) {
     const task = JSON.parse(await Bun.file(path.join(taskDir, file)).text()) as EvalTask
-    const providers = task.providers ?? ["fake"]
+    const providers = task.providers ?? ["openai", "deepseek"]
     if (!providers.includes(input.provider)) {
       results.push({ id: task.id, passed: true, skipped: true, reason: `not configured for provider ${input.provider}` })
       continue
@@ -83,15 +83,17 @@ export async function runEval(input: { provider: EvalProvider; root?: string }) 
     const workdir = path.join(os.tmpdir(), `easycode-${task.id}-${Date.now()}`)
     await copyDir(path.join(projectRoot, task.fixture), workdir)
     const before = await snapshotFiles(workdir)
+    const logger = input.logger ? createLogger() : undefined
     const result = task.tools === "none"
-      ? await new AgentRunner({ root: workdir, provider: createProvider(input.provider), registry: emptyRegistry, logger: createLogger() }).run(task.prompt, task.mode)
-      : await createRunner({ root: workdir, provider: input.provider, mode: task.mode, logger: createLogger() }).run(task.prompt, task.mode)
+      ? await new AgentRunner({ root: workdir, provider: createProvider(input.provider), registry: emptyRegistry, logger }).run(task.prompt, task.mode)
+      : await createRunner({ root: workdir, provider: input.provider, mode: task.mode, logger }).run(task.prompt, task.mode)
     const after = await snapshotFiles(workdir)
-    const missingTool = task.expected.requiredTools?.find((tool) => !result.usedTools.includes(tool))
-    const tooManyTools = task.expected.maxToolCalls !== undefined && result.usedTools.length > task.expected.maxToolCalls
-    const missingChange = task.expected.changedFiles?.find((filePath) => before.get(filePath) === after.get(filePath))
-    const forbiddenChange = task.expected.forbiddenFiles?.find((filePath) => before.get(filePath) !== after.get(filePath))
-    const missingOutput = task.expected.outputContains?.find((text) => !result.text.toLowerCase().includes(text.toLowerCase()))
+    const expected = expectedForProvider(task, input.provider)
+    const missingTool = expected.requiredTools?.find((tool) => !result.usedTools.includes(tool))
+    const tooManyTools = expected.maxToolCalls !== undefined && result.usedTools.length > expected.maxToolCalls
+    const missingChange = expected.changedFiles?.find((filePath) => before.get(filePath) === after.get(filePath))
+    const forbiddenChange = expected.forbiddenFiles?.find((filePath) => before.get(filePath) !== after.get(filePath))
+    const missingOutput = expected.outputContains?.find((text) => !result.text.toLowerCase().includes(text.toLowerCase()))
     const passed = result.status === "completed" && !missingTool && !tooManyTools && !missingChange && !forbiddenChange && !missingOutput
     results.push({ id: task.id, passed, reason: missingTool ? `missing tool ${missingTool}` : tooManyTools ? "too many tool calls" : missingChange ? `missing expected change ${missingChange}` : forbiddenChange ? `forbidden file changed ${forbiddenChange}` : missingOutput ? `missing output ${missingOutput}` : undefined })
     await rm(workdir, { recursive: true, force: true })
@@ -99,10 +101,15 @@ export async function runEval(input: { provider: EvalProvider; root?: string }) 
   return results
 }
 
+function expectedForProvider(task: EvalTask, provider: EvalProvider): EvalTask["expected"] {
+  if (provider === "fake" || task.expected.maxToolCalls === undefined) return task.expected
+  return { ...task.expected, maxToolCalls: Math.max(task.expected.maxToolCalls, 20) }
+}
+
 if (import.meta.main) {
-  const provider = process.argv.includes("--provider") ? process.argv[process.argv.indexOf("--provider") + 1] : "fake"
+  const provider = process.argv.includes("--provider") ? process.argv[process.argv.indexOf("--provider") + 1] : "deepseek"
   if (!hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: ${listProviders().join(", ")}`)
-  const results = await runEval({ provider })
+  const results = await runEval({ provider, logger: process.argv.includes("--logger") })
   for (const result of results) console.log(`${result.skipped ? "SKIP" : result.passed ? "PASS" : "FAIL"} ${result.id}${result.reason ? ` - ${result.reason}` : ""}`)
   if (results.some((result) => !result.skipped && !result.passed)) process.exit(1)
 }

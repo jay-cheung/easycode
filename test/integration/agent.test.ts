@@ -10,6 +10,7 @@ import { FakeProvider } from "../../src/provider"
 import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
 import type { LogEvent } from "../../src/logger"
 import { SessionStore } from "../../src/session"
+import { defaultSessionSettings } from "../../src/settings"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -134,7 +135,7 @@ describe("agent integration", () => {
         yield { type: "failure", error: { code: "quota", message: "quota exceeded", output: "quota exceeded" } }
       },
     }
-    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
     expect(result.status).toBe("failed")
     expect(result.text).toBe("I checked the current state.\nquota exceeded")
     expect(result.messages.at(-1)?.parts[0]).toMatchObject({ type: "text", text: "I checked the current state.\nquota exceeded" })
@@ -176,7 +177,7 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
     expect(result.status).toBe("completed")
     expect(result.text).toBe("Done.")
     expect(result.reasoning).toBe("First thought.\nSecond thought.")
@@ -197,7 +198,7 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
     expect(result.status).toBe("completed")
     expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(true)
     expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(false)

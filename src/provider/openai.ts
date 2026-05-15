@@ -14,11 +14,18 @@ export class OpenAIProvider extends OpenAILikeProvider {
         promptCacheKey: runtime.promptCacheKey ?? process.env.EASYCODE_PROMPT_CACHE_KEY ?? process.env.OPENAI_PROMPT_CACHE_KEY,
         promptCacheRetention: runtime.promptCacheRetention ?? promptCacheRetentionFromEnv(),
       },
-      capabilities: { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high"] },
+      capabilities: { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high"], contextWindowTokens: numberFromEnv("OPENAI_CONTEXT_WINDOW_TOKENS") ?? numberFromEnv("EASYCODE_CONTEXT_WINDOW_TOKENS"), promptCacheMinPrefixTokens: numberFromEnv("OPENAI_PROMPT_CACHE_MIN_PREFIX_TOKENS") ?? numberFromEnv("EASYCODE_PROMPT_CACHE_MIN_PREFIX_TOKENS") },
       missingApiKeyMessage: "OPENAI_API_KEY is required for OpenAIProvider",
       errorPrefix: "Responses API failed",
     })
   }
+}
+
+function numberFromEnv(name: string) {
+  const value = process.env[name]
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
 }
 
 function promptCacheRetentionFromEnv(): ProviderOptions["promptCacheRetention"] {

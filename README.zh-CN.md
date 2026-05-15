@@ -54,6 +54,8 @@ bun run src/cli.ts build --once "Fix the failing test" --provider fake
 bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
 ```
 
+上下文默认偏向 prompt cache：稳定上下文每个 provider step 都会发送，`maxTokens` 默认 `32000`，`maxSteps` 默认 `20`。可以用 `--cache-strategy balanced|cache-heavy|auto`、`--max-tokens <n>`、`--max-steps <n>` 覆盖单次运行或 session。
+
 ## 会话
 
 交互式会话是默认模式，会将对话历史持久化到 `.easycode/sessions/`。不传 `--session` 时使用 `default` 会话；使用 `--session <id>` 可以选择具名会话。看到 `> ` 后再输入 prompt。
@@ -102,7 +104,7 @@ Skill 会从以下目录发现：
 
 文件名大小写不敏感，`skill.md` 和 `SKILL.md` 都支持。上下文中默认只放 skill 的名称和描述，完整内容通过 `skill` tool 加载。
 
-`/skill use <name>` 会在当前 session 启用 skill，并把完整指令注入后续请求。启用的 skill 名称会保存到 `.easycode/sessions/`。
+`/skill use <name>` 会在当前 session 启用 skill，但不会把完整指令注入稳定 system 前缀。启用的 skill 名称会保存到 `.easycode/sessions/`；完整内容仍通过 `skill` tool 按需加载。
 
 ## Logger
 
@@ -126,13 +128,15 @@ bun run cache:bench
 bun run typecheck
 ```
 
-缓存 benchmark 可以对比 balanced、cache-heavy 和 auto prompt 策略：
+缓存 benchmark 可以对比 balanced、cache-heavy 和 auto prompt 策略。默认是 cache-heavy/every-step；auto 也从 every-step 起步，再由上下文控制器决定保留或回退候选预算调整：
 
 ```bash
 bun run cache:bench -- --provider openai --profile auto
 ```
 
 它会输出 input tokens、cached tokens、cache miss、output tokens、命中率，以及按 cached-input/output multiplier 折算后的有效 token 总量。默认 cached-input multiplier 是 `0.02`、output multiplier 是 `2`，对应缓存命中输入 0.02/百万 tokens、缓存未命中输入 1.00/百万 tokens、输出 2.00/百万 tokens；可用 `--cached-input-multiplier` 和 `--output-token-multiplier` 覆盖。
+
+Benchmark 默认把进度日志写到 stderr，包括 profile/task/turn 进度、provider request、usage chunk、adaptive accept/rollback 状态，以及等待真实 provider 响应时每 10 秒一次的心跳。可用 `--quiet` 关闭进度日志，或用 `--heartbeat-ms 30000` 调整心跳间隔。
 
 真实 provider smoke test 默认不运行，以保持测试离线且确定性；需要时显式启用：
 

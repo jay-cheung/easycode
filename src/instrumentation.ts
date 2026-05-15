@@ -255,6 +255,14 @@ class LoggingContextDecorator implements ContextManagerLike {
     return this.inner.state
   }
 
+  get strategyState() {
+    return this.inner.strategyState
+  }
+
+  get adaptiveState() {
+    return this.inner.adaptiveState
+  }
+
   get compactAt() {
     return this.inner.compactAt
   }
@@ -276,9 +284,24 @@ class LoggingContextDecorator implements ContextManagerLike {
     return this.inner.estimate(messages)
   }
 
+  configureStrategy(input: Parameters<ContextManagerLike["configureStrategy"]>[0]) {
+    this.inner.configureStrategy(input)
+    emitLog(this.logger, { type: "context", name: "context.strategy_configure", detail: this.inner.strategyState })
+  }
+
   recordUsage(inputTokens: number) {
     this.inner.recordUsage(inputTokens)
     emitLog(this.logger, { type: "context", name: "context.actual_input_tokens", detail: { inputTokens, estimatedTokens: this.inner.state.tokenEstimate } })
+  }
+
+  observeUsage(observation: Parameters<ContextManagerLike["observeUsage"]>[0]) {
+    this.inner.observeUsage(observation)
+    emitLog(this.logger, { type: "context", name: "context.usage_observed", detail: { observation, strategy: this.inner.strategyState } })
+  }
+
+  recordRunOutcome(outcome: Parameters<ContextManagerLike["recordRunOutcome"]>[0]) {
+    this.inner.recordRunOutcome(outcome)
+    emitLog(this.logger, { type: "context", name: "context.run_outcome", detail: outcome })
   }
 
   needsCompaction() {
@@ -296,6 +319,12 @@ class LoggingContextDecorator implements ContextManagerLike {
     const compacted = this.inner.compact(summary)
     emitLog(this.logger, { type: "context", name: "context.compact", detail: { compacted, before, after: snapshotContext(this.inner) } })
     return compacted
+  }
+
+  planRequest(input: Parameters<ContextManagerLike["planRequest"]>[0]) {
+    const plan = this.inner.planRequest(input)
+    emitLog(this.logger, { type: "data", name: "context -> provider", detail: { messageCount: this.inner.state.messages.length, providerMessageCount: plan.providerMessages.length, toolNames: input.tools.map((tool) => tool.name), staticContext: plan.providerMessages[0]?.role === "system", strategy: plan.strategyState } })
+    return plan
   }
 
   compose(input?: Parameters<ContextManagerLike["compose"]>[0]) {

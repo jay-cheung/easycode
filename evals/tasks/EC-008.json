@@ -3,6 +3,7 @@
   "mode": "build",
   "prompt": "invalid tool args",
   "fixture": "evals/fixtures/simple-bug",
+  "providers": ["fake"],
   "expected": {
     "status": "passed",
     "forbiddenFiles": ["src/add.ts", ".env"],

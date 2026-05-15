@@ -1,0 +1,36 @@
+{
+  "id": "CACHE-006-auto-maxsteps-pressure",
+  "mode": "build",
+  "fixture": "evals/fixtures/cache-bench",
+  "tools": "builtin",
+  "providers": ["simulated"],
+  "profiles": ["auto"],
+  "settings": {
+    "maxSteps": 1
+  },
+  "syntheticToolLoop": "read-always",
+  "syntheticUsagePattern": [
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 },
+    { "inputTokens": 1000, "outputTokens": 4, "cacheHitTokens": 500, "cacheMissTokens": 500 }
+  ],
+  "turns": [
+    "Adaptive max step pressure 1.",
+    "Adaptive max step pressure 2.",
+    "Adaptive max step pressure 3.",
+    "Adaptive max step pressure 4.",
+    "Adaptive max step pressure 5.",
+    "Adaptive max step pressure 6.",
+    "Adaptive max step pressure 7.",
+    "Adaptive max step pressure 8.",
+    "Adaptive max step pressure 9.",
+    "Adaptive max step pressure 10."
+  ]
+}

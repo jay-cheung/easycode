@@ -29,6 +29,8 @@ export function parseArgs(argv: string[]) {
   const sessionIndex = argv.indexOf("--session")
   const modelIndex = argv.indexOf("--model")
   const cacheStrategyIndex = argv.indexOf("--cache-strategy")
+  const maxTokensIndex = argv.indexOf("--max-tokens")
+  const maxStepsIndex = argv.indexOf("--max-steps")
   const once = argv.includes("--once")
   const logger = argv.includes("--logger")
   const providerExplicit = providerIndex !== -1
@@ -42,16 +44,26 @@ export function parseArgs(argv: string[]) {
   if (modelIndex !== -1 && (!model || model.startsWith("--"))) throw new Error("--model requires an id")
   const cacheStrategy: CacheStrategy | undefined = cacheStrategyIndex === -1 ? undefined : argv[cacheStrategyIndex + 1] as CacheStrategy
   if (cacheStrategyIndex !== -1 && (!cacheStrategy || cacheStrategy.startsWith("--") || !isCacheStrategy(cacheStrategy))) throw new Error("--cache-strategy requires auto, balanced, or cache-heavy")
+  const maxTokens = numericFlag(argv, maxTokensIndex, "--max-tokens")
+  const maxSteps = numericFlag(argv, maxStepsIndex, "--max-steps")
   const prompt = argv.slice(1).filter((arg, index, items) => {
     const realIndex = index + 1
-    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== cacheStrategyIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--cache-strategy"
+    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== cacheStrategyIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--cache-strategy" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, cacheStrategy, root, logger, session: explicitSession ?? "default", once }
+  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, cacheStrategy, maxTokens, maxSteps, root, logger, session: explicitSession ?? "default", once }
 }
 
 function usage() {
-  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--cache-strategy auto|balanced|cache-heavy] [--root path] [--logger] [--session id]`
+  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--cache-strategy auto|balanced|cache-heavy] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--session id]`
+}
+
+function numericFlag(argv: string[], index: number, name: string) {
+  if (index === -1) return undefined
+  const raw = argv[index + 1]
+  const value = Number(raw)
+  if (!raw || raw.startsWith("--") || !Number.isFinite(value) || value <= 0) throw new Error(`${name} requires a positive number`)
+  return Math.round(value)
 }
 
 function unquoteEnvValue(value: string) {
@@ -105,7 +117,7 @@ if (import.meta.main) {
 async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   if (!args.prompt) throw new Error("Prompt is required")
   const rl = createInterface({ input, output })
-  const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy }, args.provider)
+  const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
   const timeline = logger ? undefined : new TimelineRenderer(output)
   try {
     const permission = permissionService(args.mode, rl)
@@ -122,8 +134,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
   const store = new SessionStore(args.root)
   const context = await store.context(args.session ?? "")
   const storedSettings = await store.settings(args.session ?? "", args.provider)
-  let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, cacheStrategy: args.cacheStrategy ?? storedSettings.cacheStrategy }, args.provider)
-  if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy }, args.provider)
+  let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, cacheStrategy: args.cacheStrategy ?? storedSettings.cacheStrategy, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
+  if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
   const skillService = new SkillService(args.root)
   let pendingImages: ImagePart[] = []
   let activeMode = args.mode
@@ -268,6 +280,8 @@ function settingsText(settings: SessionSettings, images: ImagePart[]) {
     `thinking: ${settings.thinking ? "on" : "off"}`,
     `effort: ${settings.effort}`,
     `cache: ${settings.cacheStrategy}`,
+    `maxTokens: ${settings.maxTokens}`,
+    `maxSteps: ${settings.maxSteps}`,
     `skills: ${settings.selectedSkills.join(", ") || "(none)"}`,
     `pending images: ${images.length}`,
   ].join("\n")

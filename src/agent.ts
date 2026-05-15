@@ -1,4 +1,4 @@
-import { AdaptiveCachePolicy, defaultCachePricing, type CacheStrategy, type StaticContextStrategy } from "./cache-policy"
+import type { CacheStrategy, StaticContextStrategy } from "./cache-policy"
 import { ContextManager, type ContextManagerLike } from "./context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
@@ -18,6 +18,36 @@ export type Agent = {
   mode: AgentMode
   systemPrompt: string
 }
+
+const stableOperatingProtocol = [
+  "Stable operating protocol:",
+  "1. Read the current repository state before making claims about code behavior. Prefer targeted file reads and fast text search.",
+  "2. Keep changes scoped to the user's request and the surrounding ownership boundary. Avoid unrelated refactors and metadata churn.",
+  "3. Preserve user work. Never revert changes you did not make unless explicitly asked.",
+  "4. Treat tool outputs as evidence. Summarize large outputs, keep paths and commands reproducible, and request more detail only when needed.",
+  "5. For implementation work, make the smallest coherent change, then run focused verification before broader checks.",
+  "6. For planning work, avoid side effects and return one complete proposed plan in the expected tags.",
+  "7. Keep stable instructions, tool contracts, and skill descriptions ahead of dynamic conversation history to preserve prompt-cache prefixes.",
+  "8. Put run-specific facts such as user prompts, command outputs, errors, timestamps, and temporary paths in the dynamic history area.",
+  "9. When context is large, prefer stable facts, recent user intent, and reproducible references over long raw logs.",
+  "10. Report concise results with changed files, verification, and remaining risks when relevant.",
+  "11. Keep answers grounded in the exact files, commands, and provider events available in the current run.",
+  "12. Treat repository operations as stateful work: inspect, decide, change, verify, and summarize in that order.",
+  "13. Prefer deterministic command forms and deterministic output summaries so repeated turns keep a stable prefix.",
+  "14. For code review style tasks, lead with concrete findings and file references before general summaries.",
+  "15. For implementation tasks, update tests near the changed behavior before broadening verification.",
+  "16. For failures, preserve the failing command, short error text, and the next concrete recovery action.",
+  "17. For cache efficiency, keep this protocol unchanged across turns; task-specific information belongs after it.",
+  "18. Tool calls should be purposeful: read/search before editing, avoid duplicate exploration, and keep outputs bounded.",
+  "19. Context quality is more important than raw volume: retain facts that affect correctness and drop redundant logs.",
+  "20. Session continuity should preserve user intent, accepted plans, changed files, and verification outcomes.",
+  "21. When active skills are listed, load full skill text only when the task actually requires those instructions.",
+  "22. Use stable names and stable ordering for repeated context sections so provider-side prefix caches can match exactly.",
+  "23. Keep fixed guidance in this anchor and avoid introducing per-run values such as dates, random ids, absolute temp paths, or session filenames here.",
+  "24. Prefer compact, structured records for tool results: status, command or path, key output, truncation marker, and where to reread full data.",
+  "25. Use the active window for current reasoning and the summary area for older dynamic facts; do not mix either into the fixed anchor.",
+  "26. When cost and quality trade off, choose the option that preserves correctness while lowering cache-miss and output token cost.",
+].join("\n")
 
 export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" | "tool_running" | "completed" | "failed" | "cancelled"
 
@@ -46,12 +76,11 @@ export type AgentRunnerOptions = {
   onEvent?: (event: RunUiEvent) => void
   settings?: SessionSettings
   staticContextStrategy?: StaticContextStrategy
-  cachePolicy?: AdaptiveCachePolicy
 }
 
 export function createAgent(mode: AgentMode): Agent {
-  if (mode === "plan") return { name: "plan", mode, systemPrompt: "You are EasyCode in plan mode. Inspect context, avoid side effects, and return the final plan in <proposed_plan> tags." }
-  return { name: "build", mode, systemPrompt: "You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results." }
+  if (mode === "plan") return { name: "plan", mode, systemPrompt: `You are EasyCode in plan mode. Inspect context, avoid side effects, and return the final plan in <proposed_plan> tags.\n\n${stableOperatingProtocol}` }
+  return { name: "build", mode, systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}` }
 }
 
 export class AgentRunner {
@@ -62,12 +91,11 @@ export class AgentRunner {
   readonly context: ContextManagerLike
   readonly skills: SkillServiceLike
   readonly sandbox: Sandbox
-  readonly maxSteps: number
   readonly aspect: RunAspect
   readonly onTextDelta?: (text: string) => void
   readonly onEvent?: (event: RunUiEvent) => void
   readonly settings: SessionSettings
-  readonly cachePolicy: AdaptiveCachePolicy
+  readonly cacheStrategy: CacheStrategy
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -78,11 +106,22 @@ export class AgentRunner {
     this.context = this.aspect.instrumentContext(options.context ?? new ContextManager())
     this.skills = this.aspect.instrumentSkills(options.skills ?? new SkillService(options.root))
     this.sandbox = options.sandbox ?? new Sandbox(options.root)
-    this.maxSteps = options.maxSteps ?? 12
     this.onTextDelta = options.onTextDelta
     this.onEvent = options.onEvent
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
-    this.cachePolicy = options.cachePolicy ?? new AdaptiveCachePolicy({ strategy: cacheStrategyFor(options.staticContextStrategy, this.settings.cacheStrategy), pricing: defaultCachePricing() })
+    this.cacheStrategy = cacheStrategyFor(options.staticContextStrategy, this.settings.cacheStrategy)
+    const providerContextWindow = this.provider.capabilities?.contextWindowTokens
+    this.context.configureStrategy({
+      contextWindowTokens: providerContextWindow ?? Math.max(this.context.strategyState.maxTokens, options.settings?.maxTokens ?? 0),
+      maxTokens: options.settings?.maxTokens ?? this.context.strategyState.maxTokens,
+      maxSteps: options.maxSteps ?? options.settings?.maxSteps ?? this.context.strategyState.maxSteps,
+      ...(options.settings?.responseReserveTokens === undefined ? {} : { responseReserveTokens: options.settings.responseReserveTokens }),
+      staticContextStrategy: this.cacheStrategy === "balanced" ? "first-step" : "every-step",
+    })
+  }
+
+  get maxSteps() {
+    return this.context.strategyState.maxSteps
   }
 
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[] } = {}): Promise<AgentRunResult> {
@@ -100,8 +139,8 @@ export class AgentRunner {
     for (let step = 0; step < this.maxSteps; step += 1) {
       this.aspect.step(step + 1, this.maxSteps)
       await this.compactContext(effectiveMode)
-      const providerMessages = this.context.compose(this.cachePolicy.shouldSendStaticContext(step) ? { agent, skills, selectedSkills, tools } : undefined)
-      this.cachePolicy.observeRequest({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools })
+      const plan = this.context.planRequest({ step, cacheStrategy: this.cacheStrategy, agent, skills, selectedSkills, tools })
+      const providerMessages = plan.providerMessages
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
@@ -128,8 +167,7 @@ export class AgentRunner {
             this.onEvent?.({ type: "tool_call", call: event.call })
           }
           if (event.type === "usage") {
-            this.context.recordUsage(event.inputTokens)
-            this.cachePolicy.observeUsage(event)
+            this.context.observeUsage(event)
           }
         }
       } catch (error) {
@@ -138,6 +176,7 @@ export class AgentRunner {
           this.onEvent?.({ type: "failure", text: failureText })
           const output = appendOutput(text, failureText)
           this.context.add(assistantMessage(reasoningTranscript, output))
+          this.context.recordRunOutcome({ status: "failed", failureReason: "provider_error" })
           state = this.aspect.runFailed("provider_error", usedTools)
           this.onEvent?.({ type: "run_done", status: "failed" })
           return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -147,6 +186,7 @@ export class AgentRunner {
       if (failureText) {
         const output = appendOutput(text, failureText)
         this.context.add(assistantMessage(reasoningTranscript, output))
+        this.context.recordRunOutcome({ status: "failed", failureReason: "provider_error" })
         state = this.aspect.runFailed("provider_error", usedTools)
         this.onEvent?.({ type: "run_done", status: "failed" })
         return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -155,6 +195,7 @@ export class AgentRunner {
       if (!toolCall) {
         const output = text
         this.context.add(assistantMessage(reasoningTranscript, output))
+        this.context.recordRunOutcome({ status: "completed" })
         state = this.aspect.transition("completed", { usedTools })
         this.onEvent?.({ type: "run_done", status: "completed" })
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -171,6 +212,7 @@ export class AgentRunner {
         this.onEvent?.({ type: "text_delta", text: result.output })
         this.onTextDelta?.(result.output)
         this.context.add(assistantMessage(reasoningTranscript, output))
+        this.context.recordRunOutcome({ status: "completed" })
         state = this.aspect.transition("completed", { usedTools })
         this.onEvent?.({ type: "run_done", status: "completed" })
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -179,6 +221,7 @@ export class AgentRunner {
     }
     const text = latestAssistantText || `Stopped after max steps: ${this.maxSteps}`
     this.context.add(assistantMessage(reasoningTranscript, text))
+    this.context.recordRunOutcome({ status: "failed", failureReason: "max_steps" })
     state = this.aspect.runFailed("max_steps", usedTools)
     this.onEvent?.({ type: "run_done", status: "failed" })
     return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }

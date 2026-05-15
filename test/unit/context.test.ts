@@ -4,6 +4,13 @@ import { toolCallMessage, toolResultMessage, textMessage } from "../../src/messa
 import { createAgent } from "../../src/agent"
 
 describe("context", () => {
+  test("uses larger default context and execution budgets", () => {
+    const context = new ContextManager()
+    expect(context.state.maxTokens).toBe(32_000)
+    expect(context.strategyState.maxSteps).toBe(20)
+    expect(context.strategyState.staticContextStrategy).toBe("every-step")
+  })
+
   test("estimates mixed-language text tokens", () => {
     expect(estimateTextTokens("abcdefghij")).toBe(3)
     expect(estimateTextTokens("中文测试")).toBe(3)

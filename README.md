@@ -54,6 +54,8 @@ bun run src/cli.ts build --once "Fix the failing test" --provider fake
 bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
 ```
 
+Context defaults favor prompt caching: stable context is sent on every provider step, `maxTokens` defaults to `32000`, and `maxSteps` defaults to `20`. Use `--cache-strategy balanced|cache-heavy|auto`, `--max-tokens <n>`, and `--max-steps <n>` to override a run or session.
+
 ## Sessions
 
 Interactive session mode is the default and persists conversation history under `.easycode/sessions/`. Without `--session`, easycode uses the `default` session. Use `--session <id>` to select a named session. Enter prompts after the `> ` prompt appears.
@@ -102,7 +104,7 @@ Skills are discovered from these roots:
 
 Skill files are matched case-insensitively as `skill.md` / `SKILL.md`. Only skill names and descriptions are loaded into context up front; full content is loaded through the `skill` tool.
 
-`/skill use <name>` makes a skill active for the current session and injects its full instructions into future requests. Active skill names are saved in `.easycode/sessions/`.
+`/skill use <name>` makes a skill active for the current session without injecting full instructions into the stable system prefix. Active skill names are saved in `.easycode/sessions/`; full instructions are still loaded on demand through the `skill` tool.
 
 ## Logger
 
@@ -126,13 +128,15 @@ bun run cache:bench
 bun run typecheck
 ```
 
-Cache benchmark can compare balanced, cache-heavy, and auto prompt strategies:
+Cache benchmark can compare balanced, cache-heavy, and auto prompt strategies. Defaults are cache-heavy/every-step; auto also starts every-step and then lets the context controller keep or roll back candidate budget changes:
 
 ```bash
 bun run cache:bench -- --provider openai --profile auto
 ```
 
 It prints input tokens, cached tokens, cache misses, output tokens, hit rate, and an effective token total using cached-input and output multipliers. The defaults are `0.02` for cached input and `2` for output, matching cached input 0.02 per 1M tokens, cache-miss input 1.00 per 1M tokens, and output 2.00 per 1M tokens. Override with `--cached-input-multiplier` and `--output-token-multiplier`.
+
+Benchmark progress logs are written to stderr by default, including profile/task/turn progress, provider requests, usage chunks, adaptive accept/rollback state, and a 10s heartbeat while waiting for real provider responses. Use `--quiet` to suppress progress logs or `--heartbeat-ms 30000` to change the heartbeat interval.
 
 Real provider smoke tests are opt-in so the default test suite stays offline and deterministic:
 

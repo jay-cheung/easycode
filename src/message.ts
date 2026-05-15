@@ -118,6 +118,7 @@ export const protectedToolResultRedaction = "[redacted: permission-gated tool re
 export const largeOutputLimit = 8_000
 const largeOutputHead = 4_000
 const largeOutputTail = 3_000
+type MessageTextOptions = { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean; largeOutputLimit?: number }
 
 export function isProtectedToolResult(part: MessagePart) {
   return part.type === "tool_result" && part.metadata.permissionAction === "ask"
@@ -162,24 +163,24 @@ export function redactProtectedMessage(message: Message, protectedCallIDs = new 
   }
 }
 
-export function partToText(part: MessagePart, options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}) {
+export function partToText(part: MessagePart, options: MessageTextOptions = {}) {
   if (part.type === "text") return part.text
   if (part.type === "reasoning") return `<reasoning>\n${part.text}\n</reasoning>`
   if (part.type === "image") return `<image source="${imageSourceLabel(part.source)}" />`
   if (part.type === "summary") return `<summary>\n${part.text}\n</summary>`
   if (part.type === "tool_call") return `<tool_call name="${part.call.name}" id="${part.call.id}">${JSON.stringify(part.call.input)}</tool_call>`
   const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
-  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${truncateLargeOutput(output, options.truncateLargeOutputs)}\n</tool_result>`
+  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${truncateLargeOutput(output, options.truncateLargeOutputs, options.largeOutputLimit)}\n</tool_result>`
 }
 
-export function messageToText(message: Message, options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}) {
+export function messageToText(message: Message, options: MessageTextOptions = {}) {
   return message.parts.map((part) => {
-    if (message.role === "assistant" && part.type === "text") return truncateLargeOutput(part.text, options.truncateLargeOutputs)
+    if (message.role === "assistant" && part.type === "text") return truncateLargeOutput(part.text, options.truncateLargeOutputs, options.largeOutputLimit)
     return partToText(part, options)
   }).join("\n")
 }
 
-export function messagesToProviderInput(messages: Message[], options: { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean } = {}): ProviderInputMessage[] {
+export function messagesToProviderInput(messages: Message[], options: MessageTextOptions = {}): ProviderInputMessage[] {
   return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: message.parts }))
 }
 
@@ -199,10 +200,12 @@ export function truncateLargeMessageOutputs(messages: Message[]): Message[] {
   }))
 }
 
-function truncateLargeOutput(text: string, enabled = true) {
-  if (!enabled || text.length <= largeOutputLimit) return text
-  const omitted = text.length - largeOutputHead - largeOutputTail
-  return `${text.slice(0, largeOutputHead)}\n\n[truncated ${omitted} chars from large historical output]\n\n${text.slice(-largeOutputTail)}`
+function truncateLargeOutput(text: string, enabled = true, limit = largeOutputLimit) {
+  if (!enabled || text.length <= limit) return text
+  const head = limit === largeOutputLimit ? largeOutputHead : Math.max(0, Math.floor(limit * 0.55))
+  const tail = limit === largeOutputLimit ? largeOutputTail : Math.max(0, Math.floor(limit * 0.35))
+  const omitted = Math.max(0, text.length - head - tail)
+  return `${text.slice(0, head)}\n\n[truncated ${omitted} chars from large historical output]\n\n${text.slice(-tail)}`
 }
 
 function imageSourceLabel(source: ImageSource) {

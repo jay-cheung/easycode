@@ -53,6 +53,11 @@ describe("cli args", () => {
     expect(() => parseArgs(["build", "--cache-strategy", "missing"])).toThrow("--cache-strategy requires auto, balanced, or cache-heavy")
   })
 
+  test("context and step budgets can be set at startup", () => {
+    expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--max-tokens", "64000", "--max-steps", "24"])).toMatchObject({ maxTokens: 64_000, maxSteps: 24, prompt: "hello" })
+    expect(() => parseArgs(["build", "--max-steps", "nope"])).toThrow("--max-steps requires a positive number")
+  })
+
   test("session startup waits for input before running provider", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "deepseek", "--logger", "--session", "startup", "--root", root], {

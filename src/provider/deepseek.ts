@@ -78,7 +78,7 @@ export class DeepSeekProvider extends OpenAILikeProvider {
       apiKeyEnv: "DEEPSEEK_API_KEY",
       url: process.env.DEEPSEEK_API_URL ?? "https://api.deepseek.com/chat/completions",
       runtime,
-      capabilities: { supportsImages: false, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["high", "max"] },
+      capabilities: { supportsImages: false, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["high", "max"], contextWindowTokens: numberFromEnv("DEEPSEEK_CONTEXT_WINDOW_TOKENS") ?? numberFromEnv("EASYCODE_CONTEXT_WINDOW_TOKENS"), promptCacheMinPrefixTokens: numberFromEnv("DEEPSEEK_PROMPT_CACHE_MIN_PREFIX_TOKENS") ?? numberFromEnv("EASYCODE_PROMPT_CACHE_MIN_PREFIX_TOKENS") },
       missingApiKeyMessage: "DEEPSEEK_API_KEY is required for DeepSeekProvider",
       errorPrefix: "DeepSeek API failed",
     })
@@ -120,6 +120,13 @@ export class DeepSeekProvider extends OpenAILikeProvider {
     }
     if (buffer) yield* deepSeekSSELineToProviderEvents(buffer, state, true)
   }
+}
+
+function numberFromEnv(name: string) {
+  const value = process.env[name]
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
 }
 
 export function createDeepSeekStreamParseState(): DeepSeekStreamParseState {

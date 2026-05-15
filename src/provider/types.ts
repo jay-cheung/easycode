@@ -8,6 +8,8 @@ export type ProviderCapabilities = {
   supportsThinking: boolean
   supportsReasoningEffort: boolean
   effortValues: ReasoningEffort[]
+  contextWindowTokens?: number
+  promptCacheMinPrefixTokens?: number
 }
 
 export const defaultProviderCapabilities: ProviderCapabilities = {
