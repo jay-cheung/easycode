@@ -245,6 +245,13 @@ function snapshotContext(context: ContextManagerLike): ContextSnapshot {
   }
 }
 
+function ledgerLogDetail(ledger: ContextManagerLike["state"]["ledger"]) {
+  return {
+    currentRecords: ledger?.current.length ?? 0,
+    historyRecords: ledger?.history.length ?? 0,
+  }
+}
+
 class LoggingContextDecorator implements ContextManagerLike {
   constructor(
     private readonly inner: ContextManagerLike,
@@ -282,12 +289,12 @@ class LoggingContextDecorator implements ContextManagerLike {
 
   setLedger(ledger: ContextLedger | undefined) {
     this.inner.setLedger(ledger)
-    emitLog(this.logger, { type: "context", name: "context.ledger_set", detail: { sections: Object.keys(ledger ?? {}) } })
+    emitLog(this.logger, { type: "context", name: "context.ledger_set", detail: { ...ledgerLogDetail(this.inner.state.ledger), inputSections: Object.keys(ledger ?? {}) } })
   }
 
   updateLedger(patch: ContextLedger) {
     this.inner.updateLedger(patch)
-    emitLog(this.logger, { type: "context", name: "context.ledger_update", detail: { sections: Object.keys(patch) } })
+    emitLog(this.logger, { type: "context", name: "context.ledger_update", detail: { ...ledgerLogDetail(this.inner.state.ledger), inputSections: Object.keys(patch) } })
   }
 
   clearLedger() {
@@ -338,7 +345,7 @@ class LoggingContextDecorator implements ContextManagerLike {
 
   planRequest(input: Parameters<ContextManagerLike["planRequest"]>[0]) {
     const plan = this.inner.planRequest(input)
-    emitLog(this.logger, { type: "data", name: "context -> provider", detail: { messageCount: this.inner.state.messages.length, providerMessageCount: plan.providerMessages.length, toolNames: input.tools.map((tool) => tool.name), staticContext: plan.providerMessages[0]?.role === "system", strategy: plan.strategyState } })
+    emitLog(this.logger, { type: "data", name: "context -> provider", detail: { messageCount: this.inner.state.messages.length, providerMessageCount: plan.providerMessages.length, toolNames: input.tools.map((tool) => tool.name), staticContext: plan.providerMessages[0]?.role === "system", strategy: plan.strategyState, ledger: plan.ledgerStats } })
     return plan
   }
 

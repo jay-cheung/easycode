@@ -1,5 +1,5 @@
 import type { CacheStrategy, StaticContextStrategy } from "./cache-policy"
-import { ContextManager, type ContextManagerLike } from "./context"
+import { ContextManager, type ContextManagerLike, type LedgerKind, type LedgerRecord, type LedgerScope, type LedgerStatus } from "./context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
 import { createProvider, ProviderError, type Provider, type ProviderName } from "./provider"
@@ -138,6 +138,7 @@ export class AgentRunner {
     let state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
+    this.recordRunIntent(prompt)
     const tools = this.registry.list(effectiveMode)
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
@@ -210,6 +211,7 @@ export class AgentRunner {
       usedTools.push(toolCall.name)
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
       const result = await this.runTool(toolCall, effectiveMode)
+      this.recordToolOutcome(toolCall, result, prompt)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
       if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
@@ -283,6 +285,48 @@ export class AgentRunner {
     if (samePermissionRules(this.permission.rules, rules)) return this.permission
     return this.permission.withRules(rules)
   }
+
+  private recordRunIntent(prompt: string) {
+    const normalized = compactLine(prompt)
+    if (!normalized) return
+    const turn = this.context.state.messages.length
+    this.context.updateLedger({
+      current: [
+        ledgerRecord("intent", "current_user_request", truncateForLedger(normalized, 240), "current", turn, { evidence: { source: "user", messageIndex: Math.max(0, turn - 1) } }),
+        ledgerRecord("constraint", "main_objective", "complete latest request end-to-end; do not shrink scope unless user changes it.", "current", turn),
+        ledgerRecord("constraint", "failure_recovery_rule", "after tool failure, keep objective and take nearest safe recovery.", "current", turn),
+        ledgerRecord("constraint", "full_scope_finality", "do not treat probes, subsets, or dry runs as final for full-scope requests.", "current", turn),
+        ledgerRecord("constraint", "evidence_grounding", "do not claim evidence unless it is in messages, summary, ledger, files, or tool outputs.", "current", turn),
+      ],
+    })
+  }
+
+  private recordToolOutcome(call: ToolCall, result: Awaited<ReturnType<AgentRunner["runTool"]>>, prompt: string) {
+    const turn = this.context.state.messages.length
+    if (result.metadata.status === "succeeded") {
+      const files = toolScopeFiles(call, result)
+      const current: LedgerRecord[] = [
+        ledgerRecord("checkpoint", "last_successful_tool", `${call.name} ${truncateForLedger(result.title, 120)}`, "current", turn, { evidence: { source: "tool", toolCallID: call.id }, scope: files.length ? { files } : undefined }),
+        ledgerRecord("failure", "last_tool_failure", `resolved by ${call.name}`, "resolved", turn, { reason: "a later tool call succeeded", evidence: { source: "tool", toolCallID: call.id } }),
+      ]
+      if (files.length) current.push(ledgerRecord("file", files.join(","), `${call.name} succeeded: ${truncateForLedger(result.title, 160)}`, "current", turn, { evidence: { source: "tool", toolCallID: call.id }, scope: { files } }))
+      this.context.updateLedger({
+        current,
+      })
+      return
+    }
+
+    const summary = toolFailureSummary(call, result)
+    const recovery = recoveryHintForToolFailure(call, result)
+    this.context.updateLedger({
+      current: [
+        ledgerRecord("failure", "last_tool_failure", summary, "current", turn, { evidence: { source: "tool", toolCallID: call.id }, scope: toolScopeFiles(call, result).length ? { files: toolScopeFiles(call, result) } : undefined }),
+        ledgerRecord("constraint", "tool_failure_scope_rule", "tool failure requires recovery, not abandoning or silently shrinking scope.", "current", turn),
+        ledgerRecord("intent", "main_objective_still_active", truncateForLedger(compactLine(prompt), 200), "current", turn, { evidence: { source: "user" } }),
+        ledgerRecord("constraint", "next_recovery_action", recovery, "current", turn),
+      ],
+    })
+  }
 }
 
 function samePermissionRules(left: PermissionRule[], right: PermissionRule[]) {
@@ -310,6 +354,82 @@ function numericMetadata(value: unknown) {
 function appendOutput(output: string, part: string) {
   if (!output || output.endsWith("\n")) return `${output}${part}`
   return `${output}\n${part}`
+}
+
+function compactLine(text: string) {
+  return text.replace(/\s+/g, " ").trim()
+}
+
+function truncateForLedger(text: string, maxLength: number) {
+  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 15))}...[truncated]`
+}
+
+function toolFailureSummary(call: ToolCall, result: { title: string; output: string; metadata: Record<string, unknown> }) {
+  const status = String(result.metadata.status ?? "failed")
+  const error = typeof result.metadata.error === "string" ? ` ${result.metadata.error}` : ""
+  const output = compactLine(result.output)
+  return `${call.name} ${status}${error}: ${truncateForLedger(output || result.title, 220)}`
+}
+
+function recoveryHintForToolFailure(call: ToolCall, result: { output: string; metadata: Record<string, unknown> }) {
+  const output = `${result.output}\n${JSON.stringify(result.metadata)}\n${JSON.stringify(call.input)}`
+  if (call.name === "bash" && /SandboxPathEscapeError|path_boundary_escape|Path escapes project root|\/tmp|\/dev\/null|Operation not permitted|native_write_sandbox_denial/i.test(output)) {
+    return "next_recovery_action: keep command goal; use project-local paths like .easycode/tmp or .easycode/reports; avoid /tmp and /dev/null; request bypass only with user approval."
+  }
+  if (call.name === "bash" && /JSON\.parse|Unexpected token|SyntaxError/i.test(output)) {
+    return "next_recovery_action: keep requested scope; separate runner noise from machine JSON; parse project-local report or direct script output."
+  }
+  if (call.name === "bash" && /timed out|timeout/i.test(output)) {
+    return "next_recovery_action: keep requested scope; use longer timeout or label any subset as diagnostic before full rerun."
+  }
+  return "next_recovery_action: inspect failure, preserve requested scope, choose smallest safe recovery."
+}
+
+function ledgerRecord(kind: LedgerKind, subject: string, value: string, status: LedgerStatus, turn: number, input: { scope?: LedgerScope; reason?: string; evidence?: LedgerRecord["evidence"] } = {}): LedgerRecord {
+  return {
+    id: `run_${kind}_${hashLedgerID(`${subject}\n${value}\n${JSON.stringify(input.scope ?? {})}`)}`,
+    kind,
+    subject,
+    value,
+    status,
+    ...(input.scope ? { scope: input.scope } : {}),
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.evidence ? { evidence: input.evidence } : {}),
+    createdAtTurn: turn,
+    updatedAtTurn: turn,
+  }
+}
+
+function toolScopeFiles(call: ToolCall, result?: { metadata: Record<string, unknown> }) {
+  const files = new Set<string>()
+  collectFileRefs(call.input, files)
+  collectFileRefs(result?.metadata.changed, files)
+  return [...files]
+}
+
+function collectFileRefs(value: unknown, output: Set<string>) {
+  if (typeof value === "string") {
+    for (const match of value.matchAll(/(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]+|[\w.-]+\.(?:ts|tsx|js|jsx|json|md|txt|css|html|go|py|rs|toml|yaml|yml)/g)) {
+      output.add(match[0].replaceAll("\\", "/").replace(/^\.\//, ""))
+    }
+    return
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectFileRefs(item, output)
+    return
+  }
+  if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectFileRefs(item, output)
+  }
+}
+
+function hashLedgerID(input: string) {
+  let hash = 2166136261
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index)
+    hash = Math.imul(hash, 16777619)
+  }
+  return (hash >>> 0).toString(36)
 }
 
 function assistantMessage(reasoningText: string, text: string) {

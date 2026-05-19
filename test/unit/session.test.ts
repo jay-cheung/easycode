@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { ContextManager } from "../../src/context"
+import { ContextManager, type LedgerRecord } from "../../src/context"
 import { textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
 import { safeSessionID, SessionStore } from "../../src/session"
 
@@ -42,14 +42,16 @@ describe("session store", () => {
     const root = await tmpdir()
     const store = new SessionStore(root)
     const context = new ContextManager()
-    context.setLedger({ facts: ["User lives in London."], preferences: ["Avoid Brand Z."] })
+    context.setLedger({ current: [ledgerRecord("entity", "location", "User lives in London."), ledgerRecord("preference", "brand_filter", "Avoid Brand Z.")] })
     context.add(textMessage("user", "remember this"))
     await store.save("demo", context)
 
     const saved = await store.load("demo")
-    expect(saved?.ledger).toMatchObject({ facts: ["User lives in London."], preferences: ["Avoid Brand Z."] })
+    expect(saved?.ledger?.current).toContainEqual(expect.objectContaining({ kind: "entity", value: "User lives in London.", status: "current" }))
+    expect(saved?.ledger?.current).toContainEqual(expect.objectContaining({ kind: "preference", value: "Avoid Brand Z.", status: "current" }))
     const restored = await store.context("demo")
-    expect(restored.state.ledger).toMatchObject({ facts: ["User lives in London."], preferences: ["Avoid Brand Z."] })
+    expect(restored.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "entity", value: "User lives in London.", status: "current" }))
+    expect(restored.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "preference", value: "Avoid Brand Z.", status: "current" }))
     expect(restored.compose({ agent: { name: "test", mode: "build", systemPrompt: "test" }, skills: [], tools: [] }).map((message) => message.content).join("\n")).toContain("User lives in London.")
     await rm(root, { recursive: true, force: true })
   })
@@ -174,3 +176,16 @@ describe("session store", () => {
     expect(() => safeSessionID("   ")).toThrow("Session id cannot be empty")
   })
 })
+
+function ledgerRecord(kind: LedgerRecord["kind"], subject: string, value: string): LedgerRecord {
+  return {
+    id: `${kind}_${subject}`.replace(/[^A-Za-z0-9_.-]/g, "_"),
+    kind,
+    subject,
+    value,
+    status: "current",
+    evidence: { source: "user" },
+    createdAtTurn: 1,
+    updatedAtTurn: 1,
+  }
+}

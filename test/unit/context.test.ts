@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ContextManager, estimateSummaryTokens, estimateTextTokens } from "../../src/context"
+import { ContextManager, estimateSummaryTokens, estimateTextTokens, type LedgerKind, type LedgerRecord, type LedgerStatus } from "../../src/context"
 import { toolCallMessage, toolResultMessage, textMessage } from "../../src/message"
 import { createAgent } from "../../src/agent"
 
@@ -78,10 +78,12 @@ describe("context", () => {
   test("compose injects structured context ledger before dynamic history", () => {
     const context = new ContextManager()
     context.setLedger({
-      rules: ["Keep answers concise."],
-      facts: ["User moved from New York to London."],
-      preferences: ["Avoid Brand Z."],
-      taskState: ["final_task: choose timezone"],
+      current: [
+        ledgerRecord("constraint", "answer_style", "Keep answers concise.", "current", 1),
+        ledgerRecord("entity", "location", "User moved from New York to London.", "current", 1),
+        ledgerRecord("preference", "brand_filter", "Avoid Brand Z.", "current", 1),
+        ledgerRecord("intent", "final_task", "choose timezone", "current", 1),
+      ],
     })
     context.add(textMessage("user", "Which timezone now?"))
 
@@ -92,6 +94,83 @@ describe("context", () => {
     expect(messages[1].content).toContain("<context_state_ledger>")
     expect(messages[1].content).toContain("User moved from New York to London.")
     expect(messages[2]).toMatchObject({ role: "user", content: "Which timezone now?" })
+  })
+
+  test("ledger updates replace keyed current-state entries", () => {
+    const context = new ContextManager()
+    context.updateLedger({
+      current: [
+        ledgerRecord("intent", "current_user_request", "run a partial probe", "current", 1),
+        ledgerRecord("intent", "main_objective", "old objective", "current", 1),
+        ledgerRecord("entity", "last_tool_failure", "old failure", "current", 1),
+      ],
+    })
+    context.updateLedger({
+      current: [
+        ledgerRecord("intent", "current_user_request", "run the full APIx suite", "current", 2),
+        ledgerRecord("intent", "main_objective", "latest objective", "current", 2),
+        ledgerRecord("entity", "last_tool_failure", "path boundary failure", "current", 2),
+      ],
+    })
+
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "current_user_request", value: "run the full APIx suite", status: "current" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "main_objective", value: "latest objective", status: "current" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "entity", subject: "last_tool_failure", value: "path boundary failure", status: "current" }))
+    expect(context.state.ledger?.history).toContainEqual(expect.objectContaining({ kind: "intent", subject: "current_user_request", value: "run a partial probe", status: "superseded" }))
+    expect(context.state.ledger?.history).toContainEqual(expect.objectContaining({ kind: "entity", subject: "last_tool_failure", value: "old failure", status: "superseded" }))
+  })
+
+  test("structured ledger preserves rejected history with reasons", () => {
+    const context = new ContextManager()
+    context.setLedger({
+      current: [ledgerRecord("decision", "auth_strategy", "方案 B: 增加重试逻辑", "current", 2)],
+      history: [ledgerRecord("decision", "auth_strategy", "方案 A: 增加超时时间", "rejected", 1, { reason: "用户认为治标不治本" })],
+    })
+    context.add(textMessage("user", "为什么之前不用方案 A？"))
+
+    const input = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).map((message) => message.content).join("\n")
+    expect(input).toContain("方案 B: 增加重试逻辑")
+    expect(input).toContain("方案 A: 增加超时时间")
+    expect(input).toContain("用户认为治标不治本")
+  })
+
+  test("ledger selector omits unrelated file records", () => {
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        ledgerRecord("file", "src/auth.ts", "auth timeout fix is pending verification", "current", 1, { scope: { files: ["src/auth.ts"] } }),
+        ledgerRecord("file", "README.md", "readme copy was updated", "current", 1, { scope: { files: ["README.md"] } }),
+      ],
+    })
+    context.add(textMessage("user", "继续改 src/auth.ts 的测试"))
+
+    const input = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).map((message) => message.content).join("\n")
+    expect(input).toContain("auth timeout fix is pending verification")
+    expect(input).not.toContain("readme copy was updated")
+  })
+
+  test("summary conflicts are recorded without overriding current ledger", () => {
+    const context = new ContextManager({ maxTokens: 10, compactAt: 0.5 })
+    context.setLedger({ current: [ledgerRecord("intent", "current_user_request", "run full APIx suite", "current", 1)] })
+    context.add(textMessage("user", "x ".repeat(80)))
+
+    expect(context.compact("current_user_request: run partial probe")).toBe(true)
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "current_user_request", value: "run full APIx suite" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "conflict", subject: "summary_conflict:current_user_request", value: expect.stringContaining("run partial probe") }))
+  })
+
+  test("token estimate uses selected ledger instead of all history", () => {
+    const context = new ContextManager()
+    context.setLedger({
+      current: [ledgerRecord("intent", "current_user_request", "say hello", "current", 1)],
+      history: Array.from({ length: 20 }, (_, index) => ledgerRecord("checkpoint", `old_${index}`, "x".repeat(500), "archived", index)),
+    })
+    context.add(textMessage("user", "hello"))
+
+    expect(context.state.tokenEstimate).toBeLessThan(300)
+    const input = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).map((message) => message.content).join("\n")
+    expect(input).toContain("say hello")
+    expect(input).not.toContain("x".repeat(200))
   })
 
   test("compose can omit static system context after the first provider turn", () => {
@@ -136,3 +215,18 @@ describe("context", () => {
     expect(providerInput).not.toContain("x".repeat(9_000))
   })
 })
+
+function ledgerRecord(kind: LedgerKind, subject: string, value: string, status: LedgerStatus, turn: number, input: { reason?: string; scope?: LedgerRecord["scope"] } = {}): LedgerRecord {
+  return {
+    id: `${kind}_${subject}_${turn}`.replace(/[^A-Za-z0-9_.-]/g, "_"),
+    kind,
+    subject,
+    value,
+    status,
+    ...(input.reason ? { reason: input.reason } : {}),
+    ...(input.scope ? { scope: input.scope } : {}),
+    evidence: { source: "user", messageIndex: turn },
+    createdAtTurn: turn,
+    updatedAtTurn: turn,
+  }
+}

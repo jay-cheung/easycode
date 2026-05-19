@@ -2,7 +2,7 @@ import path from "node:path"
 import { createAgent, type Agent } from "./agent"
 import { loadEnvFile } from "./cli"
 import { defaultCachePricing, type CacheStrategy } from "./cache-policy"
-import { ContextManager, type ContextLedger } from "./context"
+import { ContextManager, type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "./context"
 import { createProvider, hasProvider, listProviders, type ProviderEvent, type ProviderName } from "./provider"
 import { textMessage, type Message } from "./message"
 
@@ -325,19 +325,33 @@ function maxOutputTokensForCase(task: APIxCase, override?: number) {
 }
 
 function contextLedgerForCase(task: APIxCase, fixtureContent?: string): ContextLedger {
-  const ledger: ContextLedger = {
-    taskState: [`${task.id} ${task.evaluation_mode} ${task.dimension}: ${task.goal}`],
-  }
+  const current: LedgerRecord[] = [
+    apixLedgerRecord(task, "intent", "case_goal", `${task.id} ${task.evaluation_mode} ${task.dimension}: ${task.goal}`, { taskID: task.id, topics: [task.dimension] }),
+  ]
   const finalTurn = task.turns.filter((turn) => turn.role === "user").at(-1)?.content.trim()
-  if (task.static_prefix) ledger.rules = [singleLine(task.static_prefix)]
+  if (task.static_prefix) current.push(apixLedgerRecord(task, "constraint", "static_prefix", singleLine(task.static_prefix), { taskID: task.id, topics: ["static_prefix", task.dimension] }))
   const derivedRules = derivedRuleHints(task)
-  if (derivedRules.length) ledger.outputPolicy = derivedRules
+  current.push(...derivedRules.map((rule, index) => apixLedgerRecord(task, "constraint", `output_policy_${index}`, rule, { taskID: task.id, topics: ["output_policy", task.dimension] })))
   const turnState = stateFromTurns(task)
-  if (turnState.length) ledger.entities = turnState
+  current.push(...turnState.map((state, index) => apixLedgerRecord(task, "entity", `turn_state_${index}`, state, { taskID: task.id, topics: ["turn_state", task.dimension] })))
   const fixtureState = fixtureStateHints(task, fixtureContent)
-  if (fixtureState.length) ledger.anchors = fixtureState
-  if (finalTurn) ledger.taskState?.push(`final_task: ${singleLine(finalTurn) || "<empty_or_whitespace>"}`)
-  return ledger
+  current.push(...fixtureState.map((state, index) => apixLedgerRecord(task, "checkpoint", `fixture_anchor_${index}`, state, { taskID: task.id, topics: ["fixture_anchor", task.dimension] })))
+  if (finalTurn) current.push(apixLedgerRecord(task, "intent", "final_task", singleLine(finalTurn) || "<empty_or_whitespace>", { taskID: task.id, topics: ["final_task", task.dimension] }))
+  return { current }
+}
+
+function apixLedgerRecord(task: APIxCase, kind: LedgerKind, subject: string, value: string, scope?: LedgerScope): LedgerRecord {
+  return {
+    id: `${task.id}_${kind}_${subject}`.replace(/[^A-Za-z0-9_.-]/g, "_"),
+    kind,
+    subject,
+    value,
+    status: "current",
+    ...(scope ? { scope } : {}),
+    evidence: { source: "summary" },
+    createdAtTurn: 0,
+    updatedAtTurn: 0,
+  }
 }
 
 function derivedRuleHints(task: APIxCase) {

@@ -11,6 +11,7 @@ import { ProviderError, type Provider, type ProviderEvent } from "../../src/prov
 import type { LogEvent } from "../../src/logger"
 import { SessionStore } from "../../src/session"
 import { defaultSessionSettings } from "../../src/settings"
+import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
 import type { RunUiEvent } from "../../src/ui/timeline"
 
 async function fixture() {
@@ -259,6 +260,66 @@ describe("agent integration", () => {
     expect(result.text).toContain("Continue with another message to keep going.")
     expect(events.some((event) => event.type === "failure" && event.text.includes("Continue with another message"))).toBe(true)
     expect(result.messages.at(-1)?.role).toBe("assistant")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("records the latest user request as the active objective", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("全量跑 APIx，然后按报告格式输出结果", "build")
+
+    expect(result.status).toBe("completed")
+    const current = context.state.ledger?.current ?? []
+    expect(current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "current_user_request", value: "全量跑 APIx，然后按报告格式输出结果", status: "current" }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "main_objective", value: expect.stringContaining("complete latest request end-to-end") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "failure_recovery_rule" }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("keeps main objective after sandbox path-boundary tool failures", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (!input.messages.some((message) => message.role === "tool")) {
+          yield { type: "tool_call", call: { id: "call_1", name: "bash", input: { command: "cat /tmp/apix_baseline.json" } } }
+          return
+        }
+        yield { type: "text_delta", text: "I will recover with a project-local report path." }
+      },
+    }
+    const sandbox = {
+      root,
+      resolve: () => root,
+      execute: async () => {
+        throw new SandboxPathEscapeError("/tmp/apix_baseline.json", "/tmp/apix_baseline.json", root)
+      },
+    } as unknown as Sandbox
+    const permission = new PermissionService(
+      [
+        { permission: "bash", pattern: "*", action: "allow" },
+        { permission: "sandbox_bypass", pattern: "*", action: "ask" },
+      ],
+      () => "reject",
+    )
+
+    const result = await new AgentRunner({ root, provider, context, sandbox, permission }).run("跑完整 APIx 评测并保留全量报告", "build")
+
+    expect(result.status).toBe("completed")
+    const current = context.state.ledger?.current ?? []
+    expect(current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "last_tool_failure", value: expect.stringContaining("bash denied PermissionRejectedError") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "tool_failure_scope_rule", value: expect.stringContaining("not abandoning or silently shrinking scope") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "main_objective_still_active", value: "跑完整 APIx 评测并保留全量报告" }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "next_recovery_action", value: expect.stringContaining(".easycode/reports") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "next_recovery_action", value: expect.stringContaining("avoid /tmp and /dev/null") }))
     await rm(root, { recursive: true, force: true })
   })
 
