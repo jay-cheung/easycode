@@ -1,0 +1,5 @@
+{
+  "repeated_user_input": "你好",
+  "repetitions": 20,
+  "expected_behavior": "deduplicate or keep bounded output"
+}

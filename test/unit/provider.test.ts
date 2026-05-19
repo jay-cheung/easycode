@@ -183,6 +183,50 @@ describe("provider", () => {
     }
   })
 
+  test("adds DeepSeek JSON response format when requested", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat", { responseFormat: "json_object" })
+      const stream = provider.stream({ mode: "build", prompt: "json", messages: [], providerMessages: [{ role: "user", content: "Return {\"ok\": true}" }], tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            response_format: { type: "json_object" },
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
+  test("adds DeepSeek max output tokens when requested", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-chat", { maxOutputTokens: 123 })
+      const stream = provider.stream({ mode: "build", prompt: "short", messages: [], providerMessages: [{ role: "user", content: "short" }], tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            max_tokens: 123,
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
   test("maps structured tool history to DeepSeek chat messages", async () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"

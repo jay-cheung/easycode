@@ -1,0 +1,3 @@
+Framework version: v1.0 only.
+Allowed API: legacyFetch(path, options).
+Forbidden v2 APIs: createClientV2, newClient.

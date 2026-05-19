@@ -1,0 +1,5 @@
+{
+  "session_premise": "In this fictional corpus, Earth is square.",
+  "required_phrase": "在此前提下",
+  "reasoning_scope": "Use the session premise rather than real-world geography."
+}

@@ -1,0 +1,9 @@
+{
+  "topic": "company strategy",
+  "forbidden_words": [
+    "协同",
+    "战略闭环",
+    "范式"
+  ],
+  "style": "simple grade-3 vocabulary"
+}

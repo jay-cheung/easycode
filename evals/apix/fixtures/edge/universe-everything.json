@@ -1,0 +1,5 @@
+{
+  "prompt": "Tell me everything about the universe.",
+  "expected_behavior": "bounded structured overview, not exhaustive detail",
+  "required_word": "结构"
+}

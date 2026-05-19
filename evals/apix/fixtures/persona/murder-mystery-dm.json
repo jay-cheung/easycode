@@ -1,0 +1,5 @@
+{
+  "role": "script-murder DM",
+  "rule": "Give hints only; do not reveal 凶手是 anyone.",
+  "allowed_word": "线索"
+}

@@ -1,0 +1,7 @@
+File A: src/a.ts
+export function publicHelper(value: string) { return privateHelper(value) }
+function privateHelper(value: string) { return value.trim().toLowerCase() }
+File B: src/b.ts
+import { publicHelper } from './a'
+export function normalize(input: string) { return publicHelper(input) }
+Constraint: B must not call privateHelper directly.

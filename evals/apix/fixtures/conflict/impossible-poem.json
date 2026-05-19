@@ -1,0 +1,5 @@
+{
+  "constraint_a": "total exactly 10 Chinese characters",
+  "constraint_b": "split evenly into 3 lines",
+  "oracle": "10 cannot be evenly divided by 3; identify the contradiction."
+}

@@ -1,0 +1,252 @@
+[
+  {
+    "id": "F1",
+    "name": "Feature 1",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F2",
+    "name": "Feature 2",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F3",
+    "name": "Feature 3",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F4",
+    "name": "Feature 4",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F5",
+    "name": "Feature 5",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F6",
+    "name": "Feature 6",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F7",
+    "name": "Feature 7",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F8",
+    "name": "Feature 8",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F9",
+    "name": "Feature 9",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F10",
+    "name": "Feature 10",
+    "cost_hint": "low"
+  },
+  {
+    "id": "F11",
+    "name": "Feature 11",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F12",
+    "name": "Feature 12",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F13",
+    "name": "Feature 13",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F14",
+    "name": "Feature 14",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F15",
+    "name": "Feature 15",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F16",
+    "name": "Feature 16",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F17",
+    "name": "Feature 17",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F18",
+    "name": "Feature 18",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F19",
+    "name": "Feature 19",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F20",
+    "name": "Feature 20",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F21",
+    "name": "Feature 21",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F22",
+    "name": "Feature 22",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F23",
+    "name": "Feature 23",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F24",
+    "name": "Feature 24",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F25",
+    "name": "Feature 25",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F26",
+    "name": "Feature 26",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F27",
+    "name": "Feature 27",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F28",
+    "name": "Feature 28",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F29",
+    "name": "Feature 29",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F30",
+    "name": "Feature 30",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F31",
+    "name": "Feature 31",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F32",
+    "name": "Feature 32",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F33",
+    "name": "Feature 33",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F34",
+    "name": "Feature 34",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F35",
+    "name": "Feature 35",
+    "cost_hint": "medium"
+  },
+  {
+    "id": "F36",
+    "name": "Feature 36",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F37",
+    "name": "Feature 37",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F38",
+    "name": "Feature 38",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F39",
+    "name": "Feature 39",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F40",
+    "name": "Feature 40",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F41",
+    "name": "Feature 41",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F42",
+    "name": "Feature 42",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F43",
+    "name": "Feature 43",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F44",
+    "name": "Feature 44",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F45",
+    "name": "Feature 45",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F46",
+    "name": "Feature 46",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F47",
+    "name": "Feature 47",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F48",
+    "name": "Feature 48",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F49",
+    "name": "Feature 49",
+    "cost_hint": "high"
+  },
+  {
+    "id": "F50",
+    "name": "Feature 50",
+    "cost_hint": "high"
+  }
+]

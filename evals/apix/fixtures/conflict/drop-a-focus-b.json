@@ -1,0 +1,5 @@
+{
+  "initial": "Optimize A and B.",
+  "override": "Drop A completely and focus only on B.",
+  "final_active_scope": "B"
+}

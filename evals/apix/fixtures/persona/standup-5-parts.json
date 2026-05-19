@@ -1,0 +1,5 @@
+{
+  "callback_token": "咖啡机",
+  "parts": 5,
+  "rule": "The callback token must appear in part 1 and part 5."
+}

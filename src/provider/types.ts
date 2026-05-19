@@ -25,6 +25,8 @@ export type ProviderOptions = {
   effort?: ReasoningEffort
   promptCacheKey?: string
   promptCacheRetention?: "in_memory" | "24h"
+  responseFormat?: "json_object"
+  maxOutputTokens?: number
 }
 
 export type ProviderEvent =

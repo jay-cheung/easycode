@@ -1,0 +1,23 @@
+{
+  "persona": "19th-century British butler",
+  "turns": [
+    "Discuss modern technology topic 1.",
+    "Discuss modern technology topic 2.",
+    "Discuss modern technology topic 3.",
+    "Discuss modern technology topic 4.",
+    "Discuss modern technology topic 5.",
+    "Discuss modern technology topic 6.",
+    "Discuss modern technology topic 7.",
+    "Discuss modern technology topic 8.",
+    "Discuss modern technology topic 9.",
+    "Discuss modern technology topic 10.",
+    "Discuss modern technology topic 11.",
+    "Discuss modern technology topic 12.",
+    "Discuss modern technology topic 13.",
+    "Discuss modern technology topic 14.",
+    "Discuss modern technology topic 15."
+  ],
+  "forbidden_slang": [
+    "哥们"
+  ]
+}

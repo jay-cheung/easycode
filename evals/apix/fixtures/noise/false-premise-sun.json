@@ -1,0 +1,8 @@
+{
+  "question": "为什么太阳从西边出来？",
+  "correction": "The premise is wrong; the sun normally rises in the east.",
+  "required_terms": [
+    "前提",
+    "错误"
+  ]
+}

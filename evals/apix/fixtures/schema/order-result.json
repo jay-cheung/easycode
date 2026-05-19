@@ -1,0 +1,9 @@
+{
+  "order_id": "O-1",
+  "amount": 12.5,
+  "tags": [
+    "new"
+  ],
+  "note": null,
+  "retry_count": 0
+}

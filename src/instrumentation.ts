@@ -2,7 +2,7 @@ import type { AgentRunState } from "./agent"
 import type { Message, ToolCall } from "./message"
 import { ProviderError, type Provider, type ProviderEvent } from "./provider"
 import type { SkillServiceLike } from "./skill"
-import { estimateTextTokens, type ContextManagerLike } from "./context"
+import { estimateTextTokens, type ContextLedger, type ContextManagerLike } from "./context"
 import type { ToolRegistryLike, ToolResult } from "./tool"
 import { emitLog, type Logger } from "./logger"
 
@@ -278,6 +278,21 @@ class LoggingContextDecorator implements ContextManagerLike {
   add(message: Message) {
     this.logAdd(message)
     this.inner.add(message)
+  }
+
+  setLedger(ledger: ContextLedger | undefined) {
+    this.inner.setLedger(ledger)
+    emitLog(this.logger, { type: "context", name: "context.ledger_set", detail: { sections: Object.keys(ledger ?? {}) } })
+  }
+
+  updateLedger(patch: ContextLedger) {
+    this.inner.updateLedger(patch)
+    emitLog(this.logger, { type: "context", name: "context.ledger_update", detail: { sections: Object.keys(patch) } })
+  }
+
+  clearLedger() {
+    this.inner.clearLedger()
+    emitLog(this.logger, { type: "context", name: "context.ledger_clear", detail: {} })
   }
 
   estimate(messages: Message[]) {

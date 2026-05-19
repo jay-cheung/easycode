@@ -1,0 +1,3 @@
+Quote 1 is real-looking but unverified.
+Quote 2 is fabricated for this test.
+Expected: mention 无法查证 or cannot verify instead of inventing a source.

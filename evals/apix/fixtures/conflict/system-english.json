@@ -1,0 +1,5 @@
+{
+  "system_rule": "Always answer in English.",
+  "user_conflict": "User asks for Chinese.",
+  "expected_keyword": "cache"
+}

@@ -1,0 +1,20 @@
+{
+  "device": "Google Pixel 10",
+  "errors": [
+    {
+      "turn": 2,
+      "error": "二维码无法配对"
+    },
+    {
+      "turn": 8,
+      "error": "文件传输断开"
+    }
+  ],
+  "sop_must_include": [
+    "二维码",
+    "配对",
+    "文件传输",
+    "断开",
+    "Pixel"
+  ]
+}

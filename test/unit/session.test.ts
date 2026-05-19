@@ -38,6 +38,22 @@ describe("session store", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("saves and restores context ledger", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.setLedger({ facts: ["User lives in London."], preferences: ["Avoid Brand Z."] })
+    context.add(textMessage("user", "remember this"))
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.ledger).toMatchObject({ facts: ["User lives in London."], preferences: ["Avoid Brand Z."] })
+    const restored = await store.context("demo")
+    expect(restored.state.ledger).toMatchObject({ facts: ["User lives in London."], preferences: ["Avoid Brand Z."] })
+    expect(restored.compose({ agent: { name: "test", mode: "build", systemPrompt: "test" }, skills: [], tools: [] }).map((message) => message.content).join("\n")).toContain("User lives in London.")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("prunes compacted session messages on save", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)

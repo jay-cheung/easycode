@@ -1,0 +1,406 @@
+{
+  "examples": [
+    {
+      "input": "pattern-1",
+      "output": "pattern-1-ok"
+    },
+    {
+      "input": "pattern-2",
+      "output": "pattern-2-ok"
+    },
+    {
+      "input": "pattern-3",
+      "output": "pattern-3-ok"
+    },
+    {
+      "input": "pattern-4",
+      "output": "pattern-4-ok"
+    },
+    {
+      "input": "pattern-5",
+      "output": "pattern-5-ok"
+    },
+    {
+      "input": "pattern-6",
+      "output": "pattern-6-ok"
+    },
+    {
+      "input": "pattern-7",
+      "output": "pattern-7-ok"
+    },
+    {
+      "input": "pattern-8",
+      "output": "pattern-8-ok"
+    },
+    {
+      "input": "pattern-9",
+      "output": "pattern-9-ok"
+    },
+    {
+      "input": "pattern-10",
+      "output": "pattern-10-ok"
+    },
+    {
+      "input": "pattern-11",
+      "output": "pattern-11-ok"
+    },
+    {
+      "input": "pattern-12",
+      "output": "pattern-12-ok"
+    },
+    {
+      "input": "pattern-13",
+      "output": "pattern-13-ok"
+    },
+    {
+      "input": "pattern-14",
+      "output": "pattern-14-ok"
+    },
+    {
+      "input": "pattern-15",
+      "output": "pattern-15-ok"
+    },
+    {
+      "input": "pattern-16",
+      "output": "pattern-16-ok"
+    },
+    {
+      "input": "pattern-17",
+      "output": "pattern-17-ok"
+    },
+    {
+      "input": "pattern-18",
+      "output": "pattern-18-ok"
+    },
+    {
+      "input": "pattern-19",
+      "output": "pattern-19-ok"
+    },
+    {
+      "input": "pattern-20",
+      "output": "pattern-20-ok"
+    },
+    {
+      "input": "pattern-21",
+      "output": "pattern-21-ok"
+    },
+    {
+      "input": "pattern-22",
+      "output": "pattern-22-ok"
+    },
+    {
+      "input": "pattern-23",
+      "output": "pattern-23-ok"
+    },
+    {
+      "input": "pattern-24",
+      "output": "pattern-24-ok"
+    },
+    {
+      "input": "pattern-25",
+      "output": "pattern-25-ok"
+    },
+    {
+      "input": "pattern-26",
+      "output": "pattern-26-ok"
+    },
+    {
+      "input": "pattern-27",
+      "output": "pattern-27-ok"
+    },
+    {
+      "input": "pattern-28",
+      "output": "pattern-28-ok"
+    },
+    {
+      "input": "pattern-29",
+      "output": "pattern-29-ok"
+    },
+    {
+      "input": "pattern-30",
+      "output": "pattern-30-ok"
+    },
+    {
+      "input": "pattern-31",
+      "output": "pattern-31-ok"
+    },
+    {
+      "input": "pattern-32",
+      "output": "pattern-32-ok"
+    },
+    {
+      "input": "pattern-33",
+      "output": "pattern-33-ok"
+    },
+    {
+      "input": "pattern-34",
+      "output": "pattern-34-ok"
+    },
+    {
+      "input": "pattern-35",
+      "output": "pattern-35-ok"
+    },
+    {
+      "input": "pattern-36",
+      "output": "pattern-36-ok"
+    },
+    {
+      "input": "pattern-37",
+      "output": "pattern-37-ok"
+    },
+    {
+      "input": "pattern-38",
+      "output": "pattern-38-ok"
+    },
+    {
+      "input": "pattern-39",
+      "output": "pattern-39-ok"
+    },
+    {
+      "input": "pattern-40",
+      "output": "pattern-40-ok"
+    },
+    {
+      "input": "pattern-41",
+      "output": "pattern-41-ok"
+    },
+    {
+      "input": "pattern-42",
+      "output": "pattern-42-ok"
+    },
+    {
+      "input": "pattern-43",
+      "output": "pattern-43-ok"
+    },
+    {
+      "input": "pattern-44",
+      "output": "pattern-44-ok"
+    },
+    {
+      "input": "pattern-45",
+      "output": "pattern-45-ok"
+    },
+    {
+      "input": "pattern-46",
+      "output": "pattern-46-ok"
+    },
+    {
+      "input": "pattern-47",
+      "output": "pattern-47-ok"
+    },
+    {
+      "input": "pattern-48",
+      "output": "pattern-48-ok"
+    },
+    {
+      "input": "pattern-49",
+      "output": "pattern-49-ok"
+    },
+    {
+      "input": "pattern-50",
+      "output": "pattern-50-ok"
+    },
+    {
+      "input": "pattern-51",
+      "output": "pattern-51-ok"
+    },
+    {
+      "input": "pattern-52",
+      "output": "pattern-52-ok"
+    },
+    {
+      "input": "pattern-53",
+      "output": "pattern-53-ok"
+    },
+    {
+      "input": "pattern-54",
+      "output": "pattern-54-ok"
+    },
+    {
+      "input": "pattern-55",
+      "output": "pattern-55-ok"
+    },
+    {
+      "input": "pattern-56",
+      "output": "pattern-56-ok"
+    },
+    {
+      "input": "pattern-57",
+      "output": "pattern-57-ok"
+    },
+    {
+      "input": "pattern-58",
+      "output": "pattern-58-ok"
+    },
+    {
+      "input": "pattern-59",
+      "output": "pattern-59-ok"
+    },
+    {
+      "input": "pattern-60",
+      "output": "pattern-60-ok"
+    },
+    {
+      "input": "pattern-61",
+      "output": "pattern-61-ok"
+    },
+    {
+      "input": "pattern-62",
+      "output": "pattern-62-ok"
+    },
+    {
+      "input": "pattern-63",
+      "output": "pattern-63-ok"
+    },
+    {
+      "input": "pattern-64",
+      "output": "pattern-64-ok"
+    },
+    {
+      "input": "pattern-65",
+      "output": "pattern-65-ok"
+    },
+    {
+      "input": "pattern-66",
+      "output": "pattern-66-ok"
+    },
+    {
+      "input": "pattern-67",
+      "output": "pattern-67-ok"
+    },
+    {
+      "input": "pattern-68",
+      "output": "pattern-68-ok"
+    },
+    {
+      "input": "pattern-69",
+      "output": "pattern-69-ok"
+    },
+    {
+      "input": "pattern-70",
+      "output": "pattern-70-ok"
+    },
+    {
+      "input": "pattern-71",
+      "output": "pattern-71-ok"
+    },
+    {
+      "input": "pattern-72",
+      "output": "pattern-72-ok"
+    },
+    {
+      "input": "pattern-73",
+      "output": "pattern-73-ok"
+    },
+    {
+      "input": "pattern-74",
+      "output": "pattern-74-ok"
+    },
+    {
+      "input": "pattern-75",
+      "output": "pattern-75-ok"
+    },
+    {
+      "input": "pattern-76",
+      "output": "pattern-76-ok"
+    },
+    {
+      "input": "pattern-77",
+      "output": "pattern-77-ok"
+    },
+    {
+      "input": "pattern-78",
+      "output": "pattern-78-ok"
+    },
+    {
+      "input": "pattern-79",
+      "output": "pattern-79-ok"
+    },
+    {
+      "input": "pattern-80",
+      "output": "pattern-80-ok"
+    },
+    {
+      "input": "pattern-81",
+      "output": "pattern-81-ok"
+    },
+    {
+      "input": "pattern-82",
+      "output": "pattern-82-ok"
+    },
+    {
+      "input": "pattern-83",
+      "output": "pattern-83-ok"
+    },
+    {
+      "input": "pattern-84",
+      "output": "pattern-84-ok"
+    },
+    {
+      "input": "pattern-85",
+      "output": "pattern-85-ok"
+    },
+    {
+      "input": "pattern-86",
+      "output": "pattern-86-ok"
+    },
+    {
+      "input": "pattern-87",
+      "output": "pattern-87-ok"
+    },
+    {
+      "input": "pattern-88",
+      "output": "pattern-88-ok"
+    },
+    {
+      "input": "pattern-89",
+      "output": "pattern-89-ok"
+    },
+    {
+      "input": "pattern-90",
+      "output": "pattern-90-ok"
+    },
+    {
+      "input": "pattern-91",
+      "output": "pattern-91-ok"
+    },
+    {
+      "input": "pattern-92",
+      "output": "pattern-92-ok"
+    },
+    {
+      "input": "pattern-93",
+      "output": "pattern-93-ok"
+    },
+    {
+      "input": "pattern-94",
+      "output": "pattern-94-ok"
+    },
+    {
+      "input": "pattern-95",
+      "output": "pattern-95-ok"
+    },
+    {
+      "input": "pattern-96",
+      "output": "pattern-96-ok"
+    },
+    {
+      "input": "pattern-97",
+      "output": "pattern-97-ok"
+    },
+    {
+      "input": "pattern-98",
+      "output": "pattern-98-ok"
+    },
+    {
+      "input": "pattern-99",
+      "output": "pattern-99-ok"
+    },
+    {
+      "input": "pattern-100",
+      "output": "pattern-100-ok"
+    }
+  ],
+  "query": "pattern-101",
+  "expected": "pattern-101-ok"
+}

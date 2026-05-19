@@ -39,3 +39,11 @@ Tasks without `providers` are fake-provider deterministic evals. Real provider e
 - `auto-frozen` uses `cacheStrategy=auto` while disabling adaptive strategy changes, so it isolates auto composition from controller effects.
 - Effective benchmark cost is input-only by default: cache-miss input tokens plus cached input tokens multiplied by the cached-input discount. Output tokens are reported for visibility but do not affect `effective_input` unless explicitly overridden.
 - Adaptive validation reports before/after windows for deterministic accept and rollback cases, including cost per call, hit rate, decision, expected decision, and pass status.
+
+## APIx Golden Dataset
+- `specs/007-apix-golden-dataset.md` defines the 100-case APIx dataset for layered context architecture.
+- APIx evals gate on resolution quality before comparing cost, cache, output length, latency, and stability.
+- Cache hit ratio must be measured from provider usage or benchmark telemetry; it must not be inferred from answer quality alone.
+- P0 APIx cases should use exact, JSON, regex, numeric, structural, or diff validators. LLM judges are reserved for P2 persona and creative-coherence cases unless paired with deterministic checks.
+- APIx provider requests must use the normal context composition path and provider-native controls such as JSON response mode and output-token budgets when the case declares them.
+- APIx cases that depend on long fixtures must fail fast when the fixture is missing instead of sending an under-specified prompt to a model.

@@ -1,0 +1,9 @@
+{
+  "input_variants": [
+    "",
+    "   ",
+    "\n\n",
+    []
+  ],
+  "expected_behavior": "Ask the user to provide 输入 and do not enter a tool loop."
+}

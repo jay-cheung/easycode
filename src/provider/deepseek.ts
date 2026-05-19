@@ -101,6 +101,8 @@ export class DeepSeekProvider extends OpenAILikeProvider {
       stream: true,
       stream_options: { include_usage: true },
       tools: input.tools.map(toolToChatCompletionTool),
+      ...(this.runtime.responseFormat ? { response_format: { type: this.runtime.responseFormat } } : {}),
+      ...(this.runtime.maxOutputTokens ? { max_tokens: this.runtime.maxOutputTokens } : {}),
     }
   }
 

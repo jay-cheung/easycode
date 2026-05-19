@@ -1,0 +1,13 @@
+{
+  "scene": "C-云产品 internal group chat",
+  "style": "pocket-robot gadget style without protected names",
+  "required_parts": 6,
+  "roles": [
+    "PM",
+    "SRE",
+    "Backend",
+    "Frontend",
+    "QA",
+    "Ops"
+  ]
+}

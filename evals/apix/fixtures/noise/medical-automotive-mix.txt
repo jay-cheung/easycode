@@ -1,0 +1,3 @@
+Medical section: fever can have many causes.
+Automotive section: tire pressure affects fuel economy.
+There is no supported causal relation between these sections in this fixture.

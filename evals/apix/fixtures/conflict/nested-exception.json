@@ -1,0 +1,6 @@
+{
+  "outer_rule": "Operations are allowed.",
+  "exception": "Payment method deletion is forbidden.",
+  "current_operation": "Payment method deletion",
+  "oracle": "禁止 because the inner exception applies."
+}

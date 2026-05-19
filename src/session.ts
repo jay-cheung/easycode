@@ -1,6 +1,6 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
-import { ContextManager, estimateSummaryTokens, recentProviderMessageSuffix, recentUserTurnMessages, type ContextManagerLike } from "./context"
+import { ContextManager, recentProviderMessageSuffix, recentUserTurnMessages, type ContextLedger, type ContextManagerLike } from "./context"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "./message"
 import { normalizeSessionSettings, type SessionSettings } from "./settings"
 
@@ -8,6 +8,7 @@ export type SessionData = {
   id: string
   messages: Message[]
   summary?: string
+  ledger?: ContextLedger
   settings?: SessionSettings
   updatedAt: number
 }
@@ -32,6 +33,7 @@ export class SessionStore {
       id,
       messages: truncateLargeMessageOutputs(redactProtectedMessages(messages)),
       summary: context.state.summary,
+      ledger: context.state.ledger,
       ...(settings ? { settings: normalizeSessionSettings(settings, settings.provider) } : {}),
       updatedAt: Date.now(),
     }
@@ -49,7 +51,7 @@ export class SessionStore {
     const messages = session.summary ? recentProviderMessageSuffix(recentUserTurnMessages(session.messages, context.preserveRecentUserTurns), context.compactPreserveTokens) : session.messages
     for (const message of truncateLargeMessageOutputs(redactProtectedMessages(messages))) context.add(message)
     context.state.summary = session.summary
-    context.state.tokenEstimate = context.estimate(context.state.messages) + estimateSummaryTokens(context.state.summary)
+    context.setLedger(session.ledger)
     return context
   }
 

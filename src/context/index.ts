@@ -7,9 +7,21 @@ import type { ToolDef } from "../tool"
 export type ContextState = {
   messages: Message[]
   summary?: string
+  ledger?: ContextLedger
   tokenEstimate: number
   maxTokens: number
   latestActualInputTokens?: number
+}
+
+export type ContextLedger = {
+  rules?: string[]
+  facts?: string[]
+  preferences?: string[]
+  entities?: string[]
+  conflicts?: string[]
+  taskState?: string[]
+  anchors?: string[]
+  outputPolicy?: string[]
 }
 
 export type ContextOptions = {
@@ -102,6 +114,9 @@ export interface ContextManagerLike {
   readonly preserveRecentUserTurns: number
   readonly compactPreserveTokens: number
   add(message: Message): void
+  setLedger(ledger: ContextLedger | undefined): void
+  updateLedger(patch: ContextLedger): void
+  clearLedger(): void
   estimate(messages: Message[]): number
   configureStrategy(input: Partial<ContextStrategyState> & { responseReserveTokens?: number; contextWindowTokens?: number }): void
   recordUsage(inputTokens: number): void
@@ -206,6 +221,19 @@ export class ContextManager implements ContextManagerLike {
     this.recalculateTokenEstimate()
   }
 
+  setLedger(ledger: ContextLedger | undefined) {
+    this.state.ledger = normalizedLedger(ledger)
+    this.recalculateTokenEstimate()
+  }
+
+  updateLedger(patch: ContextLedger) {
+    this.setLedger(mergeLedger(this.state.ledger, patch))
+  }
+
+  clearLedger() {
+    this.setLedger(undefined)
+  }
+
   estimate(messages: Message[]) {
     return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
   }
@@ -247,6 +275,8 @@ export class ContextManager implements ContextManagerLike {
     if (!this.needsCompaction()) return []
     const { compacted } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
     const messages: Message[] = []
+    const ledger = renderContextLedger(this.state.ledger)
+    if (ledger) messages.push(textMessage("system", ledger))
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(`Previous summary:\n${this.state.summary}`)]))
     messages.push(...redactProtectedMessages(compacted))
     return messagesToProviderInput(messages, { redactProtectedToolResults: true })
@@ -285,16 +315,18 @@ export class ContextManager implements ContextManagerLike {
       const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
       const toolList = [...input.tools].sort((left, right) => left.name.localeCompare(right.name)).map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${stableStringify(tool.jsonSchema)}`).join("\n")
       const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
-      const system = [input.agent.systemPrompt, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`].join("\n\n")
+      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`].join("\n\n")
       messages.push(textMessage("system", system))
     }
+    const ledger = renderContextLedger(this.state.ledger)
+    if (ledger) messages.push(textMessage("system", ledger))
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
     messages.push(...this.state.messages)
     return messagesToProviderInput(messages, { largeOutputLimit: Math.ceil(this._strategyState.toolResultTokenBudget / 0.3) })
   }
 
   private recalculateTokenEstimate() {
-    this.state.tokenEstimate = this.estimate(this.state.messages) + estimateSummaryTokens(this.state.summary)
+    this.state.tokenEstimate = this.estimate(this.state.messages) + estimateSummaryTokens(this.state.summary) + estimateTextTokens(renderContextLedger(this.state.ledger))
   }
 
   private staticPrefixTokens = 0
@@ -450,6 +482,59 @@ export function estimateTextTokens(text: string) {
   let tokens = 0
   for (const char of text) tokens += isCJK(char) ? 0.6 : 0.3
   return Math.ceil(tokens)
+}
+
+const contextExecutionContract = [
+  "Context execution contract:",
+  "- Treat the current prompt, context ledger, summary, and message history as the complete available state unless the user explicitly says otherwise.",
+  "- Answer the latest user request directly; do not ask for prior turns that are already represented in summaries, ledgers, fixtures, or placeholders.",
+  "- Resolve pronouns, implicit intent, latest overrides, preferences, conflicts, and task progress from the active window plus the context ledger before responding.",
+  "- Preserve exact user-supplied entity names, versions, paths, identifiers, and constraints when they are relevant.",
+  "- Keep dynamic run facts in the ledger or message history, after the stable static prefix, to protect prompt-cache reuse.",
+].join("\n")
+
+const ledgerSectionOrder: Array<keyof ContextLedger> = ["rules", "facts", "preferences", "entities", "conflicts", "taskState", "anchors", "outputPolicy"]
+
+function renderContextLedger(ledger: ContextLedger | undefined) {
+  const normalized = normalizedLedger(ledger)
+  if (!normalized) return ""
+  const lines = ["<context_state_ledger>"]
+  for (const section of ledgerSectionOrder) {
+    const items = normalized[section]
+    if (!items?.length) continue
+    lines.push(`${section}:`)
+    for (const item of items) lines.push(`- ${item}`)
+  }
+  lines.push("</context_state_ledger>")
+  return lines.join("\n")
+}
+
+function normalizedLedger(ledger: ContextLedger | undefined) {
+  if (!ledger) return undefined
+  const normalized: ContextLedger = {}
+  for (const section of ledgerSectionOrder) {
+    const items = uniqueNonEmpty(ledger[section])
+    if (items.length) normalized[section] = items
+  }
+  return Object.keys(normalized).length > 0 ? normalized : undefined
+}
+
+function mergeLedger(current: ContextLedger | undefined, patch: ContextLedger) {
+  const next: ContextLedger = { ...(current ?? {}) }
+  for (const section of ledgerSectionOrder) next[section] = [...(next[section] ?? []), ...(patch[section] ?? [])]
+  return next
+}
+
+function uniqueNonEmpty(items: string[] | undefined) {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const item of items ?? []) {
+    const trimmed = item.replace(/\s+/g, " ").trim()
+    if (!trimmed || seen.has(trimmed)) continue
+    seen.add(trimmed)
+    result.push(trimmed)
+  }
+  return result
 }
 
 export function estimateSummaryTokens(summary: string | undefined) {

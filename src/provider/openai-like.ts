@@ -161,6 +161,7 @@ export class OpenAILikeProvider implements Provider {
       prompt_cache_key: this.promptCacheKey(input),
     }
     if (this.runtime.promptCacheRetention) body.prompt_cache_retention = this.runtime.promptCacheRetention
+    if (this.runtime.maxOutputTokens) body.max_output_tokens = this.runtime.maxOutputTokens
     const reasoning = this.responseReasoning()
     if (reasoning) body.reasoning = reasoning
     return body

@@ -1,0 +1,2 @@
+Source Chinese text: 缓存让重复输入更便宜。
+Required order: translate to English -> summarize -> translate back to Chinese -> extract keywords.

@@ -1,0 +1,18 @@
+{
+  "facts": [
+    {
+      "turn": 12,
+      "value": "上线日期是 6 月 1 日"
+    },
+    {
+      "turn": 31,
+      "value": "上线日期是 6 月 15 日"
+    },
+    {
+      "turn": 42,
+      "value": "上线日期尚未确定"
+    }
+  ],
+  "expected_behavior": "Flag contradiction instead of merging into a fake certainty.",
+  "filler": "contradiction filler paragraph 001. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 002. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 003. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 004. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 005. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 006. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 007. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 008. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 009. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 010. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 011. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 012. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 013. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 014. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 015. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 016. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 017. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 018. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 019. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 020. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 021. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 022. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 023. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 024. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 025. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 026. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 027. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 028. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 029. This sentence is deterministic and intentionally irrelevant.\ncontradiction filler paragraph 030. This sentence is deterministic and intentionally irrelevant."
+}

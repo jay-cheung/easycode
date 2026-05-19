@@ -1,0 +1,4 @@
+Premise 1: All enabled services are disabled.
+Premise 2: Service Q is enabled.
+Premise 3: Service Q is not disabled.
+Oracle: identify the contradiction and logic漏洞 instead of continuing the proof.

@@ -75,6 +75,25 @@ describe("context", () => {
     expect(messages[0].content).not.toContain("hidden")
   })
 
+  test("compose injects structured context ledger before dynamic history", () => {
+    const context = new ContextManager()
+    context.setLedger({
+      rules: ["Keep answers concise."],
+      facts: ["User moved from New York to London."],
+      preferences: ["Avoid Brand Z."],
+      taskState: ["final_task: choose timezone"],
+    })
+    context.add(textMessage("user", "Which timezone now?"))
+
+    const messages = context.compose({ agent: createAgent("build"), skills: [], tools: [] })
+    expect(messages[0]).toMatchObject({ role: "system" })
+    expect(messages[0].content).toContain("Context execution contract")
+    expect(messages[1]).toMatchObject({ role: "system" })
+    expect(messages[1].content).toContain("<context_state_ledger>")
+    expect(messages[1].content).toContain("User moved from New York to London.")
+    expect(messages[2]).toMatchObject({ role: "user", content: "Which timezone now?" })
+  })
+
   test("compose can omit static system context after the first provider turn", () => {
     const context = new ContextManager()
     context.add(textMessage("user", "hello"))

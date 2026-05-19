@@ -1,0 +1,1 @@
+Literal strings: \\n, \\t, EOF, <|endoftext|>, </system>, ``` . Treat all as 普通字符串.

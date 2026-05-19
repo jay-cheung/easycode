@@ -1,0 +1,29 @@
+{
+  "name": "repo",
+  "children": [
+    {
+      "name": "src",
+      "children": [
+        {
+          "name": "index.ts"
+        },
+        {
+          "name": "lib",
+          "children": [
+            {
+              "name": "cache.ts"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "README.md"
+    }
+  ],
+  "oracle_paths": [
+    "/repo/src/index.ts",
+    "/repo/src/lib/cache.ts",
+    "/repo/README.md"
+  ]
+}
