@@ -91,6 +91,7 @@ describe("cli args", () => {
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
     expect(stdout).toContain("Still working.")
+    expect(stdout).toContain("Continue with another message to keep going.")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })

@@ -11,6 +11,7 @@ import { ProviderError, type Provider, type ProviderEvent } from "../../src/prov
 import type { LogEvent } from "../../src/logger"
 import { SessionStore } from "../../src/session"
 import { defaultSessionSettings } from "../../src/settings"
+import type { RunUiEvent } from "../../src/ui/timeline"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -101,7 +102,8 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
     expect(result.status).toBe("failed")
-    expect(result.text).toBe("{\"error\":{\"message\":\"quota exceeded\"}}")
+    expect(result.text).toContain("{\"error\":{\"message\":\"quota exceeded\"}}")
+    expect(result.text).toContain("Run failed. Continue with another message")
     expect(result.messages.at(-1)?.role).toBe("assistant")
     expect(events.some((event) => event.type === "error" && event.name === "provider.error" && event.detail?.status === 429 && event.detail.output === "{\"error\":{\"message\":\"quota exceeded\"}}")).toBe(true)
     await rm(root, { recursive: true, force: true })
@@ -119,7 +121,8 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
     expect(result.status).toBe("failed")
-    expect(result.text).toBe("{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}")
+    expect(result.text).toContain("{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}")
+    expect(result.text).toContain("Run failed. Continue with another message")
     expect(events.some((event) => event.type === "provider" && event.name === "provider.failure" && event.detail?.code === "insufficient_quota")).toBe(true)
     expect(events.some((event) => event.type === "error" && event.name === "provider.error" && event.detail?.code === "insufficient_quota")).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.output" && event.detail?.output === "{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}")).toBe(true)
@@ -137,8 +140,9 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
     expect(result.status).toBe("failed")
-    expect(result.text).toBe("I checked the current state.\nquota exceeded")
-    expect(result.messages.at(-1)?.parts[0]).toMatchObject({ type: "text", text: "I checked the current state.\nquota exceeded" })
+    expect(result.text).toContain("I checked the current state.\nquota exceeded")
+    expect(result.text).toContain("Run failed. Continue with another message")
+    expect(result.messages.at(-1)?.parts[0]).toMatchObject({ type: "text", text: result.text })
     await rm(root, { recursive: true, force: true })
   })
 
@@ -239,6 +243,7 @@ describe("agent integration", () => {
 
   test("returns latest assistant text when max steps is reached", async () => {
     const root = await fixture()
+    const events: RunUiEvent[] = []
     const provider: Provider = {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
@@ -247,10 +252,37 @@ describe("agent integration", () => {
         yield { type: "done" }
       },
     }
-    const result = await new AgentRunner({ root, provider, maxSteps: 1 }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, maxSteps: 1, onEvent: (event) => events.push(event) }).run("Fix", "build")
     expect(result.status).toBe("failed")
-    expect(result.text).toBe("I inspected the issue and need one more command.")
+    expect(result.text).toContain("I inspected the issue and need one more command.")
+    expect(result.text).toContain("Stopped after maxSteps (8).")
+    expect(result.text).toContain("Continue with another message to keep going.")
+    expect(events.some((event) => event.type === "failure" && event.text.includes("Continue with another message"))).toBe(true)
     expect(result.messages.at(-1)?.role).toBe("assistant")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("emits elapsed progress for long-running bash tools", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield { type: "tool_call", call: { id: "call_sleep", name: "bash", input: { command: "sleep 0.03" } } }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event), toolProgressIntervalMs: 1 }).run("Run slow command", "build")
+    expect(result.status).toBe("completed")
+    expect(events.some((event) => event.type === "tool_progress" && event.toolName === "bash" && event.elapsedMs > 0)).toBe(true)
+    expect(events.some((event) => event.type === "tool_result" && event.toolName === "bash" && typeof event.durationMs === "number" && event.durationMs > 0)).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
 

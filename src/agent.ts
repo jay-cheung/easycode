@@ -49,6 +49,8 @@ const stableOperatingProtocol = [
   "26. When cost and quality trade off, choose the option that preserves correctness while lowering cache-miss and output token cost.",
 ].join("\n")
 
+const defaultToolProgressIntervalMs = 10_000
+
 export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" | "tool_running" | "completed" | "failed" | "cancelled"
 
 export type AgentRunResult = {
@@ -74,6 +76,7 @@ export type AgentRunnerOptions = {
   aspect?: RunAspect
   onTextDelta?: (text: string) => void
   onEvent?: (event: RunUiEvent) => void
+  toolProgressIntervalMs?: number
   settings?: SessionSettings
   staticContextStrategy?: StaticContextStrategy
 }
@@ -94,6 +97,7 @@ export class AgentRunner {
   readonly aspect: RunAspect
   readonly onTextDelta?: (text: string) => void
   readonly onEvent?: (event: RunUiEvent) => void
+  readonly toolProgressIntervalMs: number
   readonly settings: SessionSettings
   readonly cacheStrategy: CacheStrategy
 
@@ -108,6 +112,7 @@ export class AgentRunner {
     this.sandbox = options.sandbox ?? new Sandbox(options.root)
     this.onTextDelta = options.onTextDelta
     this.onEvent = options.onEvent
+    this.toolProgressIntervalMs = options.toolProgressIntervalMs ?? defaultToolProgressIntervalMs
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
     this.cacheStrategy = cacheStrategyFor(options.staticContextStrategy, this.settings.cacheStrategy)
     const providerContextWindow = this.provider.capabilities?.contextWindowTokens
@@ -158,7 +163,7 @@ export class AgentRunner {
             this.onTextDelta?.(event.text)
           }
           if (event.type === "failure") {
-            failureText = event.error.output || event.error.message
+            failureText = runFailureText(event.error.output || event.error.message, "provider_error")
             this.onEvent?.({ type: "failure", text: failureText })
             this.onTextDelta?.(failureText)
           }
@@ -172,7 +177,7 @@ export class AgentRunner {
         }
       } catch (error) {
         if (error instanceof ProviderError) {
-          const failureText = providerFailureText(error)
+          const failureText = runFailureText(providerFailureText(error), "provider_error")
           this.onEvent?.({ type: "failure", text: failureText })
           const output = appendOutput(text, failureText)
           this.context.add(assistantMessage(reasoningTranscript, output))
@@ -206,7 +211,7 @@ export class AgentRunner {
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
       const result = await this.runTool(toolCall, effectiveMode)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
-      this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output })
+      this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
       if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
         const output = result.output
         this.onEvent?.({ type: "text_delta", text: result.output })
@@ -219,7 +224,10 @@ export class AgentRunner {
       }
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }
-    const text = latestAssistantText || `Stopped after max steps: ${this.maxSteps}`
+    const maxStepsText = runFailureText(`Stopped after maxSteps (${this.maxSteps}).`, "max_steps")
+    const text = appendOutput(latestAssistantText, maxStepsText)
+    this.onEvent?.({ type: "failure", text: maxStepsText })
+    this.onTextDelta?.(maxStepsText)
     this.context.add(assistantMessage(reasoningTranscript, text))
     this.context.recordRunOutcome({ status: "failed", failureReason: "max_steps" })
     state = this.aspect.runFailed("max_steps", usedTools)
@@ -228,11 +236,22 @@ export class AgentRunner {
   }
 
   private async runTool(call: ToolCall, mode: AgentMode) {
+    const startedAt = Date.now()
+    const progressTimer = this.startToolProgressTimer(call, startedAt)
     try {
       return await this.registry.run(call.name, call.input, { agentMode: mode, sandbox: this.sandbox, permission: this.permissionFor(mode), skills: this.skills, messages: this.context.state.messages })
     } catch (error) {
       return { title: call.name, output: error instanceof Error ? error.message : String(error), metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" } }
+    } finally {
+      if (progressTimer) clearInterval(progressTimer)
     }
+  }
+
+  private startToolProgressTimer(call: ToolCall, startedAt: number) {
+    if (!this.onEvent || call.name !== "bash" || this.toolProgressIntervalMs <= 0) return undefined
+    return setInterval(() => {
+      this.onEvent?.({ type: "tool_progress", callID: call.id, toolName: call.name, elapsedMs: Date.now() - startedAt })
+    }, this.toolProgressIntervalMs)
   }
 
   private async compactContext(mode: AgentMode) {
@@ -278,6 +297,16 @@ function providerFailureText(error: ProviderError) {
   return error.output?.trim() || error.message
 }
 
+function runFailureText(text: string, reason: "provider_error" | "max_steps") {
+  const trimmed = text.trim()
+  const guidance = reason === "max_steps" ? "Continue with another message to keep going." : "Run failed. Continue with another message to retry or provide more direction."
+  return appendOutput(trimmed, guidance)
+}
+
+function numericMetadata(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
 function appendOutput(output: string, part: string) {
   if (!output || output.endsWith("\n")) return `${output}${part}`
   return `${output}\n${part}`
@@ -308,9 +337,9 @@ function contextHasProposedPlan(messages: Message[]) {
   return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; settings?: SessionSettings; staticContextStrategy?: StaticContextStrategy }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; toolProgressIntervalMs?: number; settings?: SessionSettings; staticContextStrategy?: StaticContextStrategy }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, settings, staticContextStrategy: input.staticContextStrategy })
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, staticContextStrategy: input.staticContextStrategy })
 }
 
 function cacheStrategyFor(staticContextStrategy: StaticContextStrategy | undefined, fallback: CacheStrategy) {

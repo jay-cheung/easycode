@@ -178,8 +178,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
         activeMode = "build"
         runner = undefined
       }
-      if (result.failureReason === "max_steps") continue
-      if (result.status !== "completed") return result.status
+      if (result.status !== "completed") continue
     }
   } finally {
     rl.close()

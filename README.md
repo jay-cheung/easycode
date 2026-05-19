@@ -45,7 +45,7 @@ bun run src/cli.ts build --provider openai
 bun run src/cli.ts build --provider deepseek --logger
 ```
 
-Without `--logger`, EasyCode renders a lightweight timeline with model thinking, tool calls, tool results, and the final answer. With `--logger`, structured diagnostic logs are emitted instead of the timeline.
+Without `--logger`, EasyCode renders a lightweight timeline with model thinking, tool calls, elapsed command progress, tool results, and the final answer. With `--logger`, structured diagnostic logs are emitted instead of the timeline.
 
 Use `--once` to run a single prompt without entering an interactive session.
 
@@ -54,7 +54,7 @@ bun run src/cli.ts build --once "Fix the failing test" --provider fake
 bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
 ```
 
-Context defaults favor prompt caching: stable context is sent on every provider step, `maxTokens` defaults to `32000`, and `maxSteps` defaults to `20`. Use `--cache-strategy balanced|cache-heavy|auto`, `--max-tokens <n>`, and `--max-steps <n>` to override a run or session.
+Context defaults favor prompt caching: stable context is sent on every provider step, `maxTokens` defaults to `32000`, and `maxSteps` defaults to `20`. Use `--cache-strategy balanced|cache-heavy|auto`, `--max-tokens <n>`, and `--max-steps <n>` to override a run or session. When a session stops on `maxSteps` or a provider error, EasyCode prints a continuation hint and returns to the next prompt.
 
 ## Sessions
 

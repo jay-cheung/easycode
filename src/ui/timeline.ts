@@ -5,7 +5,8 @@ export type RunUiEvent =
   | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
-  | { type: "tool_result"; callID: string; toolName: string; title: string; status: string; output: string }
+  | { type: "tool_progress"; callID: string; toolName: string; elapsedMs: number }
+  | { type: "tool_result"; callID: string; toolName: string; title: string; status: string; output: string; durationMs?: number }
   | { type: "failure"; text: string }
   | { type: "run_done"; status: string }
 
@@ -54,10 +55,15 @@ export class TimelineRenderer {
       this.output.write(`\n${this.title("tool", `● ${event.call.name}`)} ${summarizeInput(event.call.input)}\n`)
       return
     }
+    if (event.type === "tool_progress") {
+      this.output.write(`  … ${this.title("tool", event.toolName)} still running after ${formatDuration(event.elapsedMs)}\n`)
+      return
+    }
     if (event.type === "tool_result") {
       const icon = event.status === "succeeded" ? "✓" : event.status === "denied" ? "!" : "×"
       const preview = previewOutput(event.output)
-      this.output.write(`  ${icon} ${this.title("tool", event.title)}${preview ? `\n${indent(preview, "    ")}` : ""}\n`)
+      const duration = event.durationMs === undefined ? "" : ` (${formatDuration(event.durationMs)})`
+      this.output.write(`  ${icon} ${this.title("tool", event.title)}${duration}${preview ? `\n${indent(preview, "    ")}` : ""}\n`)
       return
     }
     if (event.type === "failure") {
@@ -126,4 +132,12 @@ function previewOutput(output: string) {
 
 function indent(text: string, prefix: string) {
   return text.split(/\r?\n/).map((line) => `${prefix}${line}`).join("\n")
+}
+
+function formatDuration(durationMs: number) {
+  if (!Number.isFinite(durationMs) || durationMs < 0) return "0s"
+  if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`
+  const seconds = durationMs / 1_000
+  if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/, "")}s`
+  return `${Math.round(seconds)}s`
 }
