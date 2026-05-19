@@ -347,6 +347,31 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("cancels a run while waiting for bash permission without reporting bash progress", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    const controller = new AbortController()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "tool_call", call: { id: "call_sleep", name: "bash", input: { command: "sleep 5" } } }
+        yield { type: "done" }
+      },
+    }
+    const permission = new PermissionService(defaultPermissionRules("build"), async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      controller.abort()
+      return "reject" as const
+    })
+
+    const result = await new AgentRunner({ root, provider, permission, onEvent: (event) => events.push(event), toolProgressIntervalMs: 1 }).run("Run slow command", "build", { signal: controller.signal })
+
+    expect(result.status).toBe("cancelled")
+    expect(result.text).toContain("Run cancelled by user.")
+    expect(events.some((event) => event.type === "tool_progress")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("plan-mode-readonly", async () => {
     const root = await fixture()
     const before = await Bun.file(path.join(root, "src", "add.ts")).text()

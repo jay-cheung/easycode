@@ -141,6 +141,7 @@ export class OpenAILikeProvider implements Provider {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
+      signal: input.signal,
     })
     if (!response.ok || !response.body) {
       const output = await response.text().catch(() => "")

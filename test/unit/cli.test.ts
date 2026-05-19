@@ -96,6 +96,50 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("session queues input typed during an active run", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("delayed answer\n")
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    child.stdin.write("queued-ok\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Queued next input: queued-ok")
+    expect(stdout).toContain("Delayed done.")
+    expect(stdout).toContain("Queued done.")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session cancels the active run from typed input", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("slow command\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write("y\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write("/cancel\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Type /cancel to stop this run")
+    expect(stdout).toContain("Cancelling current run...")
+    expect(stdout).toContain("Run cancelled by user.")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("session asks before reading env files", async () => {
     const root = await tmpdir()
     await Bun.write(path.join(root, ".env"), "SECRET=hidden\n")

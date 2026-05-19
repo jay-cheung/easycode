@@ -8,6 +8,7 @@ export type BashResult = {
   stdout: string
   stderr: string
   timedOut: boolean
+  cancelled: boolean
   truncated: boolean
   durationMs: number
   nativeWriteSandbox: boolean
@@ -23,6 +24,7 @@ export type SandboxOptions = {
 export type SandboxExecuteOptions = {
   bypassNativeWriteSandbox?: boolean
   bypassPathBoundary?: boolean
+  signal?: AbortSignal
 }
 
 export class SandboxBoundaryError extends Error {
@@ -183,6 +185,13 @@ export class Sandbox {
     const started = Date.now()
     const controller = new AbortController()
     let timedOut = false
+    let cancelled = Boolean(options.signal?.aborted)
+    const onAbort = () => {
+      cancelled = true
+      controller.abort()
+    }
+    if (cancelled) return cancelledBashResult(input.command, started)
+    options.signal?.addEventListener("abort", onAbort, { once: true })
     const timer = setTimeout(() => {
       timedOut = true
       controller.abort()
@@ -191,6 +200,11 @@ export class Sandbox {
     const shell = process.platform === "win32" ? "cmd.exe" : "bash"
     const shellFlag = process.platform === "win32" ? "/c" : "-c"
     const nativeWriteSandbox = process.platform !== "win32" && !options.bypassNativeWriteSandbox && (await canUseNativeWriteSandbox())
+    if (cancelled) {
+      clearTimeout(timer)
+      options.signal?.removeEventListener("abort", onAbort)
+      return cancelledBashResult(input.command, started)
+    }
     const command = nativeWriteSandbox ? [SANDBOX_EXEC, "-p", macosSandboxProfile(this.root), shell, shellFlag, input.command] : [shell, shellFlag, input.command]
     const proc = Bun.spawn(command, {
       cwd,
@@ -204,6 +218,7 @@ export class Sandbox {
     ])
     const exitCode = await proc.exited.catch(() => null)
     clearTimeout(timer)
+    options.signal?.removeEventListener("abort", onAbort)
     const stdout = truncateBytes(stdoutRaw, this.maxOutputBytes)
     const stderr = truncateBytes(stderrRaw, this.maxOutputBytes)
     return {
@@ -212,11 +227,28 @@ export class Sandbox {
       stdout: stdout.text,
       stderr: stderr.text,
       timedOut,
+      cancelled,
       truncated: stdout.truncated || stderr.truncated,
       durationMs: Date.now() - started,
       nativeWriteSandbox,
       sandboxBypassed: Boolean(options.bypassNativeWriteSandbox),
       pathBoundaryBypassed: Boolean(options.bypassPathBoundary),
     }
+  }
+}
+
+function cancelledBashResult(command: string, started: number): BashResult {
+  return {
+    command,
+    exitCode: null,
+    stdout: "",
+    stderr: "Command cancelled by user.",
+    timedOut: false,
+    cancelled: true,
+    truncated: false,
+    durationMs: Date.now() - started,
+    nativeWriteSandbox: false,
+    sandboxBypassed: false,
+    pathBoundaryBypassed: false,
   }
 }

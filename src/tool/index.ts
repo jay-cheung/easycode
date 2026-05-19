@@ -26,6 +26,8 @@ export type ToolContext = {
   permission: PermissionService
   skills: SkillServiceLike
   messages: Message[]
+  signal?: AbortSignal
+  onExecuteStart?: (name: string) => void
 }
 
 export type ToolDef = {
@@ -79,7 +81,10 @@ export class ToolRegistry implements ToolRegistryLike {
       const patterns = tool.patterns(parsed.data, ctx)
       const request = permissionRequestForTool(tool, parsed.data, ctx, patterns)
       const permissionAction = permissionActionFor(request.patterns.map((pattern) => ctx.permission.evaluate(tool.permission, pattern)))
+      if (ctx.signal?.aborted) return toolCancelledResult(name)
       await ctx.permission.authorize(request)
+      if (ctx.signal?.aborted) return toolCancelledResult(name)
+      ctx.onExecuteStart?.(name)
       const result = await tool.execute(parsed.data, ctx)
       return { ...result, metadata: { ...result.metadata, permission: tool.permission, permissionAction, patterns: request.patterns } }
     } catch (error) {
@@ -103,6 +108,10 @@ function toolErrorResult(name: string, error: unknown): ToolResult {
     output: error instanceof Error ? error.message : String(error),
     metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" },
   }
+}
+
+function toolCancelledResult(name: string): ToolResult {
+  return { title: name, output: "Tool cancelled by user.", metadata: { status: "failed", cancelled: true, error: "AbortError" } }
 }
 
 function objectSchema(properties: JsonSchema["properties"], required = Object.keys(properties)): JsonSchema {
@@ -408,7 +417,7 @@ async function executeBashWithSandboxRecovery(params: z.infer<typeof BashInput>,
   const options: SandboxExecuteOptions = {}
   let result: BashResult
   try {
-    result = await ctx.sandbox.execute(params, ctx.agentMode, options)
+    result = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, signal: ctx.signal })
   } catch (error) {
     if (!(error instanceof SandboxPathEscapeError)) throw error
     const approved = await requestSandboxBypass(ctx, params, {
@@ -420,7 +429,7 @@ async function executeBashWithSandboxRecovery(params: z.infer<typeof BashInput>,
     })
     if (!approved) throw error
     options.bypassPathBoundary = true
-    result = await ctx.sandbox.execute(params, ctx.agentMode, options)
+    result = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, signal: ctx.signal })
   }
   if (!looksLikeNativeSandboxDenial(result)) return result
 
@@ -433,7 +442,7 @@ async function executeBashWithSandboxRecovery(params: z.infer<typeof BashInput>,
     return { ...result, stderr: appendLine(result.stderr, "Sandbox bypass was not approved; command was not retried.") }
   }
 
-  const retried = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, bypassNativeWriteSandbox: true })
+  const retried = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, bypassNativeWriteSandbox: true, signal: ctx.signal })
   return { ...retried, stderr: retried.stderr, sandboxBypassed: true }
 }
 
@@ -482,7 +491,8 @@ function sandboxBypassApproval(reason: string, command: string, cwd: string): Ba
 
 function bashResultToToolResult(command: string, result: BashResult): ToolResult {
   const { stdout, stderr, ...metadata } = result
-  return { title: command, output: [stdout, stderr].filter(Boolean).join("\n"), metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...metadata } }
+  const output = [stdout, stderr, result.cancelled && !stdout && !stderr ? "Command cancelled by user." : ""].filter(Boolean).join("\n")
+  return { title: command, output, metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...metadata } }
 }
 
 function sandboxFailureSummary(result: BashResult) {

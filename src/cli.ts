@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import path from "node:path"
-import { createInterface } from "node:readline/promises"
+import { createInterface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner } from "./agent"
 import { imageLabel, imagePartFromInput } from "./image"
@@ -20,6 +20,76 @@ type EnvTarget = {
 }
 
 const eofPrompt = "\0__easycode_eof__"
+
+type LinePriority = "foreground" | "background"
+
+type LineWaiter = {
+  resolve: (line: string) => void
+  signal?: AbortSignal
+  onAbort?: () => void
+}
+
+class LineReader {
+  private pending: string[] = []
+  private readonly foreground: LineWaiter[] = []
+  private readonly background: LineWaiter[] = []
+
+  constructor(private readonly rl: ReturnType<typeof createInterface>) {
+    this.rl.on("line", (line) => this.receive(line))
+    this.rl.on("close", () => this.closeWaiters())
+  }
+
+  question(prompt: string, priority: LinePriority = "foreground", signal?: AbortSignal) {
+    output.write(prompt)
+    return this.nextLine(priority, signal)
+  }
+
+  nextLine(priority: LinePriority = "foreground", signal?: AbortSignal) {
+    if (signal?.aborted) return Promise.resolve(eofPrompt)
+    const queued = priority === "foreground" ? this.pending.shift() : undefined
+    if (queued !== undefined) return Promise.resolve(queued)
+    return new Promise<string>((resolve) => {
+      const waiter: LineWaiter = { resolve, signal }
+      waiter.onAbort = () => {
+        this.removeWaiter(waiter)
+        resolve(eofPrompt)
+      }
+      signal?.addEventListener("abort", waiter.onAbort, { once: true })
+      ;(priority === "foreground" ? this.foreground : this.background).push(waiter)
+    })
+  }
+
+  close() {
+    this.rl.close()
+  }
+
+  private receive(line: string) {
+    const waiter = this.foreground.shift() ?? this.background.shift()
+    if (!waiter) {
+      this.pending.push(line)
+      return
+    }
+    if (waiter.onAbort) waiter.signal?.removeEventListener("abort", waiter.onAbort)
+    waiter.resolve(line)
+  }
+
+  private removeWaiter(waiter: LineWaiter) {
+    removeItem(this.foreground, waiter)
+    removeItem(this.background, waiter)
+  }
+
+  private closeWaiters() {
+    for (const waiter of [...this.foreground.splice(0), ...this.background.splice(0)]) {
+      if (waiter.onAbort) waiter.signal?.removeEventListener("abort", waiter.onAbort)
+      waiter.resolve(eofPrompt)
+    }
+  }
+}
+
+function removeItem<T>(items: T[], item: T) {
+  const index = items.indexOf(item)
+  if (index !== -1) items.splice(index, 1)
+}
 
 export function parseArgs(argv: string[]) {
   const mode = argv[0]
@@ -116,17 +186,18 @@ if (import.meta.main) {
 
 async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   if (!args.prompt) throw new Error("Prompt is required")
-  const rl = createInterface({ input, output })
+  const reader = new LineReader(createInterface({ input, output }))
   const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
   const timeline = logger ? undefined : new TimelineRenderer(output)
   try {
-    const permission = permissionService(args.mode, rl)
-    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: timeline ? (event) => timeline.event(event) : undefined }).run(args.prompt, args.mode)
+    const controller = new AbortController()
+    const permission = permissionService(args.mode, reader, () => controller.abort())
+    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: timeline ? (event) => timeline.event(event) : undefined }).run(args.prompt, args.mode, { signal: controller.signal })
     timeline?.finish()
     if (logger) writeResult(result.text, true)
     return result.status
   } finally {
-    rl.close()
+    reader.close()
   }
 }
 
@@ -138,17 +209,19 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
   if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
   const skillService = new SkillService(args.root)
   let pendingImages: ImagePart[] = []
+  const queuedPrompts: string[] = []
   let activeMode = args.mode
   let runner: ReturnType<typeof createRunner> | undefined
-  const rl = createInterface({ input, output })
+  const reader = new LineReader(createInterface({ input, output }))
+  let activeAbort: AbortController | undefined
   const getRunner = () => {
-    runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, rl), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: logger ? undefined : (event) => timeline.event(event) })
+    runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: logger ? undefined : (event) => timeline.event(event) })
     return runner
   }
   const timeline = new TimelineRenderer(output)
   try {
     while (true) {
-      const prompt = (await question(rl)).trim()
+      const prompt = (queuedPrompts.shift() ?? await question(reader)).trim()
       if (prompt === eofPrompt) {
         await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
         return "completed"
@@ -170,7 +243,11 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       const activeRunner = getRunner()
       const images = pendingImages
       pendingImages = []
-      const result = await activeRunner.run(command.text, activeMode, { images })
+      activeAbort = new AbortController()
+      const runInput = collectRunInput(reader, activeAbort, queuedPrompts)
+      const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
+      runInput.stop()
+      activeAbort = undefined
       timeline.finish()
       if (logger) writeResult(result.text, true)
       await store.save(args.session ?? "", activeRunner.context, activeSettings)
@@ -181,7 +258,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       if (result.status !== "completed") continue
     }
   } finally {
-    rl.close()
+    reader.close()
   }
 }
 
@@ -290,35 +367,63 @@ function hasProposedPlan(text: string) {
   return /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(text)
 }
 
-async function question(rl: ReturnType<typeof createInterface>) {
-  try {
-    return await rl.question("> ")
-  } catch (error) {
-    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined
-    if (code === "ERR_USE_AFTER_CLOSE") return eofPrompt
-    throw error
+function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[]) {
+  const pumpAbort = new AbortController()
+  output.write("Type /cancel to stop this run; other input will run next.\n")
+  const done = (async () => {
+    while (!pumpAbort.signal.aborted) {
+      const line = await reader.nextLine("background", pumpAbort.signal)
+      if (line === eofPrompt) break
+      const text = line.trim()
+      if (!text) continue
+      if (isCancelInput(text)) {
+        output.write("Cancelling current run...\n")
+        activeAbort.abort()
+        pumpAbort.abort()
+        break
+      }
+      queuedPrompts.push(text)
+      output.write(`Queued next input: ${shortPrompt(text)}\n`)
+    }
+  })()
+  return {
+    stop: () => {
+      pumpAbort.abort()
+      void done
+    },
   }
 }
 
-function permissionService(mode: AgentMode, rl: ReturnType<typeof createInterface>) {
+async function question(reader: LineReader) {
+  return reader.question("> ")
+}
+
+function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () => void) {
   return new PermissionService(defaultPermissionRules(mode), async (request) => {
-    const answer = (await questionWithPrompt(rl, permissionPrompt(request))).trim().toLowerCase()
+    const answer = (await questionWithPrompt(reader, permissionPrompt(request))).trim().toLowerCase()
     if (answer === eofPrompt) return "reject"
+    if (isCancelInput(answer)) {
+      cancelRun?.()
+      output.write("Cancelling current run...\n")
+      return "reject"
+    }
     if (answer === "a" || answer === "always") return "always"
     if (answer === "" || answer === "y" || answer === "yes" || answer === "once") return "once"
     return "reject"
   })
 }
 
-async function questionWithPrompt(rl: ReturnType<typeof createInterface>, prompt: string) {
-  try {
-    output.write(`${prompt}\n`)
-    return await rl.question("permission> ")
-  } catch (error) {
-    const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined
-    if (code === "ERR_USE_AFTER_CLOSE") return eofPrompt
-    throw error
-  }
+async function questionWithPrompt(reader: LineReader, prompt: string) {
+  output.write(`${prompt}\n`)
+  return reader.question("permission> ")
+}
+
+function isCancelInput(text: string) {
+  return ["/cancel", "cancel", ":cancel", "stop", "/stop"].includes(text.trim().toLowerCase())
+}
+
+function shortPrompt(text: string) {
+  return text.length <= 80 ? text : `${text.slice(0, 77)}...`
 }
 
 function permissionPrompt(request: PermissionRequest) {

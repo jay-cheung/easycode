@@ -24,6 +24,17 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (prompt.includes("delayed")) {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      yield { type: "text_delta", text: "Delayed done." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("queued-ok")) {
+      yield { type: "text_delta", text: "Queued done." }
+      yield { type: "done" }
+      return
+    }
     if (input.mode === "plan") {
       const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
       if (prompt.includes("plan-exit") && !planExitAlreadyRan) {
@@ -89,6 +100,17 @@ export class FakeProvider implements Provider {
         return
       }
       yield { type: "text_delta", text: "Timeout surfaced." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("slow command")) {
+      const bashAlreadyRan = hasToolResult(input.messages, "bash")
+      if (!bashAlreadyRan) {
+        yield { type: "tool_call", call: call("bash", { command: "sleep 5" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Slow command completed." }
       yield { type: "done" }
       return
     }

@@ -46,6 +46,7 @@ export type ProviderInput = {
   messages: Message[]
   providerMessages: ProviderInputMessage[]
   tools: ToolDef[]
+  signal?: AbortSignal
 }
 
 export interface Provider {

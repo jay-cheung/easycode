@@ -54,8 +54,8 @@ const defaultToolProgressIntervalMs = 10_000
 export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" | "tool_running" | "completed" | "failed" | "cancelled"
 
 export type AgentRunResult = {
-  status: "completed" | "failed"
-  failureReason?: "provider_error" | "max_steps"
+  status: "completed" | "failed" | "cancelled"
+  failureReason?: "provider_error" | "max_steps" | "cancelled"
   text: string
   reasoning?: string
   messages: Message[]
@@ -129,7 +129,7 @@ export class AgentRunner {
     return this.context.strategyState.maxSteps
   }
 
-  async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[] } = {}): Promise<AgentRunResult> {
+  async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[]; signal?: AbortSignal } = {}): Promise<AgentRunResult> {
     const effectiveMode = this.effectiveMode(prompt, mode)
     const agent = createAgent(effectiveMode)
     const usedTools: string[] = []
@@ -143,8 +143,15 @@ export class AgentRunner {
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
     for (let step = 0; step < this.maxSteps; step += 1) {
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools)
       this.aspect.step(step + 1, this.maxSteps)
-      await this.compactContext(effectiveMode)
+      try {
+        await this.compactContext(effectiveMode, input.signal)
+      } catch (error) {
+        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools)
+        throw error
+      }
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools)
       const plan = this.context.planRequest({ step, cacheStrategy: this.cacheStrategy, agent, skills, selectedSkills, tools })
       const providerMessages = plan.providerMessages
       let text = ""
@@ -152,7 +159,8 @@ export class AgentRunner {
       let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
       try {
-        for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools })) {
+        for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools, signal: input.signal })) {
+          if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
           if (event.type === "reasoning_delta") {
             reasoningTranscript = appendOutput(reasoningTranscript, event.text)
             this.onEvent?.({ type: "reasoning_delta", text: event.text })
@@ -177,6 +185,7 @@ export class AgentRunner {
           }
         }
       } catch (error) {
+        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
         if (error instanceof ProviderError) {
           const failureText = runFailureText(providerFailureText(error), "provider_error")
           this.onEvent?.({ type: "failure", text: failureText })
@@ -189,6 +198,7 @@ export class AgentRunner {
         }
         throw error
       }
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
       if (failureText) {
         const output = appendOutput(text, failureText)
         this.context.add(assistantMessage(reasoningTranscript, output))
@@ -210,10 +220,11 @@ export class AgentRunner {
       this.context.add(toolCallMessage(toolCall))
       usedTools.push(toolCall.name)
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
-      const result = await this.runTool(toolCall, effectiveMode)
+      const result = await this.runTool(toolCall, effectiveMode, input.signal)
       this.recordToolOutcome(toolCall, result, prompt)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
+      if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools)
       if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
         const output = result.output
         this.onEvent?.({ type: "text_delta", text: result.output })
@@ -237,11 +248,20 @@ export class AgentRunner {
     return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
   }
 
-  private async runTool(call: ToolCall, mode: AgentMode) {
-    const startedAt = Date.now()
-    const progressTimer = this.startToolProgressTimer(call, startedAt)
+  private async runTool(call: ToolCall, mode: AgentMode, signal?: AbortSignal) {
+    let progressTimer: ReturnType<typeof setInterval> | undefined
     try {
-      return await this.registry.run(call.name, call.input, { agentMode: mode, sandbox: this.sandbox, permission: this.permissionFor(mode), skills: this.skills, messages: this.context.state.messages })
+      return await this.registry.run(call.name, call.input, {
+        agentMode: mode,
+        sandbox: this.sandbox,
+        permission: this.permissionFor(mode),
+        skills: this.skills,
+        messages: this.context.state.messages,
+        signal,
+        onExecuteStart: () => {
+          progressTimer = this.startToolProgressTimer(call, Date.now())
+        },
+      })
     } catch (error) {
       return { title: call.name, output: error instanceof Error ? error.message : String(error), metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" } }
     } finally {
@@ -256,11 +276,20 @@ export class AgentRunner {
     }, this.toolProgressIntervalMs)
   }
 
-  private async compactContext(mode: AgentMode) {
+  private cancelledResult(reasoningTranscript: string, usedTools: string[], output = "Run cancelled by user.") {
+    const text = appendOutput(output.trim(), "Continue with another message when ready.")
+    this.onEvent?.({ type: "failure", text })
+    this.context.add(assistantMessage(reasoningTranscript, text))
+    const state = this.aspect.transition("cancelled", { usedTools })
+    this.onEvent?.({ type: "run_done", status: "cancelled" })
+    return { status: "cancelled" as const, failureReason: "cancelled" as const, text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+  }
+
+  private async compactContext(mode: AgentMode, signal?: AbortSignal) {
     if (!this.context.needsCompaction()) return
     const providerMessages = [{ role: "user" as const, content: compactPrompt(this.context.compactionInput()) }]
     let summary = ""
-    for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [] })) {
+    for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [], signal })) {
       if (event.type === "text_delta") summary += event.text
       if (event.type === "usage") this.context.recordUsage(event.inputTokens)
       if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })

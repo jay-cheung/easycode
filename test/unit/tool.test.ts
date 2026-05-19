@@ -286,6 +286,7 @@ function bashResult(input: Partial<BashResult> & Pick<BashResult, "command" | "e
     stdout: "",
     stderr: "",
     timedOut: false,
+    cancelled: false,
     truncated: false,
     durationMs: 1,
     nativeWriteSandbox: false,

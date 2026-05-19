@@ -58,7 +58,7 @@ Context defaults favor prompt caching: stable context is sent on every provider 
 
 ## Sessions
 
-Interactive session mode is the default and persists conversation history under `.easycode/sessions/`. Without `--session`, easycode uses the `default` session. Use `--session <id>` to select a named session. Enter prompts after the `> ` prompt appears.
+Interactive session mode is the default and persists conversation history under `.easycode/sessions/`. Without `--session`, easycode uses the `default` session. Use `--session <id>` to select a named session. Enter prompts after the `> ` prompt appears. While a run is active, type `/cancel` and press Enter to stop it; any other input is queued and runs as the next prompt.
 
 ```bash
 bun run src/cli.ts build --provider deepseek

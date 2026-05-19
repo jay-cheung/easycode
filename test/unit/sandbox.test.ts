@@ -96,6 +96,17 @@ describe("sandbox", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("cancels running commands with an abort signal", async () => {
+    const root = await tmpdir()
+    const sandbox = new Sandbox(root)
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(), 20)
+    const result = await sandbox.execute({ command: "sleep 5" }, "build", { signal: controller.signal })
+    expect(result.cancelled).toBe(true)
+    expect(result.timedOut).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("truncates large output", async () => {
     const root = await tmpdir()
     const sandbox = new Sandbox(root, { maxOutputBytes: 10 })
