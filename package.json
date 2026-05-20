@@ -8,9 +8,9 @@
   },
   "scripts": {
     "start": "bun run src/cli.ts",
-    "dev": "bun run src/cli.ts build --provider deepseek --session test",
-    "dev:plan": "bun run src/cli.ts plan --provider deepseek --logger --session test",
-    "dev:build": "bun run src/cli.ts build --provider deepseek --logger --session test",
+    "dev": "bun run src/cli.ts build --provider deepseek",
+    "dev:plan": "bun run src/cli.ts plan --provider deepseek --logger",
+    "dev:build": "bun run src/cli.ts build --provider deepseek --logger",
     "test": "bun test",
     "test:real": "EASYCODE_TEST_PROVIDER=deepseek bun test test/integration/real-provider.test.ts",
     "eval": "bun run src/eval.ts",
