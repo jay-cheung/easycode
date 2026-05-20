@@ -1,7 +1,11 @@
 import path from "node:path"
 import { createHash } from "node:crypto"
 import { mkdir, readdir, stat } from "node:fs/promises"
+import { existsSync } from "node:fs"
+import { createRequire } from "node:module"
 import type { Sandbox } from "../sandbox"
+
+const require = createRequire(import.meta.url)
 
 export type CodeSearchResult = {
   filePath: string
@@ -77,10 +81,19 @@ export class CliCodeNavigator implements CodeNavigator {
   async rgSearch(input: { query: string; dir?: string; fileType?: string; maxResults?: number }) {
     const maxResults = normalizeMaxResults(input.maxResults)
     const dir = this.relativeDir(input.dir)
-    const args = ["--json", "--line-number", "--column", "--no-heading", "--color", "never", ...fileTypeArgs(input.fileType), input.query, dir]
-    const result = await this.runRequired("rg", args)
-    if (result.exitCode !== 0 && result.exitCode !== 1) throw new Error(commandFailure("rg", result))
-    return parseRgJson(result.stdout).slice(0, maxResults)
+    
+    try {
+      const rgBinary = getRgPath()
+      const args = ["--json", "--line-number", "--column", "--no-heading", "--color", "never", ...fileTypeArgs(input.fileType), input.query, dir]
+      const result = await this.run(rgBinary, args)
+      if (result.exitCode === 0 || result.exitCode === 1) {
+        return parseRgJson(result.stdout).slice(0, maxResults)
+      }
+    } catch {
+      // Fall through to pure JS fallback
+    }
+
+    return this.jsRgSearchFallback(input)
   }
 
   async readLines(input: { filePath: string; startLine: number; endLine: number }) {
@@ -107,13 +120,27 @@ export class CliCodeNavigator implements CodeNavigator {
     const language = input.language ?? "typescript"
     const patterns = definitionPatterns(input.symbol)
     const results: CodeSearchResult[] = []
-    for (const pattern of patterns) {
-      const result = await this.runRequired("ast-grep", ["--json", "--lang", language, "--pattern", pattern, "."])
-      if (result.exitCode !== 0 && result.exitCode !== 1) throw new Error(commandFailure("ast-grep", result))
-      results.push(...parseAstGrepJson(result.stdout))
-      if (results.length >= maxResults) break
+    
+    let astGrepMissing = false
+    try {
+      for (const pattern of patterns) {
+        const result = await this.run("ast-grep", ["--json", "--lang", language, "--pattern", pattern, "."])
+        if (result.exitCode === 0 || result.exitCode === 1) {
+          results.push(...parseAstGrepJson(result.stdout))
+        } else {
+          astGrepMissing = true
+          break
+        }
+        if (results.length >= maxResults) break
+      }
+      if (!astGrepMissing) {
+        return uniqueSortedResults(results).slice(0, maxResults)
+      }
+    } catch {
+      astGrepMissing = true
     }
-    return uniqueSortedResults(results).slice(0, maxResults)
+
+    return this.jsFindDefinitionFallback(input)
   }
 
   async findReferences(input: { symbol: string; language?: string; maxResults?: number }) {
@@ -227,6 +254,165 @@ export class CliCodeNavigator implements CodeNavigator {
     const runner = this.options.runner ?? defaultRunner
     return runner(command, args, { cwd: this.sandbox.root, signal: this.options.signal })
   }
+
+  private async jsRgSearchFallback(input: { query: string; dir?: string; fileType?: string; maxResults?: number }): Promise<CodeSearchResult[]> {
+    const maxResults = normalizeMaxResults(input.maxResults)
+    const relativeDir = this.relativeDir(input.dir)
+    const root = this.sandbox.resolve(relativeDir)
+    const allowedExtensions = extensionsForLanguage(input.fileType)
+    const results: CodeSearchResult[] = []
+    
+    let queryRegex: RegExp
+    try {
+      queryRegex = new RegExp(input.query, "i")
+    } catch {
+      queryRegex = new RegExp(escapeRegExp(input.query), "i")
+    }
+
+    const walk = async (dir: string) => {
+      let entries: any[] = []
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+
+      for (const entry of entries) {
+        if (results.length >= maxResults) return
+        if (entry.isDirectory()) {
+          if (!ignoredDirs.has(entry.name)) {
+            await walk(path.join(dir, entry.name))
+          }
+          continue
+        }
+        
+        const fullPath = path.join(dir, entry.name)
+        const extension = path.extname(entry.name)
+        if (input.fileType && !allowedExtensions.has(extension)) continue
+        if (entry.name.endsWith(".json") || entry.name.endsWith(".map") || entry.name.endsWith(".png") || entry.name.endsWith(".jpg")) continue
+
+        try {
+          const text = await this.sandbox.readFile(path.relative(this.sandbox.root, fullPath))
+          const lines = text.split(/\r?\n/)
+          for (let i = 0; i < lines.length; i++) {
+            if (queryRegex.test(lines[i])) {
+              results.push({
+                filePath: path.relative(this.sandbox.root, fullPath).replaceAll(path.sep, "/"),
+                line: i + 1,
+                preview: lines[i].trimEnd(),
+              })
+              if (results.length >= maxResults) return
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    }
+
+    await walk(root)
+    return results
+  }
+
+  private async jsFindDefinitionFallback(input: { symbol: string; language?: string; maxResults?: number }): Promise<CodeSearchResult[]> {
+    const maxResults = normalizeMaxResults(input.maxResults)
+    const language = input.language ?? "typescript"
+    const allowedExtensions = extensionsForLanguage(languageToFileType(language))
+    const results: CodeSearchResult[] = []
+    const escaped = escapeRegExp(input.symbol)
+
+    const declRegex = new RegExp(
+      `^\\s*(?:export\\s+)?(?:default\\s+)?(?:async\\s+)?(?:function|class|interface|type|enum|const|let|var)\\s+${escaped}\\b`
+    )
+
+    const methodRegex = new RegExp(
+      `^\\s*(?:(?:public|private|protected|static|async|override|readonly)\\s+)*${escaped}\\s*\\(`
+    )
+
+    const root = this.sandbox.root
+    const walk = async (dir: string) => {
+      let entries: any[] = []
+      try {
+        entries = await readdir(dir, { withFileTypes: true })
+      } catch {
+        return
+      }
+
+      for (const entry of entries) {
+        if (results.length >= maxResults) return
+        if (entry.isDirectory()) {
+          if (!ignoredDirs.has(entry.name)) {
+            await walk(path.join(dir, entry.name))
+          }
+          continue
+        }
+        
+        const fullPath = path.join(dir, entry.name)
+        const extension = path.extname(entry.name)
+        if (!allowedExtensions.has(extension)) continue
+
+        try {
+          const text = await this.sandbox.readFile(path.relative(this.sandbox.root, fullPath))
+          const lines = text.split(/\r?\n/)
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i]
+            if (declRegex.test(line) || methodRegex.test(line)) {
+              results.push({
+                filePath: path.relative(this.sandbox.root, fullPath).replaceAll(path.sep, "/"),
+                line: i + 1,
+                preview: line.trimEnd(),
+              })
+              if (results.length >= maxResults) return
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      }
+    }
+
+    await walk(root)
+    return uniqueSortedResults(results)
+  }
+}
+
+let cachedRgPath: string | null = null
+function getRgPath(): string {
+  if (process.env.NODE_ENV === "test") return "rg"
+  if (cachedRgPath) return cachedRgPath
+  try {
+    const proc = Bun.spawnSync(["which", "rg"])
+    if (proc.success) {
+      const p = proc.stdout.toString().trim()
+      if (p && existsSync(p)) {
+        cachedRgPath = p
+        return p
+      }
+    }
+  } catch {}
+
+  const macOSPaths = [
+    "/Applications/Codex.app/Contents/Resources/rg",
+    "/Applications/Visual Studio Code.app/Contents/Resources/app/node_modules.asar.unpacked/@vscode/ripgrep/bin/rg",
+    "/Applications/Cursor.app/Contents/Resources/app/node_modules.asar.unpacked/@vscode/ripgrep/bin/rg"
+  ]
+  for (const p of macOSPaths) {
+    if (existsSync(p)) {
+      cachedRgPath = p
+      return p
+    }
+  }
+
+  try {
+    const vscodeRg = require("vscode-ripgrep")
+    if (vscodeRg && vscodeRg.rgPath && existsSync(vscodeRg.rgPath)) {
+      cachedRgPath = vscodeRg.rgPath
+      return vscodeRg.rgPath
+    }
+  } catch {}
+
+  cachedRgPath = "rg"
+  return "rg"
 }
 
 function defaultRunner(command: string, args: string[], options: { cwd: string; signal?: AbortSignal }): Promise<CommandResult> {

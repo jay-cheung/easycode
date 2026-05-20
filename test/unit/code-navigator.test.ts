@@ -84,14 +84,20 @@ describe("code navigator", () => {
     await expect(navigator.rgSearch({ query: "missing", dir: "src" })).resolves.toEqual([])
   })
 
-  test("findDefinition fails clearly when ast-grep is missing", async () => {
-    const navigator = new CliCodeNavigator(new Sandbox(await tmpdir()), {
+  test("findDefinition falls back to pure JS search when ast-grep is missing", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "payment.ts"), "export class PaymentService {\n  pay(amount: number): boolean {\n    return true\n  }\n}\n")
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
       runner: async () => {
         throw new Error("ENOENT")
       },
     })
 
-    await expect(navigator.findDefinition({ symbol: "target" })).rejects.toThrow("ast-grep is required")
+    const results = await navigator.findDefinition({ symbol: "PaymentService", language: "typescript" })
+    expect(results).toEqual([
+      { filePath: "src/payment.ts", line: 1, preview: "export class PaymentService {" }
+    ])
   })
 
   test("repoMap caches generated source skeletons under .easycode/cache", async () => {
@@ -125,5 +131,39 @@ describe("code navigator", () => {
     expect(map.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "PaymentService" }))
     expect(map.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "pay" }))
     expect(map.entries[0]?.symbols.some(s => s.name === "AuthService")).toBe(false)
+  })
+
+  test("pure JS rgSearch fallback scans files and matches query regex", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "payment.ts"), "export class PaymentService {\n  pay(amount: number): boolean {\n    return true\n  }\n}\n")
+    // Force ripgrep runner to throw ENOENT to trigger the pure JS fallback
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      }
+    })
+
+    const results = await navigator.rgSearch({ query: "pay\\(", dir: "src" })
+    expect(results).toEqual([
+      { filePath: "src/payment.ts", line: 2, preview: "  pay(amount: number): boolean {" }
+    ])
+  })
+
+  test("pure JS findDefinition fallback matches symbol declarations", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "payment.ts"), "export class PaymentService {\n  pay(amount: number): boolean {\n    return true\n  }\n}\n")
+    // Force ast-grep runner to throw ENOENT to trigger the pure JS fallback
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      }
+    })
+
+    const results = await navigator.findDefinition({ symbol: "PaymentService", language: "typescript" })
+    expect(results).toEqual([
+      { filePath: "src/payment.ts", line: 1, preview: "export class PaymentService {" }
+    ])
   })
 })
