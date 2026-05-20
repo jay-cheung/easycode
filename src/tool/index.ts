@@ -129,7 +129,7 @@ const RgSearchInput = z.object({ query: z.string(), dir: OptionalString, fileTyp
 const ReadLinesInput = z.object({ filePath: z.string(), startLine: z.number(), endLine: z.number() })
 const FindDefinitionInput = z.object({ symbol: z.string(), language: OptionalString, maxResults: OptionalNumber })
 const FindReferencesInput = z.object({ symbol: z.string(), language: OptionalString, maxResults: OptionalNumber })
-const RepoMapInput = z.object({ dir: OptionalString, language: OptionalString, maxFiles: OptionalNumber, useCache: OptionalBoolean })
+const RepoMapInput = z.object({ dir: OptionalString, language: OptionalString, maxFiles: OptionalNumber, useCache: OptionalBoolean, query: OptionalString })
 const GitDiffInput = z.object({ mode: z.enum(["summary", "files", "stat", "file"]).nullish().transform((value) => value ?? "summary"), filePath: OptionalString, maxBytes: OptionalNumber })
 const WriteInput = z.object({ filePath: z.string(), content: z.string() })
 const EditInput = z.object({ filePath: z.string(), oldString: z.string(), newString: z.string(), replaceAll: OptionalBoolean })
@@ -388,7 +388,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "repo_map",
-    description: "First-choice codebase orientation tool. Generate or read a cached lightweight code skeleton under .easycode/cache/repo-map.json. Use before grep/read when exploring code. Returns paths and symbols only, not function bodies.",
+    description: "First-choice codebase orientation tool. Generate or read a cached lightweight code skeleton under .easycode/cache/repo-map.json. Use before grep/read when exploring code. Returns paths and symbols only, not function bodies. Supports optional query parameter to dynamically filter and slice symbols by relevance.",
     inputSchema: RepoMapInput,
     jsonSchema: objectSchema(
       {
@@ -396,6 +396,7 @@ export function createBuiltinRegistry() {
         language: { type: "string", description: "Optional language filter such as typescript or javascript." },
         maxFiles: { type: "number", description: "Maximum source files to map. Defaults to 200." },
         useCache: { type: "boolean", description: "When false, force a rebuild of the derived cache." },
+        query: { type: "string", description: "Optional semantic keyword query to filter symbols and files (e.g. 'payment', 'retry')." },
       },
       [],
     ),
@@ -527,7 +528,7 @@ function formatSearchResults(results: Array<{ filePath: string; line: number; pr
   return results.map((result) => `${result.filePath}:${result.line}: ${result.preview}`).join("\n")
 }
 
-function formatRepoMap(map: { cache: { path: string; hit: boolean; gitIgnored: boolean }; entries: Array<{ filePath: string; symbols: Array<{ name: string; kind: string; line: number; signature?: string }> }> }) {
+export function formatRepoMap(map: { cache: { path: string; hit: boolean; gitIgnored: boolean }; entries: Array<{ filePath: string; symbols: Array<{ name: string; kind: string; line: number; signature?: string }> }> }) {
   const lines = [`cache=${map.cache.hit ? "hit" : "rebuilt"} path=${map.cache.path}`]
   if (!map.cache.gitIgnored) lines.push("warning: .easycode is not ignored by .gitignore; repo_map cache is a derived local artifact and should not be committed.")
   for (const entry of map.entries) {

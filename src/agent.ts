@@ -5,7 +5,7 @@ import { defaultPermissionRules, PermissionService } from "./permission"
 import { createProvider, ProviderError, type Provider, type ProviderEvent, type ProviderName } from "./provider"
 import { Sandbox } from "./sandbox"
 import { SkillService, type SkillServiceLike } from "./skill"
-import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
+import { createBuiltinRegistry, formatRepoMap, type ToolRegistryLike } from "./tool"
 import { CliCodeNavigator } from "./tool/code-navigator"
 import { createRunAspect, type RunAspect } from "./instrumentation"
 import type { Logger } from "./logger"
@@ -143,7 +143,7 @@ export class AgentRunner {
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
     this.recordRunIntent(prompt)
-    await this.refreshRepoMap(input.signal)
+    await this.refreshRepoMap(input.signal, prompt)
     if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
     const tools = this.registry.list(effectiveMode)
     const skills = await this.skills.available()
@@ -373,15 +373,36 @@ export class AgentRunner {
     })
   }
 
-  private async refreshRepoMap(signal: AbortSignal | undefined) {
+  private async refreshRepoMap(signal: AbortSignal | undefined, prompt?: string) {
     if (signal?.aborted) return
     const turn = this.context.state.messages.length
     try {
       const map = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({})
+      
+      let checkpointText = `repo_map ${map.cache.hit ? "cache hit" : "refreshed"}: ${map.entries.length} files at ${map.cache.path}`
+      let dynamicMapRecord: LedgerRecord | undefined
+      
+      if (prompt) {
+        const filteredMap = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({ query: prompt })
+        if (filteredMap.entries.length > 0) {
+          checkpointText += ` (query-targeted subset containing ${filteredMap.entries.length} relevant files)`
+          const formatted = formatRepoMap(filteredMap)
+          dynamicMapRecord = ledgerRecord(
+            "entity",
+            "query_targeted_repo_map",
+            `A skeletal outline of the most relevant files/symbols for the query:\n${formatted}`,
+            "current",
+            turn,
+            { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }
+          )
+        }
+      }
+
       this.context.updateLedger({
         current: [
-          ledgerRecord("checkpoint", "repo_map_cache", `repo_map ${map.cache.hit ? "cache hit" : "refreshed"}: ${map.entries.length} files at ${map.cache.path}`, "current", turn, { evidence: { source: "assistant" }, scope: { files: [map.cache.path], topics: ["repo_map", "code_navigation"] } }),
+          ledgerRecord("checkpoint", "repo_map_cache", checkpointText, "current", turn, { evidence: { source: "assistant" }, scope: { files: [map.cache.path], topics: ["repo_map", "code_navigation"] } }),
           ledgerRecord("constraint", "code_navigation_entrypoint", "repo_map cache is prewarmed at conversation start; prefer repo_map, find_definition, rg_search, and read_lines before grep or full-file read.", "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
+          ...(dynamicMapRecord ? [dynamicMapRecord] : []),
         ],
       })
     } catch (error) {

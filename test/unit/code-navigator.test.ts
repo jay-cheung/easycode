@@ -110,4 +110,20 @@ describe("code navigator", () => {
     expect(second.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "AuthService", kind: "class" }))
     expect(second.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "login", kind: "method" }))
   })
+
+  test("repoMap filters symbols and files based on semantic query", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "auth.ts"), "export class AuthService {\n  login(user: string): string {\n    return user\n  }\n}\n")
+    await Bun.write(path.join(root, "src", "payment.ts"), "export class PaymentService {\n  pay(amount: number): boolean {\n    return true\n  }\n}\n")
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    const map = await navigator.repoMap({ dir: "src", language: "typescript", query: "payment pay" })
+
+    expect(map.entries.length).toBe(1)
+    expect(map.entries[0]?.filePath).toBe("src/payment.ts")
+    expect(map.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "PaymentService" }))
+    expect(map.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "pay" }))
+    expect(map.entries[0]?.symbols.some(s => s.name === "AuthService")).toBe(false)
+  })
 })

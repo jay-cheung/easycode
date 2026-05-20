@@ -49,7 +49,7 @@ export interface CodeNavigator {
   readLines(input: { filePath: string; startLine: number; endLine: number }): Promise<CodeRange & { content: string }>
   findDefinition(input: { symbol: string; language?: string; maxResults?: number }): Promise<CodeSearchResult[]>
   findReferences(input: { symbol: string; language?: string; maxResults?: number }): Promise<CodeSearchResult[]>
-  repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean }): Promise<RepoMapResult>
+  repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean; query?: string }): Promise<RepoMapResult>
 }
 
 type CommandResult = {
@@ -122,42 +122,51 @@ export class CliCodeNavigator implements CodeNavigator {
     return this.rgSearch({ query, fileType, maxResults: input.maxResults })
   }
 
-  async repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean }) {
+  async repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean; query?: string }) {
     const dir = this.relativeDir(input.dir)
     const maxFiles = clampInt(input.maxFiles ?? 200, 1, 2_000)
     const cachePath = this.sandbox.resolve(repoMapCachePath)
     const cacheIgnored = await projectIgnoresEasyCode(this.sandbox.root)
     const toolVersions = await this.toolVersions()
     const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
+    
+    let result: RepoMapResult | undefined
+    
     if (input.useCache !== false) {
       const cached = await readCachedRepoMap(cachePath)
       if (cached && repoMapCacheValid(cached, { root: this.sandbox.root, dir, generatorVersion: repoMapGeneratorVersion, toolVersions, files: fingerprint.files })) {
-        return { ...cached, cache: { path: repoMapCachePath, hit: true, gitIgnored: cacheIgnored } }
+        result = { ...cached, cache: { path: repoMapCachePath, hit: true, gitIgnored: cacheIgnored } }
       }
     }
 
-    const entries: RepoMapEntry[] = []
-    for (const file of fingerprint.files) {
-      const text = await Bun.file(this.sandbox.resolve(file.filePath)).text().catch(() => "")
-      entries.push({
-        filePath: file.filePath,
-        hash: hashText(text),
-        mtimeMs: file.mtimeMs,
-        size: file.size,
-        symbols: extractSymbols(text),
-      })
+    if (!result) {
+      const entries: RepoMapEntry[] = []
+      for (const file of fingerprint.files) {
+        const text = await Bun.file(this.sandbox.resolve(file.filePath)).text().catch(() => "")
+        entries.push({
+          filePath: file.filePath,
+          hash: hashText(text),
+          mtimeMs: file.mtimeMs,
+          size: file.size,
+          symbols: extractSymbols(text),
+        })
+      }
+      result = {
+        root: this.sandbox.root,
+        dir,
+        generatedAt: new Date().toISOString(),
+        generatorVersion: repoMapGeneratorVersion,
+        toolVersions,
+        entries,
+        cache: { path: repoMapCachePath, hit: false, gitIgnored: cacheIgnored },
+      }
+      await mkdir(path.dirname(cachePath), { recursive: true })
+      await Bun.write(cachePath, JSON.stringify(result, null, 2))
     }
-    const result: RepoMapResult = {
-      root: this.sandbox.root,
-      dir,
-      generatedAt: new Date().toISOString(),
-      generatorVersion: repoMapGeneratorVersion,
-      toolVersions,
-      entries,
-      cache: { path: repoMapCachePath, hit: false, gitIgnored: cacheIgnored },
+
+    if (input.query) {
+      return scoreAndFilterRepoMap(result, input.query)
     }
-    await mkdir(path.dirname(cachePath), { recursive: true })
-    await Bun.write(cachePath, JSON.stringify(result, null, 2))
     return result
   }
 
@@ -388,4 +397,61 @@ function commandFailure(command: string, result: CommandResult) {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+}
+
+function scoreAndFilterRepoMap(map: RepoMapResult, query: string): RepoMapResult {
+  const terms = query.toLowerCase().split(/[^a-z0-9_$]+/).filter(term => term.length >= 2)
+  if (terms.length === 0) return map
+
+  const scoredEntries: Array<{ entry: RepoMapEntry; score: number }> = []
+
+  for (const entry of map.entries) {
+    const fileLower = entry.filePath.toLowerCase()
+    
+    let pathScore = 0
+    for (const term of terms) {
+      if (fileLower.includes(term)) {
+        const basename = fileLower.split("/").pop() ?? ""
+        if (basename.includes(term)) {
+          pathScore += 10
+        } else {
+          pathScore += 5
+        }
+      }
+    }
+
+    let symbolScore = 0
+    const matchingSymbols = entry.symbols.filter(symbol => {
+      const nameLower = symbol.name.toLowerCase()
+      let matched = false
+      for (const term of terms) {
+        if (nameLower.includes(term)) {
+          matched = true
+          symbolScore += 5
+          if (nameLower === term) {
+            symbolScore += 10
+          }
+        }
+      }
+      return matched
+    })
+
+    const totalScore = pathScore + symbolScore
+    if (totalScore > 0) {
+      const symbolsToKeep = matchingSymbols.length > 0 ? matchingSymbols : entry.symbols
+      scoredEntries.push({
+        entry: { ...entry, symbols: symbolsToKeep },
+        score: totalScore
+      })
+    }
+  }
+
+  scoredEntries.sort((left, right) => right.score - left.score || left.entry.filePath.localeCompare(right.entry.filePath))
+
+  const filteredEntries = scoredEntries.map(item => item.entry).slice(0, 15)
+
+  return {
+    ...map,
+    entries: filteredEntries
+  }
 }
