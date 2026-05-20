@@ -1,5 +1,5 @@
 import path from "node:path"
-import { mkdir } from "node:fs/promises"
+import { mkdir, readdir } from "node:fs/promises"
 import { ContextManager, recentProviderMessageSuffix, recentUserTurnMessages, type ContextLedger, type ContextManagerLike } from "./context"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "./message"
 import { normalizeSessionSettings, type SessionSettings } from "./settings"
@@ -10,6 +10,13 @@ export type SessionData = {
   summary?: string
   ledger?: ContextLedger
   settings?: SessionSettings
+  updatedAt: number
+}
+
+export type SessionSummary = {
+  id: string
+  file: string
+  messageCount: number
   updatedAt: number
 }
 
@@ -24,6 +31,33 @@ export class SessionStore {
     const file = Bun.file(this.filePath(id))
     if (!(await file.exists())) return undefined
     return JSON.parse(await file.text()) as SessionData
+  }
+
+  async list(): Promise<SessionSummary[]> {
+    let entries: string[]
+    try {
+      entries = await readdir(this.dir)
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return []
+      throw error
+    }
+    const sessions: SessionSummary[] = []
+    for (const entry of entries) {
+      if (!entry.endsWith(".json")) continue
+      try {
+        const data = JSON.parse(await Bun.file(path.join(this.dir, entry)).text()) as Partial<SessionData>
+        if (typeof data.id !== "string" || !data.id.trim()) continue
+        sessions.push({
+          id: data.id,
+          file: entry,
+          messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
+          updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
+        })
+      } catch {
+        continue
+      }
+    }
+    return sessions.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
   }
 
   async save(id: string, context: ContextManagerLike, settings?: SessionSettings) {

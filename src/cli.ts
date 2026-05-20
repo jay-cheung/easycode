@@ -121,7 +121,7 @@ export function parseArgs(argv: string[]) {
     return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== cacheStrategyIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--cache-strategy" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, cacheStrategy, maxTokens, maxSteps, root, logger, session: explicitSession ?? "default", once }
+  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, cacheStrategy, maxTokens, maxSteps, root, logger, session: explicitSession, once }
 }
 
 function usage() {
@@ -203,31 +203,34 @@ async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | unde
 
 async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   const store = new SessionStore(args.root)
-  const context = await store.context(args.session ?? "")
-  const storedSettings = await store.settings(args.session ?? "", args.provider)
-  let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, cacheStrategy: args.cacheStrategy ?? storedSettings.cacheStrategy, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
-  if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
-  const skillService = new SkillService(args.root)
-  let pendingImages: ImagePart[] = []
-  const queuedPrompts: string[] = []
-  let activeMode = args.mode
-  let runner: ReturnType<typeof createRunner> | undefined
   const reader = new LineReader(createInterface({ input, output }))
-  let activeAbort: AbortController | undefined
-  const getRunner = () => {
-    runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: logger ? undefined : (event) => timeline.event(event) })
-    return runner
-  }
-  const timeline = new TimelineRenderer(output)
   try {
+    const session = await selectSession(args.session, store, reader)
+    if (!session) return "completed"
+    emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
+    const context = await store.context(session)
+    const storedSettings = await store.settings(session, args.provider)
+    let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, cacheStrategy: args.cacheStrategy ?? storedSettings.cacheStrategy, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
+    if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
+    const skillService = new SkillService(args.root)
+    let pendingImages: ImagePart[] = []
+    const queuedPrompts: string[] = []
+    let activeMode = args.mode
+    let runner: ReturnType<typeof createRunner> | undefined
+    let activeAbort: AbortController | undefined
+    const timeline = new TimelineRenderer(output)
+    const getRunner = () => {
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: logger ? undefined : (event) => timeline.event(event) })
+      return runner
+    }
     while (true) {
       const prompt = (queuedPrompts.shift() ?? await question(reader)).trim()
       if (prompt === eofPrompt) {
-        await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
+        await store.save(session, runner?.context ?? context, activeSettings)
         return "completed"
       }
       if (["exit", ":exit", "quit", ":quit"].includes(prompt.toLowerCase())) {
-        await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
+        await store.save(session, runner?.context ?? context, activeSettings)
         return "completed"
       }
       if (!prompt) continue
@@ -237,7 +240,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
         if (changed.resetRunner) runner = undefined
-        await store.save(args.session ?? "", runner?.context ?? context, activeSettings)
+        await store.save(session, runner?.context ?? context, activeSettings)
         continue
       }
       const activeRunner = getRunner()
@@ -250,7 +253,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       activeAbort = undefined
       timeline.finish()
       if (logger) writeResult(result.text, true)
-      await store.save(args.session ?? "", activeRunner.context, activeSettings)
+      await store.save(session, activeRunner.context, activeSettings)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
         activeMode = "build"
         runner = undefined
@@ -259,6 +262,32 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
     }
   } finally {
     reader.close()
+  }
+}
+
+async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader) {
+  if (explicitSession) return explicitSession
+  const sessions = await store.list()
+  if (sessions.length === 0) {
+    output.write("Starting new session: default\n")
+    return "default"
+  }
+  output.write("Select a session:\n")
+  sessions.forEach((session, index) => {
+    output.write(`  ${index + 1}. ${session.id}${session.messageCount ? ` (${session.messageCount} messages)` : ""}\n`)
+  })
+  output.write("Press Enter for 1, enter a number, or type a new session id.\n")
+  while (true) {
+    const answer = (await reader.question("session> ")).trim()
+    if (answer === eofPrompt) return undefined
+    if (!answer) return sessions[0].id
+    const selectedIndex = Number(answer)
+    if (Number.isInteger(selectedIndex)) {
+      if (selectedIndex >= 1 && selectedIndex <= sessions.length) return sessions[selectedIndex - 1].id
+      output.write(`Choose 1-${sessions.length}, or type a non-numeric new session id.\n`)
+      continue
+    }
+    return answer
   }
 }
 

@@ -5,7 +5,8 @@
 - `bun run eval --provider fake` passes all local eval tasks.
 - `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
 - `easycode build --once "..." --provider fake` can complete read -> edit -> bash.
-- `easycode build --provider fake` starts the default interactive session.
+- `easycode build --provider fake` creates `default` when the project has no saved sessions.
+- `easycode build --provider fake` prompts for an existing or new session when saved sessions exist.
 - `easycode build --session demo --provider fake` starts the named interactive session.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.

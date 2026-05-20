@@ -36,7 +36,7 @@ describe("cli env loading", () => {
 
 describe("cli args", () => {
   test("session mode is the default and does not accept startup prompts", () => {
-    expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: "default", prompt: "" })
+    expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: undefined, prompt: "" })
     expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 
@@ -45,7 +45,7 @@ describe("cli args", () => {
   })
 
   test("once mode accepts startup prompts", () => {
-    expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ once: true, session: "default", prompt: "hello" })
+    expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ once: true, session: undefined, prompt: "hello" })
   })
 
   test("cache strategy can be set at startup", () => {
@@ -73,6 +73,61 @@ describe("cli args", () => {
     expect(stdout).not.toContain("provider.request")
     expect(stdout).not.toContain("agent.state")
     expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session startup creates default when no project sessions exist", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Starting new session: default")
+    expect(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).exists()).toBe(true)
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session startup lets users choose or create when sessions exist", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({ id: "alpha", messages: [], updatedAt: 100 }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "sessions", "beta.json"), JSON.stringify({ id: "beta", messages: [], updatedAt: 200 }, null, 2))
+
+    const chooseExisting = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    chooseExisting.stdin.write("2\n:exit\n")
+    chooseExisting.stdin.end()
+    const [chooseStdout, chooseStderr, chooseStatus] = await Promise.all([new Response(chooseExisting.stdout).text(), new Response(chooseExisting.stderr).text(), chooseExisting.exited])
+    expect(chooseStatus).toBe(0)
+    expect(chooseStdout).toContain("Select a session:")
+    expect(chooseStdout).toContain("1. beta")
+    expect(chooseStdout).toContain("2. alpha")
+    expect(JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "alpha.json")).text()).updatedAt).toBeGreaterThan(200)
+    expect(chooseStderr).toBe("")
+
+    const createNew = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    createNew.stdin.write("fresh\n:exit\n")
+    createNew.stdin.end()
+    const [_createStdout, createStderr, createStatus] = await Promise.all([new Response(createNew.stdout).text(), new Response(createNew.stderr).text(), createNew.exited])
+    expect(createStatus).toBe(0)
+    expect(await Bun.file(path.join(root, ".easycode", "sessions", "fresh.json")).exists()).toBe(true)
+    expect(createStderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })
 

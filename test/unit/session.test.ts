@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { ContextManager, type LedgerRecord } from "../../src/context"
@@ -22,6 +22,21 @@ describe("session store", () => {
     const restored = await store.context("demo")
     expect(restored.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
     expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "hello" })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("lists saved sessions by most recent update", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    await mkdir(store.dir, { recursive: true })
+    await Bun.write(path.join(store.dir, "invalid.json"), "{")
+    await Bun.write(path.join(store.dir, "old.json"), JSON.stringify({ id: "old", messages: [textMessage("user", "old")], updatedAt: 100 }, null, 2))
+    await Bun.write(path.join(store.dir, "new.json"), JSON.stringify({ id: "new", messages: [textMessage("user", "new"), textMessage("assistant", "ok")], updatedAt: 200 }, null, 2))
+
+    expect(await store.list()).toMatchObject([
+      { id: "new", file: "new.json", messageCount: 2, updatedAt: 200 },
+      { id: "old", file: "old.json", messageCount: 1, updatedAt: 100 },
+    ])
     await rm(root, { recursive: true, force: true })
   })
 

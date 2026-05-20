@@ -58,7 +58,7 @@ bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
 
 ## 会话
 
-交互式会话是默认模式，会将对话历史持久化到 `.easycode/sessions/`。不传 `--session` 时使用 `default` 会话；使用 `--session <id>` 可以选择具名会话。看到 `> ` 后再输入 prompt。
+交互式会话是默认模式，会将对话历史持久化到 `.easycode/sessions/`。不传 `--session` 时，如果项目还没有保存过 session，会创建新的 `default` session；如果已有 session，会先让你选择已有 session，或输入一个新 session id。使用 `--session <id>` 可以跳过选择并直接进入具名会话。看到 `> ` 后再输入 prompt。
 
 ```bash
 bun run src/cli.ts build --provider deepseek
