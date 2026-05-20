@@ -1,0 +1,17 @@
+{
+  "id": "CACHE-007-fragmented-semantic-navigation",
+  "mode": "build",
+  "fixture": "evals/fixtures/cache-bench",
+  "tools": "builtin",
+  "suite": "real",
+  "providers": ["simulated"],
+  "profiles": ["every-step"],
+  "settings": {
+    "selectedSkills": ["cache-context"]
+  },
+  "syntheticToolLoop": "semantic-once",
+  "turns": [
+    "Use semantic navigation to inspect the add function without reading entire files.",
+    "Use semantic navigation again to inspect the same add function with the cached repo map."
+  ]
+}

@@ -26,4 +26,37 @@ describe("timeline renderer", () => {
     expect(output).toContain("✓ sleep 2 (2s)")
     expect(output).toContain("done")
   })
+
+  test("renders provider metrics with APIx usage and latency labels", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({
+      type: "provider_metrics",
+      metrics: {
+        provider: "deepseek",
+        model: "deepseek-chat",
+        calls: 2,
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheHitTokens: 80,
+        cacheMissTokens: 20,
+        totalTokens: 120,
+        reasoningTokens: 5,
+        hitRate: 0.8,
+        providerElapsedMs: 2_000,
+        firstResponseMs: 250,
+        outputTokensPerSecond: 10,
+        effectiveCost: 61.6,
+        rates: { inputCacheHit: 0.02, inputCacheMiss: 1, output: 2 },
+      },
+    })
+
+    expect(output).toContain("● Metrics")
+    expect(output).toContain("provider deepseek deepseek-chat")
+    expect(output).toContain("latency=2s")
+    expect(output).toContain("ttft=250ms")
+    expect(output).toContain("usage input=100 cached=80 miss=20 hit_rate=80.0% output=20 reasoning=5 total=120")
+    expect(output).toContain("cost effective=61.6")
+  })
 })

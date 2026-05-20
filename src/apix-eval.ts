@@ -1,7 +1,7 @@
 import path from "node:path"
 import { createAgent, type Agent } from "./agent"
 import { loadEnvFile } from "./cli"
-import { defaultCachePricing, type CacheStrategy } from "./cache-policy"
+import { defaultCachePricing } from "./cache-policy"
 import { ContextManager, type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "./context"
 import { createProvider, hasProvider, listProviders, type ProviderEvent, type ProviderName } from "./provider"
 import { textMessage, type Message } from "./message"
@@ -51,7 +51,6 @@ type APIxOptions = {
   dimension?: string
   ids?: string[]
   limit?: number
-  cacheStrategy: CacheStrategy
   thinking: boolean
   maxOutputTokens?: number
   json: boolean
@@ -147,12 +146,12 @@ export async function runAPIxEval(options: APIxOptions) {
     })
     const startedLabel = new Date().toISOString()
     if (!options.quiet) console.error(`[apix] start ${task.id} ${task.dimension} ${startedLabel}`)
-    const context = new ContextManager({ adaptiveEnabled: options.cacheStrategy === "auto" })
+    const context = new ContextManager()
     const agent = agentForCase(task)
     context.setLedger(contextLedgerForCase(task, fixture.content))
     if (fixture.content) context.add(textMessage("user", fixtureBlockForCase(task, fixture.content)))
     for (const message of messagesForCase(task)) context.add(message)
-    const plan = context.planRequest({ step: 0, cacheStrategy: options.cacheStrategy, agent, skills: [], selectedSkills: [], tools: [] })
+    const plan = context.planRequest({ step: 0, agent, skills: [], selectedSkills: [], tools: [] })
     const providerMessages = plan.providerMessages
     const startedAt = Date.now()
     let ttftMs: number | undefined
@@ -511,7 +510,7 @@ function optimizationForCause(cause: string) {
     active_window_loss: "Increase activeWindowUserTurns or preserve a larger valid recent suffix; keep latest overrides outside summary compression.",
     summary_loss: "Use structured summaries with typed slots for latest facts, preferences, tasks, and entity graphs; preserve source turn numbers.",
     summary_hallucination: "Store contradictions as competing facts with timestamps instead of merging them into one synthesized statement.",
-    cache_instability: "Canonicalize and sort static context, keep dynamic/RAG content after the stable prefix, and compare cache-heavy vs balanced.",
+    cache_instability: "Canonicalize and sort static context, keep dynamic/RAG content after the stable prefix, and inspect every-step cache hit behavior.",
     retrieval_noise: "Add retrieval filtering, source confidence, and explicit no-answer rules before composing RAG content into the prompt.",
     conflict_policy_error: "Resolve timestamp, priority, and scope conflicts before generation; pass only the winning fact plus audit trail.",
     format_error: "Use provider-native JSON/output modes and deterministic post-validators for exact, schema, and length-constrained tasks.",
@@ -580,7 +579,7 @@ function summarize(options: APIxOptions, results: APIxResult[]) {
   const instructionFailures = instructionCases.filter((result) => !result.passed)
   const qualityGate = resolutionSLA >= 0.95 && p0ResolutionSLA === 1 ? 1 : 0
   const compositeScore = qualityGate ? 1 : 0
-  const runID = `${new Date().toISOString()}-${options.cacheStrategy}-${options.provider}`
+  const runID = `${new Date().toISOString()}-every-step-${options.provider}`
   const ignoredExpectedFields = ignoredFieldsByTask(results)
   const benchmarkDefects = results.filter((result) => result.evaluationMode === "benchmark_defect").map((result) => ({
     taskID: result.id,
@@ -588,7 +587,7 @@ function summarize(options: APIxOptions, results: APIxResult[]) {
   }))
   return {
     runID,
-    profile: options.cacheStrategy,
+    profile: "every-step",
     provider: options.provider,
     model: options.model ?? null,
     count: results.length,
@@ -680,8 +679,6 @@ function parseArgs(argv: string[]): APIxOptions {
   const ids = valueAfter(argv, "--ids")?.split(",").map((item) => item.trim()).filter(Boolean)
   const limit = valueAfter(argv, "--limit")
   const maxOutputTokens = valueAfter(argv, "--max-output-tokens")
-  const cacheStrategy = valueAfter(argv, "--cache-strategy") ?? "cache-heavy"
-  if (cacheStrategy !== "balanced" && cacheStrategy !== "cache-heavy" && cacheStrategy !== "auto") throw new Error("--cache-strategy must be balanced, cache-heavy, or auto")
   return {
     root,
     provider,
@@ -690,7 +687,6 @@ function parseArgs(argv: string[]): APIxOptions {
     dimension: valueAfter(argv, "--dimension"),
     ids,
     limit: limit === undefined ? undefined : Number(limit),
-    cacheStrategy,
     thinking: argv.includes("--thinking"),
     maxOutputTokens: maxOutputTokens === undefined ? undefined : Number(maxOutputTokens),
     json: argv.includes("--json"),

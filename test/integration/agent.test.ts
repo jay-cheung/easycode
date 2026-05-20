@@ -35,6 +35,35 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("semantic navigation uses repo map and line slices without full-file read", async () => {
+    const root = await fixture()
+    const result = await createRunner({ root, provider: "fake", mode: "build" }).run("Use semantic navigation to inspect add", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["repo_map", "read_lines"])
+    expect(await Bun.file(path.join(root, ".easycode", "cache", "repo-map.json")).exists()).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("prewarms repo map before the provider turn", async () => {
+    const root = await fixture()
+    let cacheExistedAtProvider = false
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        cacheExistedAtProvider = await Bun.file(path.join(root, ".easycode", "cache", "repo-map.json")).exists()
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Inspect current code", "build")
+
+    expect(result.status).toBe("completed")
+    expect(cacheExistedAtProvider).toBe(true)
+    expect(result.messages.some((message) => message.parts.some((part) => part.type === "text" && part.text.includes("Done.")))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("logger records data flow and state transitions", async () => {
     const root = await fixture()
     const events: LogEvent[] = []
@@ -47,6 +76,44 @@ describe("agent integration", () => {
     expect(events.some((event) => event.type === "tool" && event.name === "permission.evaluate" && event.detail?.tool === "edit")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash")).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.output" && typeof event.detail?.output === "string" && event.detail.output.length > 0)).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("emits provider metrics with APIx usage aggregation", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      model: "test-model",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "text_delta", text: "Done." }
+        yield { type: "usage", inputTokens: 100, outputTokens: 20, cacheHitTokens: 80, cacheMissTokens: 20, totalTokens: 120, reasoningTokens: 5 }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event) }).run("Fix", "build")
+    const metrics = events.find((event): event is Extract<RunUiEvent, { type: "provider_metrics" }> => event.type === "provider_metrics")?.metrics
+    const doneIndex = events.findIndex((event) => event.type === "run_done")
+    const metricsIndex = events.findIndex((event) => event.type === "provider_metrics")
+
+    expect(result.status).toBe("completed")
+    expect(metricsIndex).toBeGreaterThanOrEqual(0)
+    expect(doneIndex).toBeGreaterThan(metricsIndex)
+    expect(metrics).toMatchObject({
+      provider: "test-provider",
+      model: "test-model",
+      calls: 1,
+      inputTokens: 100,
+      outputTokens: 20,
+      cacheHitTokens: 80,
+      cacheMissTokens: 20,
+      totalTokens: 120,
+      reasoningTokens: 5,
+      hitRate: 0.8,
+      effectiveCost: 61.6,
+    })
+    expect(metrics?.providerElapsedMs).toBeGreaterThanOrEqual(0)
+    expect(metrics?.firstResponseMs).toBeGreaterThanOrEqual(0)
     await rm(root, { recursive: true, force: true })
   })
 
@@ -139,7 +206,7 @@ describe("agent integration", () => {
         yield { type: "failure", error: { code: "quota", message: "quota exceeded", output: "quota exceeded" } }
       },
     }
-    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
     expect(result.status).toBe("failed")
     expect(result.text).toContain("I checked the current state.\nquota exceeded")
     expect(result.text).toContain("Run failed. Continue with another message")
@@ -182,14 +249,14 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
     expect(result.status).toBe("completed")
     expect(result.text).toBe("Done.")
     expect(result.reasoning).toBe("First thought.\nSecond thought.")
     await rm(root, { recursive: true, force: true })
   })
 
-  test("sends static composed context only on the first provider turn", async () => {
+  test("sends static composed context on every provider turn", async () => {
     const root = await fixture()
     const providerMessageContents: string[][] = []
     const provider: Provider = {
@@ -203,32 +270,11 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), cacheStrategy: "balanced" } }).run("Fix", "build")
-    expect(result.status).toBe("completed")
-    expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(true)
-    expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(false)
-    expect(providerMessageContents[1].some((content) => content.includes("Fix"))).toBe(true)
-    await rm(root, { recursive: true, force: true })
-  })
-
-  test("can send static composed context on every provider turn for cache experiments", async () => {
-    const root = await fixture()
-    const providerMessageContents: string[][] = []
-    const provider: Provider = {
-      name: "test-provider",
-      async *stream(input): AsyncIterable<ProviderEvent> {
-        providerMessageContents.push(input.providerMessages.map((message) => message.content))
-        if (providerMessageContents.length === 1) {
-          yield { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "src/add.ts" } } }
-          return
-        }
-        yield { type: "text_delta", text: "Done." }
-      },
-    }
-    const result = await new AgentRunner({ root, provider, staticContextStrategy: "every-step" }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
     expect(result.status).toBe("completed")
     expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(true)
     expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(true)
+    expect(providerMessageContents[1].some((content) => content.includes("Fix"))).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
 

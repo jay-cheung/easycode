@@ -35,6 +35,21 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (prompt.includes("semantic navigation")) {
+      if (!hasToolResult(input.messages, "repo_map")) {
+        yield { type: "tool_call", call: call("repo_map", { dir: "src", language: "typescript" }) }
+        yield { type: "done" }
+        return
+      }
+      if (!hasToolResult(input.messages, "read_lines")) {
+        yield { type: "tool_call", call: call("read_lines", { filePath: "src/add.ts", startLine: 1, endLine: 3 }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Semantic navigation completed." }
+      yield { type: "done" }
+      return
+    }
     if (input.mode === "plan") {
       const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
       if (prompt.includes("plan-exit") && !planExitAlreadyRan) {

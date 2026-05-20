@@ -73,7 +73,6 @@ describe("APIx golden dataset manifest", () => {
       root: path.resolve(import.meta.dir, "../.."),
       provider: "fake",
       limit: 5,
-      cacheStrategy: "cache-heavy",
       thinking: false,
       json: true,
       table: false,

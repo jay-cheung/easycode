@@ -1,17 +1,18 @@
-import type { CacheStrategy, StaticContextStrategy } from "./cache-policy"
+import { defaultCachePricing, type CachePricing } from "./cache-policy"
 import { ContextManager, type ContextManagerLike, type LedgerKind, type LedgerRecord, type LedgerScope, type LedgerStatus } from "./context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
-import { createProvider, ProviderError, type Provider, type ProviderName } from "./provider"
+import { createProvider, ProviderError, type Provider, type ProviderEvent, type ProviderName } from "./provider"
 import { Sandbox } from "./sandbox"
 import { SkillService, type SkillServiceLike } from "./skill"
 import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
+import { CliCodeNavigator } from "./tool/code-navigator"
 import { createRunAspect, type RunAspect } from "./instrumentation"
 import type { Logger } from "./logger"
 import { BASE_COMPACT_PROMPT } from "./context/prompt"
 import type { PermissionRule } from "./permission"
 import { defaultSessionSettings, type SessionSettings } from "./settings"
-import type { RunUiEvent } from "./ui/timeline"
+import type { ProviderRunMetrics, RunUiEvent } from "./ui/timeline"
 
 export type Agent = {
   name: string
@@ -39,6 +40,8 @@ const stableOperatingProtocol = [
   "16. For failures, preserve the failing command, short error text, and the next concrete recovery action.",
   "17. For cache efficiency, keep this protocol unchanged across turns; task-specific information belongs after it.",
   "18. Tool calls should be purposeful: read/search before editing, avoid duplicate exploration, and keep outputs bounded.",
+  "18a. For code navigation, you MUST: first check repo_map, then use find_definition or rg_search to locate symbols, then use read_lines for the smallest relevant range. Use grep only as a fallback. Full-file read is FORBIDDEN except for files under 100 lines or when you have a confirmed edit target and know the exact line range.",
+  "18b. For repository diffs, use git_diff in summary/files/stat mode first, then request a single-file patch only when needed; avoid bash git diff because full patches waste context.",
   "19. Context quality is more important than raw volume: retain facts that affect correctness and drop redundant logs.",
   "20. Session continuity should preserve user intent, accepted plans, changed files, and verification outcomes.",
   "21. When active skills are listed, load full skill text only when the task actually requires those instructions.",
@@ -80,7 +83,6 @@ export type AgentRunnerOptions = {
   toolProgressIntervalMs?: number
   providerProgressIntervalMs?: number
   settings?: SessionSettings
-  staticContextStrategy?: StaticContextStrategy
 }
 
 export function createAgent(mode: AgentMode): Agent {
@@ -102,7 +104,6 @@ export class AgentRunner {
   readonly toolProgressIntervalMs: number
   readonly providerProgressIntervalMs: number
   readonly settings: SessionSettings
-  readonly cacheStrategy: CacheStrategy
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -118,14 +119,12 @@ export class AgentRunner {
     this.toolProgressIntervalMs = options.toolProgressIntervalMs ?? defaultToolProgressIntervalMs
     this.providerProgressIntervalMs = options.providerProgressIntervalMs ?? defaultProviderProgressIntervalMs
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
-    this.cacheStrategy = cacheStrategyFor(options.staticContextStrategy, this.settings.cacheStrategy)
     const providerContextWindow = this.provider.capabilities?.contextWindowTokens
     this.context.configureStrategy({
       contextWindowTokens: providerContextWindow ?? Math.max(this.context.strategyState.maxTokens, options.settings?.maxTokens ?? 0),
       maxTokens: options.settings?.maxTokens ?? this.context.strategyState.maxTokens,
       maxSteps: options.maxSteps ?? options.settings?.maxSteps ?? this.context.strategyState.maxSteps,
       ...(options.settings?.responseReserveTokens === undefined ? {} : { responseReserveTokens: options.settings.responseReserveTokens }),
-      staticContextStrategy: this.cacheStrategy === "balanced" ? "first-step" : "every-step",
     })
   }
 
@@ -140,32 +139,37 @@ export class AgentRunner {
     let latestAssistantText = ""
     let reasoningTranscript = ""
     let state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
+    const providerMetrics = createProviderMetrics(this.provider.name, this.provider.model)
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
     this.recordRunIntent(prompt)
+    await this.refreshRepoMap(input.signal)
+    if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
     const tools = this.registry.list(effectiveMode)
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
     for (let step = 0; step < this.maxSteps; step += 1) {
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools)
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       this.aspect.step(step + 1, this.maxSteps)
       try {
-        await this.compactContext(effectiveMode, input.signal)
+        await this.compactContext(effectiveMode, input.signal, providerMetrics)
       } catch (error) {
-        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools)
+        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
         throw error
       }
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools)
-      const plan = this.context.planRequest({ step, cacheStrategy: this.cacheStrategy, agent, skills, selectedSkills, tools })
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
+      const plan = this.context.planRequest({ step, agent, skills, selectedSkills, tools })
       const providerMessages = plan.providerMessages
       let text = ""
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
       const stopProviderProgress = this.startProviderProgressTimer()
+      const metricCall = startProviderMetricCall(providerMetrics)
       try {
         for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools, signal: input.signal })) {
-          if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
+          observeProviderMetricEvent(providerMetrics, metricCall, event)
+          if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
           if (event.type === "reasoning_delta") {
             stopProviderProgress()
             reasoningTranscript = appendOutput(reasoningTranscript, event.text)
@@ -195,7 +199,7 @@ export class AgentRunner {
         }
       } catch (error) {
         stopProviderProgress()
-        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
+        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
         if (error instanceof ProviderError) {
           const failureText = runFailureText(providerFailureText(error), "provider_error")
           this.onEvent?.({ type: "failure", text: failureText })
@@ -203,20 +207,21 @@ export class AgentRunner {
           this.context.add(assistantMessage(reasoningTranscript, output))
           this.context.recordRunOutcome({ status: "failed", failureReason: "provider_error" })
           state = this.aspect.runFailed("provider_error", usedTools)
-          this.onEvent?.({ type: "run_done", status: "failed" })
+          this.emitRunDone("failed", providerMetrics)
           return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
         }
         throw error
       } finally {
+        finishProviderMetricCall(providerMetrics, metricCall)
         stopProviderProgress()
       }
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
       if (failureText) {
         const output = appendOutput(text, failureText)
         this.context.add(assistantMessage(reasoningTranscript, output))
         this.context.recordRunOutcome({ status: "failed", failureReason: "provider_error" })
         state = this.aspect.runFailed("provider_error", usedTools)
-        this.onEvent?.({ type: "run_done", status: "failed" })
+        this.emitRunDone("failed", providerMetrics)
         return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       if (text) latestAssistantText = text
@@ -225,7 +230,7 @@ export class AgentRunner {
         this.context.add(assistantMessage(reasoningTranscript, output))
         this.context.recordRunOutcome({ status: "completed" })
         state = this.aspect.transition("completed", { usedTools })
-        this.onEvent?.({ type: "run_done", status: "completed" })
+        this.emitRunDone("completed", providerMetrics)
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       state = this.aspect.transition("tool_pending", { tool: toolCall.name, callID: toolCall.id })
@@ -236,7 +241,7 @@ export class AgentRunner {
       this.recordToolOutcome(toolCall, result, prompt)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
-      if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools)
+      if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
         const output = result.output
         this.onEvent?.({ type: "text_delta", text: result.output })
@@ -244,7 +249,7 @@ export class AgentRunner {
         this.context.add(assistantMessage(reasoningTranscript, output))
         this.context.recordRunOutcome({ status: "completed" })
         state = this.aspect.transition("completed", { usedTools })
-        this.onEvent?.({ type: "run_done", status: "completed" })
+        this.emitRunDone("completed", providerMetrics)
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
@@ -256,7 +261,7 @@ export class AgentRunner {
     this.context.add(assistantMessage(reasoningTranscript, text))
     this.context.recordRunOutcome({ status: "failed", failureReason: "max_steps" })
     state = this.aspect.runFailed("max_steps", usedTools)
-    this.onEvent?.({ type: "run_done", status: "failed" })
+    this.emitRunDone("failed", providerMetrics)
     return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
   }
 
@@ -303,25 +308,36 @@ export class AgentRunner {
     }
   }
 
-  private cancelledResult(reasoningTranscript: string, usedTools: string[], output = "Run cancelled by user.") {
+  private cancelledResult(reasoningTranscript: string, usedTools: string[], output = "Run cancelled by user.", providerMetrics?: ProviderMetricsAccumulator) {
     const text = appendOutput(output.trim(), "Continue with another message when ready.")
     this.onEvent?.({ type: "failure", text })
     this.context.add(assistantMessage(reasoningTranscript, text))
     const state = this.aspect.transition("cancelled", { usedTools })
-    this.onEvent?.({ type: "run_done", status: "cancelled" })
+    this.emitRunDone("cancelled", providerMetrics)
     return { status: "cancelled" as const, failureReason: "cancelled" as const, text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
   }
 
-  private async compactContext(mode: AgentMode, signal?: AbortSignal) {
+  private async compactContext(mode: AgentMode, signal?: AbortSignal, providerMetrics?: ProviderMetricsAccumulator) {
     if (!this.context.needsCompaction()) return
     const providerMessages = [{ role: "user" as const, content: compactPrompt(this.context.compactionInput()) }]
     let summary = ""
-    for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [], signal })) {
-      if (event.type === "text_delta") summary += event.text
-      if (event.type === "usage") this.context.recordUsage(event.inputTokens)
-      if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
+    const metricCall = startProviderMetricCall(providerMetrics)
+    try {
+      for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [], signal })) {
+        observeProviderMetricEvent(providerMetrics, metricCall, event)
+        if (event.type === "text_delta") summary += event.text
+        if (event.type === "usage") this.context.recordUsage(event.inputTokens)
+        if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
+      }
+    } finally {
+      finishProviderMetricCall(providerMetrics, metricCall)
     }
     this.context.compact(extractSummary(summary))
+  }
+
+  private emitRunDone(status: string, providerMetrics: ProviderMetricsAccumulator | undefined) {
+    if (providerMetrics && providerMetrics.calls > 0) this.onEvent?.({ type: "provider_metrics", metrics: finalizeProviderMetrics(providerMetrics) })
+    this.onEvent?.({ type: "run_done", status })
   }
 
   private async selectedSkills() {
@@ -357,15 +373,40 @@ export class AgentRunner {
     })
   }
 
+  private async refreshRepoMap(signal: AbortSignal | undefined) {
+    if (signal?.aborted) return
+    const turn = this.context.state.messages.length
+    try {
+      const map = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({})
+      this.context.updateLedger({
+        current: [
+          ledgerRecord("checkpoint", "repo_map_cache", `repo_map ${map.cache.hit ? "cache hit" : "refreshed"}: ${map.entries.length} files at ${map.cache.path}`, "current", turn, { evidence: { source: "assistant" }, scope: { files: [map.cache.path], topics: ["repo_map", "code_navigation"] } }),
+          ledgerRecord("constraint", "code_navigation_entrypoint", "repo_map cache is prewarmed at conversation start; prefer repo_map, find_definition, rg_search, and read_lines before grep or full-file read.", "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
+        ],
+      })
+    } catch (error) {
+      this.context.updateLedger({
+        current: [
+          ledgerRecord("failure", "repo_map_prewarm_failure", error instanceof Error ? error.message : String(error), "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
+          ledgerRecord("constraint", "code_navigation_fallback", "repo_map prewarm failed; use find_definition, rg_search, read_lines, and grep fallback with bounded results.", "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
+        ],
+      })
+    }
+  }
+
   private recordToolOutcome(call: ToolCall, result: Awaited<ReturnType<AgentRunner["runTool"]>>, prompt: string) {
     const turn = this.context.state.messages.length
     if (result.metadata.status === "succeeded") {
       const files = toolScopeFiles(call, result)
+      const toolEvidence = { source: "tool" as const, toolCallID: call.id.slice(0, 12) }
       const current: LedgerRecord[] = [
-        ledgerRecord("checkpoint", "last_successful_tool", `${call.name} ${truncateForLedger(result.title, 120)}`, "current", turn, { evidence: { source: "tool", toolCallID: call.id }, scope: files.length ? { files } : undefined }),
-        ledgerRecord("failure", "last_tool_failure", `resolved by ${call.name}`, "resolved", turn, { reason: "a later tool call succeeded", evidence: { source: "tool", toolCallID: call.id } }),
+        ledgerRecord("failure", "last_tool_failure", `resolved by ${call.name}`, "resolved", turn, { reason: "a later tool call succeeded", evidence: toolEvidence }),
       ]
-      if (files.length) current.push(ledgerRecord("file", files.join(","), `${call.name} succeeded: ${truncateForLedger(result.title, 160)}`, "current", turn, { evidence: { source: "tool", toolCallID: call.id }, scope: { files } }))
+      if (files.length) {
+        current.push(ledgerRecord("file", files.join(","), `${call.name} succeeded: ${truncateForLedger(result.title, 160)}`, "current", turn, { evidence: toolEvidence, scope: { files } }))
+      } else {
+        current.push(ledgerRecord("checkpoint", "last_successful_tool", `${call.name} ${truncateForLedger(result.title, 120)}`, "current", turn, { evidence: toolEvidence }))
+      }
       this.context.updateLedger({
         current,
       })
@@ -374,9 +415,10 @@ export class AgentRunner {
 
     const summary = toolFailureSummary(call, result)
     const recovery = recoveryHintForToolFailure(call, result)
+    const failureEvidence = { source: "tool" as const, toolCallID: call.id.slice(0, 12) }
     this.context.updateLedger({
       current: [
-        ledgerRecord("failure", "last_tool_failure", summary, "current", turn, { evidence: { source: "tool", toolCallID: call.id }, scope: toolScopeFiles(call, result).length ? { files: toolScopeFiles(call, result) } : undefined }),
+        ledgerRecord("failure", "last_tool_failure", summary, "current", turn, { evidence: failureEvidence, scope: toolScopeFiles(call, result).length ? { files: toolScopeFiles(call, result) } : undefined }),
         ledgerRecord("constraint", "tool_failure_scope_rule", "tool failure requires recovery, not abandoning or silently shrinking scope.", "current", turn),
         ledgerRecord("intent", "main_objective_still_active", truncateForLedger(compactLine(prompt), 200), "current", turn, { evidence: { source: "user" } }),
         ledgerRecord("constraint", "next_recovery_action", recovery, "current", turn),
@@ -439,6 +481,93 @@ function recoveryHintForToolFailure(call: ToolCall, result: { output: string; me
     return "next_recovery_action: keep requested scope; use longer timeout or label any subset as diagnostic before full rerun."
   }
   return "next_recovery_action: inspect failure, preserve requested scope, choose smallest safe recovery."
+}
+
+type ProviderMetricsAccumulator = {
+  provider: string
+  model?: string
+  pricing: CachePricing
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens: number
+  cacheMissTokens: number
+  totalTokens?: number
+  reasoningTokens?: number
+  providerElapsedMs: number
+  firstResponseMs?: number
+}
+
+type ProviderMetricCall = {
+  startedAt: number
+  firstResponseMs?: number
+}
+
+function createProviderMetrics(provider: string, model?: string): ProviderMetricsAccumulator {
+  return {
+    provider,
+    model,
+    pricing: defaultCachePricing(),
+    calls: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheHitTokens: 0,
+    cacheMissTokens: 0,
+    providerElapsedMs: 0,
+  }
+}
+
+function startProviderMetricCall(metrics?: ProviderMetricsAccumulator): ProviderMetricCall | undefined {
+  if (!metrics) return undefined
+  metrics.calls += 1
+  return { startedAt: Date.now() }
+}
+
+function observeProviderMetricEvent(metrics: ProviderMetricsAccumulator | undefined, call: ProviderMetricCall | undefined, event: ProviderEvent) {
+  if (!metrics || !call) return
+  if (event.type === "text_delta" && call.firstResponseMs === undefined) {
+    call.firstResponseMs = Date.now() - call.startedAt
+    metrics.firstResponseMs = metrics.firstResponseMs === undefined ? call.firstResponseMs : Math.min(metrics.firstResponseMs, call.firstResponseMs)
+  }
+  if (event.type !== "usage") return
+  mergeProviderUsage(metrics, event)
+}
+
+function finishProviderMetricCall(metrics: ProviderMetricsAccumulator | undefined, call: ProviderMetricCall | undefined) {
+  if (!metrics || !call) return
+  metrics.providerElapsedMs += Date.now() - call.startedAt
+}
+
+function mergeProviderUsage(target: ProviderMetricsAccumulator, event: Extract<ProviderEvent, { type: "usage" }>) {
+  target.inputTokens += event.inputTokens
+  target.outputTokens += event.outputTokens
+  target.cacheHitTokens += event.cacheHitTokens ?? 0
+  target.cacheMissTokens += event.cacheMissTokens ?? Math.max(0, event.inputTokens - (event.cacheHitTokens ?? 0))
+  target.totalTokens = (target.totalTokens ?? 0) + (event.totalTokens ?? event.inputTokens + event.outputTokens)
+  target.reasoningTokens = (target.reasoningTokens ?? 0) + (event.reasoningTokens ?? 0)
+}
+
+function finalizeProviderMetrics(metrics: ProviderMetricsAccumulator): ProviderRunMetrics {
+  const hitRate = metrics.inputTokens === 0 ? 0 : metrics.cacheHitTokens / metrics.inputTokens
+  const outputSeconds = metrics.providerElapsedMs / 1_000
+  const outputTokensPerSecond = outputSeconds <= 0 || metrics.outputTokens === 0 ? undefined : metrics.outputTokens / outputSeconds
+  return {
+    provider: metrics.provider,
+    model: metrics.model,
+    calls: metrics.calls,
+    inputTokens: metrics.inputTokens,
+    outputTokens: metrics.outputTokens,
+    cacheHitTokens: metrics.cacheHitTokens,
+    cacheMissTokens: metrics.cacheMissTokens,
+    totalTokens: metrics.totalTokens,
+    reasoningTokens: metrics.reasoningTokens,
+    hitRate,
+    providerElapsedMs: metrics.providerElapsedMs,
+    firstResponseMs: metrics.firstResponseMs,
+    outputTokensPerSecond,
+    effectiveCost: metrics.cacheHitTokens * metrics.pricing.inputCacheHit + metrics.cacheMissTokens * metrics.pricing.inputCacheMiss + metrics.outputTokens * metrics.pricing.output,
+    rates: metrics.pricing,
+  }
 }
 
 function ledgerRecord(kind: LedgerKind, subject: string, value: string, status: LedgerStatus, turn: number, input: { scope?: LedgerScope; reason?: string; evidence?: LedgerRecord["evidence"] } = {}): LedgerRecord {
@@ -513,13 +642,7 @@ function contextHasProposedPlan(messages: Message[]) {
   return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; toolProgressIntervalMs?: number; settings?: SessionSettings; staticContextStrategy?: StaticContextStrategy }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; toolProgressIntervalMs?: number; settings?: SessionSettings }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, staticContextStrategy: input.staticContextStrategy })
-}
-
-function cacheStrategyFor(staticContextStrategy: StaticContextStrategy | undefined, fallback: CacheStrategy) {
-  if (staticContextStrategy === "every-step") return "cache-heavy"
-  if (staticContextStrategy === "first-step") return "balanced"
-  return fallback
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, toolProgressIntervalMs: input.toolProgressIntervalMs, settings })
 }

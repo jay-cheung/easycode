@@ -2,6 +2,7 @@ import path from "node:path"
 import { statSync } from "node:fs"
 import { z } from "zod"
 import type { AgentMode, Message } from "../message"
+import { CliCodeNavigator } from "./code-navigator"
 import { PermissionDeniedError, PermissionRejectedError, type PermissionRequest, type PermissionService } from "../permission"
 import { isDangerousCommand, looksLikeNativeSandboxDenial, SandboxPathEscapeError, type BashResult, type Sandbox, type SandboxExecuteOptions } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
@@ -124,6 +125,12 @@ const OptionalBoolean = z.boolean().nullish().transform((value) => value ?? unde
 const OptionalNumber = z.number().nullish().transform((value) => value ?? undefined)
 const ListInput = z.object({ dirPath: OptionalString })
 const GrepInput = z.object({ query: z.string(), dir: OptionalString })
+const RgSearchInput = z.object({ query: z.string(), dir: OptionalString, fileType: OptionalString, maxResults: OptionalNumber })
+const ReadLinesInput = z.object({ filePath: z.string(), startLine: z.number(), endLine: z.number() })
+const FindDefinitionInput = z.object({ symbol: z.string(), language: OptionalString, maxResults: OptionalNumber })
+const FindReferencesInput = z.object({ symbol: z.string(), language: OptionalString, maxResults: OptionalNumber })
+const RepoMapInput = z.object({ dir: OptionalString, language: OptionalString, maxFiles: OptionalNumber, useCache: OptionalBoolean })
+const GitDiffInput = z.object({ mode: z.enum(["summary", "files", "stat", "file"]).nullish().transform((value) => value ?? "summary"), filePath: OptionalString, maxBytes: OptionalNumber })
 const WriteInput = z.object({ filePath: z.string(), content: z.string() })
 const EditInput = z.object({ filePath: z.string(), oldString: z.string(), newString: z.string(), replaceAll: OptionalBoolean })
 const BashInput = z.object({ command: z.string(), cwd: OptionalString, timeoutMs: OptionalNumber })
@@ -281,7 +288,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "grep",
-    description: "Search project files for a text query.",
+    description: "Fallback plain text search. For code exploration, use repo_map, find_definition, rg_search, and read_lines first; use grep only when semantic navigation or rg_search is unavailable.",
     inputSchema: GrepInput,
     jsonSchema: objectSchema({ query: { type: "string" }, dir: { type: "string" } }, ["query"]),
     permission: "grep",
@@ -290,6 +297,136 @@ export function createBuiltinRegistry() {
     execute: async (input, ctx) => {
       const params = GrepInput.parse(input)
       return { title: params.query, output: (await ctx.sandbox.grep(params)).join("\n"), metadata: { status: "succeeded" } }
+    },
+  })
+
+  registry.register({
+    name: "rg_search",
+    description: "Fast bounded code search with ripgrep. Prefer this over grep; provide dir or fileType when possible and keep maxResults small.",
+    inputSchema: RgSearchInput,
+    jsonSchema: objectSchema(
+      {
+        query: { type: "string", description: "Ripgrep query. Use precise symbols or escaped regex." },
+        dir: { type: "string", description: "Optional project-relative directory to search." },
+        fileType: { type: "string", description: "Optional file extension/type such as ts, tsx, js, py, or go." },
+        maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50 and is capped at 200." },
+      },
+      ["query"],
+    ),
+    permission: "grep",
+    modes: ["build", "plan"],
+    patterns: (input, ctx) => [relativePattern(ctx, RgSearchInput.parse(input).dir ?? ".")],
+    execute: async (input, ctx) => {
+      const params = RgSearchInput.parse(input)
+      const results = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).rgSearch(params)
+      return { title: params.query, output: formatSearchResults(results), metadata: { status: "succeeded", count: results.length } }
+    },
+  })
+
+  registry.register({
+    name: "read_lines",
+    description: "Read a bounded 1-based line range from one project file. Use this after search/definition tools instead of reading whole large files.",
+    inputSchema: ReadLinesInput,
+    jsonSchema: objectSchema({
+      filePath: { type: "string", description: "Project-relative file path." },
+      startLine: { type: "number", description: "1-based start line." },
+      endLine: { type: "number", description: "1-based inclusive end line. At most 200 lines may be read." },
+    }),
+    permission: "read",
+    modes: ["build", "plan"],
+    patterns: (input, ctx) => [relativePattern(ctx, ReadLinesInput.parse(input).filePath)],
+    execute: async (input, ctx) => {
+      const params = ReadLinesInput.parse(input)
+      const result = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).readLines(params)
+      return { title: `${result.filePath}:${result.startLine}-${result.endLine}`, output: result.content, metadata: { status: "succeeded", filePath: result.filePath, startLine: result.startLine, endLine: result.endLine } }
+    },
+  })
+
+  registry.register({
+    name: "find_definition",
+    description: "Find class/function/interface/type/variable definitions with ast-grep. Fails clearly if ast-grep is unavailable; does not fall back to noisy full-text search.",
+    inputSchema: FindDefinitionInput,
+    jsonSchema: objectSchema(
+      {
+        symbol: { type: "string", description: "Identifier to locate." },
+        language: { type: "string", description: "ast-grep language, defaults to typescript." },
+        maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50 and is capped at 200." },
+      },
+      ["symbol"],
+    ),
+    permission: "grep",
+    modes: ["build", "plan"],
+    patterns: () => ["."],
+    execute: async (input, ctx) => {
+      const params = FindDefinitionInput.parse(input)
+      const results = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).findDefinition(params)
+      return { title: params.symbol, output: formatSearchResults(results), metadata: { status: "succeeded", count: results.length } }
+    },
+  })
+
+  registry.register({
+    name: "find_references",
+    description: "Find bounded symbol references with ripgrep word matching. Use language to constrain file types and avoid noisy broad search.",
+    inputSchema: FindReferencesInput,
+    jsonSchema: objectSchema(
+      {
+        symbol: { type: "string", description: "Identifier to search as a whole word." },
+        language: { type: "string", description: "Optional language hint such as typescript or javascript." },
+        maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50 and is capped at 200." },
+      },
+      ["symbol"],
+    ),
+    permission: "grep",
+    modes: ["build", "plan"],
+    patterns: () => ["."],
+    execute: async (input, ctx) => {
+      const params = FindReferencesInput.parse(input)
+      const results = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).findReferences(params)
+      return { title: params.symbol, output: formatSearchResults(results), metadata: { status: "succeeded", count: results.length } }
+    },
+  })
+
+  registry.register({
+    name: "repo_map",
+    description: "First-choice codebase orientation tool. Generate or read a cached lightweight code skeleton under .easycode/cache/repo-map.json. Use before grep/read when exploring code. Returns paths and symbols only, not function bodies.",
+    inputSchema: RepoMapInput,
+    jsonSchema: objectSchema(
+      {
+        dir: { type: "string", description: "Optional project-relative directory to map." },
+        language: { type: "string", description: "Optional language filter such as typescript or javascript." },
+        maxFiles: { type: "number", description: "Maximum source files to map. Defaults to 200." },
+        useCache: { type: "boolean", description: "When false, force a rebuild of the derived cache." },
+      },
+      [],
+    ),
+    permission: "grep",
+    modes: ["build", "plan"],
+    patterns: (input, ctx) => [relativePattern(ctx, RepoMapInput.parse(input).dir ?? ".")],
+    execute: async (input, ctx) => {
+      const params = RepoMapInput.parse(input)
+      const map = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).repoMap(params)
+      return { title: `repo_map ${map.dir}`, output: formatRepoMap(map), metadata: { status: "succeeded", cacheHit: map.cache.hit, cachePath: map.cache.path, cacheGitIgnored: map.cache.gitIgnored, files: map.entries.length } }
+    },
+  })
+
+  registry.register({
+    name: "git_diff",
+    description: "Inspect git changes without dumping full patches. Use summary/files/stat first; use mode=file with one filePath only when a focused patch is needed.",
+    inputSchema: GitDiffInput,
+    jsonSchema: objectSchema(
+      {
+        mode: { type: "string", description: "summary, files, stat, or file. Defaults to summary." },
+        filePath: { type: "string", description: "Required only for mode=file. Project-relative path to inspect." },
+        maxBytes: { type: "number", description: "Maximum patch bytes for mode=file. Defaults to 12000 and is capped at 30000." },
+      },
+      [],
+    ),
+    permission: "bash",
+    modes: ["build", "plan"],
+    patterns: () => [scopedBashApproval("git:diff", "project", []).target],
+    execute: async (input, ctx) => {
+      const params = GitDiffInput.parse(input)
+      return gitDiffToolResult(params, ctx)
     },
   })
 
@@ -336,7 +473,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "bash",
-    description: "Run a shell command through the sandbox.",
+    description: "Run a shell command through the sandbox. Prefer specialized tools first: use git_diff for git diffs and repo_map/find_definition/rg_search/read_lines for code exploration.",
     inputSchema: BashInput,
     jsonSchema: objectSchema({ command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "number" } }, ["command"]),
     permission: "bash",
@@ -383,6 +520,76 @@ export function createBuiltinRegistry() {
   })
 
   return registry
+}
+
+function formatSearchResults(results: Array<{ filePath: string; line: number; preview: string }>) {
+  if (results.length === 0) return "No matches."
+  return results.map((result) => `${result.filePath}:${result.line}: ${result.preview}`).join("\n")
+}
+
+function formatRepoMap(map: { cache: { path: string; hit: boolean; gitIgnored: boolean }; entries: Array<{ filePath: string; symbols: Array<{ name: string; kind: string; line: number; signature?: string }> }> }) {
+  const lines = [`cache=${map.cache.hit ? "hit" : "rebuilt"} path=${map.cache.path}`]
+  if (!map.cache.gitIgnored) lines.push("warning: .easycode is not ignored by .gitignore; repo_map cache is a derived local artifact and should not be committed.")
+  for (const entry of map.entries) {
+    lines.push(`File: ${entry.filePath}`)
+    if (entry.symbols.length === 0) {
+      lines.push("  (no top-level symbols found)")
+      continue
+    }
+    for (const symbol of entry.symbols) lines.push(`  ${symbol.kind} ${symbol.name} @ ${symbol.line}${symbol.signature ? ` :: ${symbol.signature}` : ""}`)
+  }
+  return lines.join("\n")
+}
+
+async function gitDiffToolResult(params: z.infer<typeof GitDiffInput>, ctx: ToolContext): Promise<ToolResult> {
+  if (params.mode === "file" && !params.filePath) throw new Error("git_diff mode=file requires filePath")
+  const maxBytes = clampInt(params.maxBytes ?? 12_000, 1_000, 30_000)
+  const filePath = params.mode === "file" && params.filePath ? path.relative(ctx.sandbox.root, ctx.sandbox.resolve(params.filePath)).replaceAll(path.sep, "/") || "." : undefined
+  const args = gitDiffArgs({ mode: params.mode, filePath })
+  const result = await runGit(args, ctx.sandbox.root, ctx.signal)
+  if (result.exitCode !== 0) throw new Error(`git diff failed: ${firstLine(result.stderr) || firstLine(result.stdout) || `exit ${result.exitCode}`}`)
+  const output = params.mode === "file" ? truncateText(result.stdout || "(no diff)", maxBytes) : result.stdout || "(no changes)"
+  return {
+    title: params.mode === "file" ? `git diff -- ${filePath}` : `git diff ${params.mode}`,
+    output,
+    metadata: {
+      status: "succeeded",
+      mode: params.mode,
+      filePath,
+      truncated: result.stdout.length > output.length,
+    },
+  }
+}
+
+function gitDiffArgs(params: { mode: z.infer<typeof GitDiffInput>["mode"]; filePath?: string }) {
+  if (params.mode === "files") return ["diff", "--name-only"]
+  if (params.mode === "stat") return ["diff", "--stat"]
+  if (params.mode === "file") return ["diff", "--", params.filePath ?? ""]
+  return ["diff", "--name-status", "--stat"]
+}
+
+async function runGit(args: string[], cwd: string, signal: AbortSignal | undefined) {
+  const proc = Bun.spawn(["git", ...args], { cwd, stdout: "pipe", stderr: "pipe", signal })
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited.catch(() => null),
+  ])
+  return { stdout, stderr, exitCode }
+}
+
+function truncateText(text: string, maxBytes: number) {
+  if (Buffer.byteLength(text) <= maxBytes) return text
+  const buffer = Buffer.from(text)
+  return `${buffer.subarray(0, maxBytes).toString("utf8")}\n[truncated ${buffer.length - maxBytes} bytes; use git_diff mode=file with a narrower file or inspect another file separately]`
+}
+
+function clampInt(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Math.round(value)))
+}
+
+function firstLine(text: string) {
+  return text.split(/\r?\n/).find((line) => line.trim())?.trim() ?? ""
 }
 
 function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContext, patterns: string[]): Omit<PermissionRequest, "id"> {

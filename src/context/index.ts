@@ -1,5 +1,5 @@
 import type { Agent } from "../agent"
-import { defaultCachePricing, type CachePricing, type CacheStrategy, type StaticContextStrategy } from "../cache-policy"
+import { defaultCachePricing, type CachePricing } from "../cache-policy"
 import { createMessage, messagesToProviderInput, redactProtectedMessages, summaryPart, textMessage, validProviderMessageSuffix, type Message, type ProviderInputMessage } from "../message"
 import type { SkillInfo } from "../skill"
 import type { ToolDef } from "../tool"
@@ -62,11 +62,10 @@ export type ContextOptions = {
   responseReserveTokens?: number
   contextWindowTokens?: number
   pricing?: CachePricing
-  adaptiveEnabled?: boolean
 }
 
 export type ContextStrategyState = {
-  staticContextStrategy: StaticContextStrategy
+  staticContextStrategy: "every-step"
   maxTokens: number
   compactAt: number
   activeWindowUserTurns: number
@@ -98,20 +97,11 @@ export type ContextBudgetStats = {
   ledgerConflicts: number
 }
 
-export type ContextAdaptiveState = {
-  acceptedStrategyRevision: number
-  acceptedAdjustments: number
-  rollbacks: number
-  pendingAdjustment?: string
-  lastAdjustment?: string
-}
-
 export type ContextPlan = {
   providerMessages: ProviderInputMessage[]
   strategyState: ContextStrategyState
   cacheStats: ContextCacheStats
   budgetStats: ContextBudgetStats
-  acceptedStrategyRevision: number
   ledgerStats: ContextLedgerStats
 }
 
@@ -127,7 +117,6 @@ export type ContextLedgerStats = {
 
 export type ContextPlanInput = {
   step: number
-  cacheStrategy: CacheStrategy
   agent: Agent
   skills: SkillInfo[]
   selectedSkills?: SkillInfo[]
@@ -149,7 +138,6 @@ export type ContextRunOutcome = {
 export interface ContextManagerLike {
   readonly state: ContextState
   readonly strategyState: ContextStrategyState
-  readonly adaptiveState: ContextAdaptiveState
   readonly compactAt: number
   readonly preserveRecentUserTurns: number
   readonly compactPreserveTokens: number
@@ -175,20 +163,13 @@ type WindowStats = {
   outputTokens: number
   cacheHitTokens: number
   cacheMissTokens: number
-  maxStepFailures: number
 }
-
-type AdjustmentName = "toolResultTokenBudget" | "maxTokens" | "compactAt" | "activeWindowUserTurns" | "dynamicSummaryTokenBudget" | "maxSteps" | "staticContextStrategy"
 
 const defaultMaxTokens = 32_000
 const defaultMaxSteps = 20
 const minMaxTokens = 16_000
 const minMaxSteps = 8
 const maxMaxSteps = 30
-const evaluationWindowCalls = 5
-const acceptedCostImprovement = 0.02
-const hitRateTolerance = 0.01
-const adaptiveDegradationWindows = 2
 
 export class ContextManager implements ContextManagerLike {
   readonly state: ContextState
@@ -197,27 +178,13 @@ export class ContextManager implements ContextManagerLike {
   private readonly minTokenFloor: number
   private responseReserveTokens: number
   private contextWindowTokens: number
-  private readonly adaptiveEnabled: boolean
-  private lastCacheStrategy: CacheStrategy = "cache-heavy"
-  private acceptedStrategyRevision = 0
-  private acceptedStrategyState: ContextStrategyState
-  private acceptedWindow?: WindowStats
-  private pendingCandidate?: { adjustment: AdjustmentName; previous: ContextStrategyState }
-  private readonly cooldowns = new Map<AdjustmentName, number>()
-  private acceptedAdjustments = 0
-  private rollbacks = 0
-  private lastAdjustment?: AdjustmentName
-  private everyStepNegativeWindows = 0
-  private degradationWindows = 0
   private totalStats: WindowStats = emptyWindowStats()
-  private currentWindow: WindowStats = emptyWindowStats()
   private _strategyState: ContextStrategyState
 
   constructor(options: ContextOptions = {}) {
     this.minTokenFloor = options.maxTokens !== undefined && options.maxTokens < minMaxTokens ? Math.max(1, Math.round(options.maxTokens)) : minMaxTokens
     const maxTokens = clampInt(options.maxTokens ?? defaultMaxTokens, this.minTokenFloor, options.contextWindowTokens ?? Number.MAX_SAFE_INTEGER)
     this.contextWindowTokens = options.contextWindowTokens ?? maxTokens
-    this.adaptiveEnabled = options.adaptiveEnabled ?? true
     this.responseReserveTokens = options.responseReserveTokens ?? Math.max(2_000, Math.min(8_000, Math.floor(maxTokens * 0.2)))
     this.pricing = options.pricing ?? defaultCachePricing()
     this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
@@ -230,22 +197,11 @@ export class ContextManager implements ContextManagerLike {
       dynamicSummaryTokenBudget: clampInt(options.dynamicSummaryTokenBudget ?? 3_000, 800, 8_000),
       maxSteps: clampInt(options.maxSteps ?? defaultMaxSteps, minMaxSteps, maxMaxSteps),
     }
-    this.acceptedStrategyState = cloneStrategy(this._strategyState)
     this.state = { messages: [], tokenEstimate: 0, maxTokens }
   }
 
   get strategyState() {
     return cloneStrategy(this._strategyState)
-  }
-
-  get adaptiveState(): ContextAdaptiveState {
-    return {
-      acceptedStrategyRevision: this.acceptedStrategyRevision,
-      acceptedAdjustments: this.acceptedAdjustments,
-      rollbacks: this.rollbacks,
-      pendingAdjustment: this.pendingCandidate?.adjustment,
-      lastAdjustment: this.lastAdjustment,
-    }
   }
 
   get compactAt() {
@@ -286,25 +242,17 @@ export class ContextManager implements ContextManagerLike {
     if (input.contextWindowTokens !== undefined) this.contextWindowTokens = Math.max(minMaxTokens, input.contextWindowTokens)
     if (input.responseReserveTokens !== undefined) this.responseReserveTokens = Math.max(0, input.responseReserveTokens)
     this.applyStrategy({ ...this._strategyState, ...input })
-    this.acceptedStrategyState = cloneStrategy(this._strategyState)
   }
 
   observeUsage(observation: ContextUsageObservation) {
     this.recordUsage(observation.inputTokens)
     const hit = observation.cacheHitTokens ?? 0
     const miss = observation.cacheMissTokens ?? Math.max(0, observation.inputTokens - hit)
-    const normalized = { calls: 1, inputTokens: observation.inputTokens, outputTokens: observation.outputTokens, cacheHitTokens: hit, cacheMissTokens: miss, maxStepFailures: 0 }
+    const normalized = { calls: 1, inputTokens: observation.inputTokens, outputTokens: observation.outputTokens, cacheHitTokens: hit, cacheMissTokens: miss }
     addWindowStats(this.totalStats, normalized)
-    addWindowStats(this.currentWindow, normalized)
-    if (this.adaptiveEnabled && this.lastCacheStrategy === "auto" && this.currentWindow.calls >= evaluationWindowCalls) this.evaluateAdaptiveWindow()
   }
 
-  recordRunOutcome(outcome: ContextRunOutcome) {
-    if (outcome.failureReason === "max_steps") {
-      this.currentWindow.maxStepFailures += 1
-      this.totalStats.maxStepFailures += 1
-      if (this.adaptiveEnabled && this.lastCacheStrategy === "auto") this.handleMaxStepPressure()
-    }
+  recordRunOutcome(_outcome: ContextRunOutcome) {
   }
 
   needsCompaction() {
@@ -336,18 +284,15 @@ export class ContextManager implements ContextManagerLike {
   }
 
   planRequest(input: ContextPlanInput): ContextPlan {
-    this.lastCacheStrategy = input.cacheStrategy
-    const staticInput = shouldSendStaticContext(input.cacheStrategy, this._strategyState.staticContextStrategy, input.step) ? input : undefined
-    const providerMessages = this.compose(staticInput)
+    const providerMessages = this.compose(input)
     const ledgerStats = this.ledgerStats()
-    const staticPrefixTokens = staticInput ? estimateStaticPrefixTokens(providerMessages) : 0
+    const staticPrefixTokens = estimateStaticPrefixTokens(providerMessages)
     this.staticPrefixTokens = Math.max(this.staticPrefixTokens, staticPrefixTokens)
     return {
       providerMessages,
       strategyState: this.strategyState,
       cacheStats: this.cacheStats(),
       budgetStats: this.budgetStats(),
-      acceptedStrategyRevision: this.acceptedStrategyRevision,
       ledgerStats,
     }
   }
@@ -358,9 +303,20 @@ export class ContextManager implements ContextManagerLike {
       const skills = sortedSkills(input.skills)
       const selected = sortedSkills(input.selectedSkills ?? []).map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
       const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
-      const toolList = [...input.tools].sort((left, right) => left.name.localeCompare(right.name)).map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${stableStringify(tool.jsonSchema)}`).join("\n")
+      const toolList = sortedTools(input.tools).map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${stableStringify(tool.jsonSchema)}`).join("\n")
+      const toolPriorityDirective = [
+        "Tool usage priority (MUST follow this order for code exploration):",
+        "1. repo_map — structural overview first, never skip.",
+        "2. find_definition or rg_search — locate symbols, find line numbers.",
+        "3. read_lines — read only the confirmed line range (max 200 lines).",
+        "4. grep — fallback text search, use only when above tools are unavailable.",
+        "5. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
+        "6. edit / write — only after reading the relevant lines.",
+        "7. bash — last resort for commands; prefer git_diff for git operations.",
+        "VIOLATION: using read before repo_map + find_definition/rg_search + read_lines is explicitly forbidden.",
+      ].join("\n")
       const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
-      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`].join("\n\n")
+      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`, toolPriorityDirective].join("\n\n")
       messages.push(textMessage("system", system))
     }
     const ledger = this.renderSelectedLedger()
@@ -433,116 +389,10 @@ export class ContextManager implements ContextManagerLike {
     return Math.max(400, Math.floor(dynamicBudget * 0.15))
   }
 
-  private evaluateAdaptiveWindow() {
-    const window = this.currentWindow
-    const currentMetrics = windowMetrics(window, this.pricing)
-    if (this.pendingCandidate && this.acceptedWindow) {
-      const accepted = windowMetrics(this.acceptedWindow, this.pricing)
-      const acceptedCandidate = this.pendingCandidate.adjustment === "maxSteps" && window.maxStepFailures > 0
-        ? true
-        : currentMetrics.hitRate >= accepted.hitRate - hitRateTolerance && currentMetrics.costPerCall <= accepted.costPerCall * (1 - acceptedCostImprovement) && window.maxStepFailures === 0
-      if (acceptedCandidate) {
-        this.acceptedStrategyState = cloneStrategy(this._strategyState)
-        this.acceptedWindow = cloneWindow(window)
-        this.acceptedStrategyRevision += 1
-        this.acceptedAdjustments += 1
-        this.lastAdjustment = this.pendingCandidate.adjustment
-        this.everyStepNegativeWindows = 0
-        this.degradationWindows = 0
-      } else {
-        this.applyStrategy(this.acceptedStrategyState)
-        this.cooldowns.set(this.pendingCandidate.adjustment, 2)
-        this.rollbacks += 1
-        this.lastAdjustment = this.pendingCandidate.adjustment
-        this.degradationWindows = 0
-        if (this.pendingCandidate.previous.staticContextStrategy === "every-step") this.everyStepNegativeWindows += 1
-      }
-      this.pendingCandidate = undefined
-      this.currentWindow = emptyWindowStats()
-      this.decayCooldowns()
-      this.proposeCandidate(window.maxStepFailures > 0)
-      return
-    }
-
-    if (this.acceptedWindow) {
-      const accepted = windowMetrics(this.acceptedWindow, this.pricing)
-      if (isDegradedWindow(currentMetrics, accepted)) {
-        this.degradationWindows += 1
-      } else {
-        this.degradationWindows = 0
-        this.acceptedStrategyState = cloneStrategy(this._strategyState)
-        this.acceptedWindow = cloneWindow(window)
-        this.acceptedStrategyRevision += 1
-      }
-    } else {
-      this.acceptedStrategyState = cloneStrategy(this._strategyState)
-      this.acceptedWindow = cloneWindow(window)
-      this.acceptedStrategyRevision += 1
-    }
-
-    const shouldTryCandidate = this.degradationWindows >= adaptiveDegradationWindows
-    this.currentWindow = emptyWindowStats()
-    this.decayCooldowns()
-    if (shouldTryCandidate) {
-      this.degradationWindows = 0
-      this.proposeCandidate(window.maxStepFailures > 0)
-    }
-  }
-
-  private proposeCandidate(hadMaxStepFailure: boolean) {
-    const adjustment = this.nextAdjustment(hadMaxStepFailure)
-    if (!adjustment) return
-    const previous = cloneStrategy(this._strategyState)
-    const next = adjustedStrategy(previous, adjustment, this.contextWindowTokens)
-    if (sameStrategy(previous, next)) return
-    this.pendingCandidate = { adjustment, previous }
-    this.applyStrategy(next)
-  }
-
-  private handleMaxStepPressure() {
-    if (this.pendingCandidate) {
-      if (this.pendingCandidate.adjustment === "maxSteps") {
-        this.acceptedStrategyState = cloneStrategy(this._strategyState)
-        this.acceptedStrategyRevision += 1
-        this.acceptedAdjustments += 1
-        this.lastAdjustment = "maxSteps"
-        this.pendingCandidate = undefined
-      } else {
-        this.applyStrategy(this.acceptedStrategyState)
-        this.cooldowns.set(this.pendingCandidate.adjustment, 2)
-        this.rollbacks += 1
-        this.lastAdjustment = this.pendingCandidate.adjustment
-        this.pendingCandidate = undefined
-      }
-    }
-    if (this.cooldowns.has("maxSteps")) return
-    const previous = cloneStrategy(this._strategyState)
-    const next = adjustedStrategy(previous, "maxSteps", this.contextWindowTokens)
-    if (sameStrategy(previous, next)) return
-    this.pendingCandidate = { adjustment: "maxSteps", previous }
-    this.applyStrategy(next)
-  }
-
-  private nextAdjustment(hadMaxStepFailure: boolean): AdjustmentName | undefined {
-    if (hadMaxStepFailure && !this.cooldowns.has("maxSteps")) return "maxSteps"
-    if (this.everyStepNegativeWindows >= 2 && this._strategyState.staticContextStrategy === "every-step" && !this.cooldowns.has("staticContextStrategy")) return "staticContextStrategy"
-    for (const adjustment of ["toolResultTokenBudget", "maxTokens", "compactAt", "activeWindowUserTurns", "dynamicSummaryTokenBudget", "maxSteps"] as AdjustmentName[]) {
-      if (!this.cooldowns.has(adjustment)) return adjustment
-    }
-    return undefined
-  }
-
-  private decayCooldowns() {
-    for (const [adjustment, remaining] of this.cooldowns) {
-      if (remaining <= 1) this.cooldowns.delete(adjustment)
-      else this.cooldowns.set(adjustment, remaining - 1)
-    }
-  }
-
   private applyStrategy(input: ContextStrategyState) {
     const maxTokens = clampInt(input.maxTokens, this.minTokenFloor, this.contextWindowTokens)
     this._strategyState = {
-      staticContextStrategy: input.staticContextStrategy,
+      staticContextStrategy: "every-step",
       maxTokens,
       compactAt: clampNumber(input.compactAt, 0.6, 0.9),
       activeWindowUserTurns: clampInt(input.activeWindowUserTurns, 1, 10),
@@ -631,9 +481,11 @@ function emptyLedger(): StructuredContextLedger {
   return { current: [], history: [] }
 }
 
+const maxHistoryRecords = 25
+
 function normalizeStructuredLedger(ledger: StructuredContextLedger): StructuredContextLedger | undefined {
   const current = dedupeRecords(ledger.current)
-  const history = dedupeRecords(ledger.history)
+  const history = dedupeRecords(ledger.history).sort((left, right) => right.updatedAtTurn - left.updatedAtTurn).slice(0, maxHistoryRecords)
   if (!current.length && !history.length) return undefined
   return { current, history }
 }
@@ -775,7 +627,7 @@ function formatLedgerRecord(record: LedgerRecord) {
   const scope = formatScope(record.scope)
   if (scope) parts.push(`scope: ${scope}`)
   if (record.reason) parts.push(`reason: ${record.reason}`)
-  if (record.evidence) parts.push(`evidence: ${record.evidence.source}${record.evidence.toolCallID ? `:${record.evidence.toolCallID}` : ""}`)
+  if (record.evidence) parts.push(`evidence: ${record.evidence.source}${record.evidence.toolCallID ? `:${record.evidence.toolCallID.slice(0, 12)}` : ""}`)
   return parts.join(" | ")
 }
 
@@ -938,14 +790,27 @@ function estimateMessages(messages: Message[]) {
   return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
 }
 
-function shouldSendStaticContext(cacheStrategy: CacheStrategy, activeStrategy: StaticContextStrategy, step: number) {
-  if (cacheStrategy === "balanced") return step === 0
-  if (cacheStrategy === "cache-heavy") return true
-  return step === 0 || activeStrategy === "every-step"
-}
-
 function sortedSkills(skills: SkillInfo[]) {
   return [...skills].sort((left, right) => left.name.localeCompare(right.name))
+}
+
+const toolPriority = new Map([
+  ["repo_map", 0],
+  ["find_definition", 1],
+  ["rg_search", 2],
+  ["find_references", 3],
+  ["read_lines", 4],
+  ["git_diff", 5],
+  ["read", 6],
+  ["list", 7],
+  ["grep", 8],
+  ["edit", 9],
+  ["write", 10],
+  ["bash", 20],
+])
+
+function sortedTools(tools: ToolDef[]) {
+  return [...tools].sort((left, right) => (toolPriority.get(left.name) ?? 100) - (toolPriority.get(right.name) ?? 100) || left.name.localeCompare(right.name))
 }
 
 function stableStringify(value: unknown): string {
@@ -960,7 +825,7 @@ function estimateStaticPrefixTokens(messages: ProviderInputMessage[]) {
 }
 
 function emptyWindowStats(): WindowStats {
-  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, maxStepFailures: 0 }
+  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 }
 }
 
 function addWindowStats(target: WindowStats, input: WindowStats) {
@@ -969,49 +834,10 @@ function addWindowStats(target: WindowStats, input: WindowStats) {
   target.outputTokens += input.outputTokens
   target.cacheHitTokens += input.cacheHitTokens
   target.cacheMissTokens += input.cacheMissTokens
-  target.maxStepFailures += input.maxStepFailures
-}
-
-function cloneWindow(input: WindowStats): WindowStats {
-  return { ...input }
 }
 
 function cloneStrategy(input: ContextStrategyState): ContextStrategyState {
   return { ...input }
-}
-
-function sameStrategy(left: ContextStrategyState, right: ContextStrategyState) {
-  return left.staticContextStrategy === right.staticContextStrategy &&
-    left.maxTokens === right.maxTokens &&
-    left.compactAt === right.compactAt &&
-    left.activeWindowUserTurns === right.activeWindowUserTurns &&
-    left.toolResultTokenBudget === right.toolResultTokenBudget &&
-    left.dynamicSummaryTokenBudget === right.dynamicSummaryTokenBudget &&
-    left.maxSteps === right.maxSteps
-}
-
-function adjustedStrategy(input: ContextStrategyState, adjustment: AdjustmentName, contextWindowTokens: number): ContextStrategyState {
-  const next = cloneStrategy(input)
-  if (adjustment === "toolResultTokenBudget") next.toolResultTokenBudget = Math.max(300, Math.floor(next.toolResultTokenBudget * 0.75))
-  if (adjustment === "maxTokens") next.maxTokens = Math.min(contextWindowTokens, Math.max(minMaxTokens, Math.ceil(next.maxTokens * 1.25)))
-  if (adjustment === "compactAt") next.compactAt = Math.min(0.9, Number((next.compactAt + 0.05).toFixed(2)))
-  if (adjustment === "activeWindowUserTurns") next.activeWindowUserTurns = Math.min(10, next.activeWindowUserTurns + 1)
-  if (adjustment === "dynamicSummaryTokenBudget") next.dynamicSummaryTokenBudget = Math.max(800, Math.floor(next.dynamicSummaryTokenBudget * 0.75))
-  if (adjustment === "maxSteps") next.maxSteps = Math.min(maxMaxSteps, next.maxSteps + 2)
-  if (adjustment === "staticContextStrategy") next.staticContextStrategy = "first-step"
-  return next
-}
-
-function windowMetrics(input: WindowStats, pricing: CachePricing) {
-  const cost = effectiveWindowCost(input, pricing)
-  return {
-    hitRate: input.inputTokens === 0 ? 0 : input.cacheHitTokens / input.inputTokens,
-    costPerCall: input.calls === 0 ? 0 : cost / input.calls,
-  }
-}
-
-function isDegradedWindow(current: ReturnType<typeof windowMetrics>, accepted: ReturnType<typeof windowMetrics>) {
-  return current.hitRate < accepted.hitRate - hitRateTolerance && current.costPerCall > accepted.costPerCall * (1 + acceptedCostImprovement)
 }
 
 function effectiveWindowCost(input: WindowStats, pricing: CachePricing) {

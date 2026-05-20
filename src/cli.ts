@@ -9,11 +9,10 @@ import type { AgentMode, ImagePart } from "./message"
 import { defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders, type ProviderName } from "./provider"
 import { SessionStore } from "./session"
-import { defaultSessionSettings, isCacheStrategy, isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
+import { defaultSessionSettings, isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
 import { parseSlashCommand, slashHelpText, type SlashCommand } from "./slash"
 import { SkillService } from "./skill"
-import { TimelineRenderer } from "./ui/timeline"
-import type { CacheStrategy } from "./cache-policy"
+import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 
 type EnvTarget = {
   [key: string]: string | undefined
@@ -98,7 +97,6 @@ export function parseArgs(argv: string[]) {
   const rootIndex = argv.indexOf("--root")
   const sessionIndex = argv.indexOf("--session")
   const modelIndex = argv.indexOf("--model")
-  const cacheStrategyIndex = argv.indexOf("--cache-strategy")
   const maxTokensIndex = argv.indexOf("--max-tokens")
   const maxStepsIndex = argv.indexOf("--max-steps")
   const once = argv.includes("--once")
@@ -112,20 +110,18 @@ export function parseArgs(argv: string[]) {
   if (sessionIndex !== -1 && (!explicitSession || explicitSession.startsWith("--"))) throw new Error("--session requires an id")
   const model = modelIndex === -1 ? undefined : argv[modelIndex + 1]
   if (modelIndex !== -1 && (!model || model.startsWith("--"))) throw new Error("--model requires an id")
-  const cacheStrategy: CacheStrategy | undefined = cacheStrategyIndex === -1 ? undefined : argv[cacheStrategyIndex + 1] as CacheStrategy
-  if (cacheStrategyIndex !== -1 && (!cacheStrategy || cacheStrategy.startsWith("--") || !isCacheStrategy(cacheStrategy))) throw new Error("--cache-strategy requires auto, balanced, or cache-heavy")
   const maxTokens = numericFlag(argv, maxTokensIndex, "--max-tokens")
   const maxSteps = numericFlag(argv, maxStepsIndex, "--max-steps")
   const prompt = argv.slice(1).filter((arg, index, items) => {
     const realIndex = index + 1
-    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== cacheStrategyIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--cache-strategy" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
+    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, cacheStrategy, maxTokens, maxSteps, root, logger, session: explicitSession, once }
+  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once }
 }
 
 function usage() {
-  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--cache-strategy auto|balanced|cache-heavy] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--session id]`
+  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--session id]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {
@@ -187,13 +183,14 @@ if (import.meta.main) {
 async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
   if (!args.prompt) throw new Error("Prompt is required")
   const reader = new LineReader(createInterface({ input, output }))
-  const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
-  const timeline = logger ? undefined : new TimelineRenderer(output)
+  const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
+  const timeline = new TimelineRenderer(output)
+  const onEvent = timelineEventHandler(timeline, Boolean(logger))
   try {
     const controller = new AbortController()
     const permission = permissionService(args.mode, reader, () => controller.abort())
-    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: timeline ? (event) => timeline.event(event) : undefined }).run(args.prompt, args.mode, { signal: controller.signal })
-    timeline?.finish()
+    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent }).run(args.prompt, args.mode, { signal: controller.signal })
+    if (!logger) timeline.finish()
     if (logger) writeResult(result.text, true)
     return result.status
   } finally {
@@ -210,8 +207,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
     emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
     const context = await store.context(session)
     const storedSettings = await store.settings(session, args.provider)
-    let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, cacheStrategy: args.cacheStrategy ?? storedSettings.cacheStrategy, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
-    if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, cacheStrategy: args.cacheStrategy, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
+    let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
+    if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
@@ -219,8 +216,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
     let runner: ReturnType<typeof createRunner> | undefined
     let activeAbort: AbortController | undefined
     const timeline = new TimelineRenderer(output)
+    const onEvent = timelineEventHandler(timeline, Boolean(logger))
     const getRunner = () => {
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent: logger ? undefined : (event) => timeline.event(event) })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent })
       return runner
     }
     while (true) {
@@ -251,7 +249,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
       runInput.stop()
       activeAbort = undefined
-      timeline.finish()
+      if (!logger) timeline.finish()
       if (logger) writeResult(result.text, true)
       await store.save(session, activeRunner.context, activeSettings)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
@@ -329,14 +327,6 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
       }
     }
   }
-  if (command.type === "cache") {
-    if (!isCacheStrategy(command.value)) output.write("/cache requires auto, balanced, or cache-heavy\n")
-    else {
-      next.cacheStrategy = command.value
-      resetRunner = true
-      output.write(`Cache strategy set to ${next.cacheStrategy}.\n`)
-    }
-  }
   if (command.type === "image") {
     if (command.action === "clear") {
       pendingImages = []
@@ -384,7 +374,7 @@ function settingsText(settings: SessionSettings, images: ImagePart[]) {
     `model: ${settings.model ?? "(provider default)"}`,
     `thinking: ${settings.thinking ? "on" : "off"}`,
     `effort: ${settings.effort}`,
-    `cache: ${settings.cacheStrategy}`,
+    "cache: every-step",
     `maxTokens: ${settings.maxTokens}`,
     `maxSteps: ${settings.maxSteps}`,
     `skills: ${settings.selectedSkills.join(", ") || "(none)"}`,
@@ -478,6 +468,13 @@ function textDeltaWriter() {
   return (text: string) => {
     process.stdout.write(text)
     markStdoutText(text)
+  }
+}
+
+function timelineEventHandler(timeline: TimelineRenderer, loggerEnabled: boolean) {
+  return (event: RunUiEvent) => {
+    if (loggerEnabled && event.type !== "provider_metrics") return
+    timeline.event(event)
   }
 }
 

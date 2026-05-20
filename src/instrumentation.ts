@@ -266,10 +266,6 @@ class LoggingContextDecorator implements ContextManagerLike {
     return this.inner.strategyState
   }
 
-  get adaptiveState() {
-    return this.inner.adaptiveState
-  }
-
   get compactAt() {
     return this.inner.compactAt
   }

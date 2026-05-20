@@ -1,5 +1,3 @@
-import type { CacheStrategy } from "./cache-policy"
-
 export type ReasoningEffort = "low" | "medium" | "high" | "max"
 
 export type SessionSettings = {
@@ -8,7 +6,6 @@ export type SessionSettings = {
   thinking: boolean
   effort: ReasoningEffort
   selectedSkills: string[]
-  cacheStrategy: CacheStrategy
   maxTokens?: number
   maxSteps?: number
   responseReserveTokens?: number
@@ -17,7 +14,7 @@ export type SessionSettings = {
 export const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "max"]
 
 export function defaultSessionSettings(provider = "fake"): SessionSettings {
-  return { provider, thinking: true, effort: "high", selectedSkills: [], cacheStrategy: "cache-heavy", maxTokens: 32_000, maxSteps: 20 }
+  return { provider, thinking: true, effort: "high", selectedSkills: [], maxTokens: 32_000, maxSteps: 20 }
 }
 
 export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = "fake"): SessionSettings {
@@ -28,7 +25,6 @@ export function normalizeSessionSettings(input: Partial<SessionSettings> | undef
     model: typeof input?.model === "string" && input.model ? input.model : undefined,
     thinking: typeof input?.thinking === "boolean" ? input.thinking : fallback.thinking,
     effort,
-    cacheStrategy: input?.cacheStrategy && isCacheStrategy(input.cacheStrategy) ? input.cacheStrategy : fallback.cacheStrategy,
     maxTokens: positiveInteger(input?.maxTokens) ?? fallback.maxTokens,
     maxSteps: positiveInteger(input?.maxSteps) ?? fallback.maxSteps,
     responseReserveTokens: positiveInteger(input?.responseReserveTokens),
@@ -38,10 +34,6 @@ export function normalizeSessionSettings(input: Partial<SessionSettings> | undef
 
 export function isReasoningEffort(value: string): value is ReasoningEffort {
   return (reasoningEfforts as string[]).includes(value)
-}
-
-export function isCacheStrategy(value: string): value is CacheStrategy {
-  return value === "balanced" || value === "cache-heavy" || value === "auto"
 }
 
 function positiveInteger(value: unknown) {

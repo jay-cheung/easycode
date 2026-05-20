@@ -1,8 +1,31 @@
 import type { ToolCall } from "../message"
 
+export type ProviderRunMetrics = {
+  provider: string
+  model?: string
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens: number
+  cacheMissTokens: number
+  totalTokens?: number
+  reasoningTokens?: number
+  hitRate: number
+  providerElapsedMs: number
+  firstResponseMs?: number
+  outputTokensPerSecond?: number
+  effectiveCost: number
+  rates: {
+    inputCacheHit: number
+    inputCacheMiss: number
+    output: number
+  }
+}
+
 export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
   | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number }
+  | { type: "provider_metrics"; metrics: ProviderRunMetrics }
   | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
@@ -48,6 +71,12 @@ export class TimelineRenderer {
     if (event.type === "provider_progress") {
       const model = event.model ? ` ${event.model}` : ""
       this.output.write(`  … waiting for ${this.title("thought", `${event.provider}${model}`)} after ${formatDuration(event.elapsedMs)}\n`)
+      return
+    }
+    if (event.type === "provider_metrics") {
+      this.closeThought()
+      this.closeAnswer()
+      this.output.write(formatProviderMetrics(event.metrics, (text) => this.title("thought", text)))
       return
     }
     if (event.type === "reasoning_delta") {
@@ -153,4 +182,39 @@ function formatDuration(durationMs: number) {
   const seconds = durationMs / 1_000
   if (seconds < 10) return `${seconds.toFixed(1).replace(/\.0$/, "")}s`
   return `${Math.round(seconds)}s`
+}
+
+function formatProviderMetrics(metrics: ProviderRunMetrics, title: (text: string) => string) {
+  const model = metrics.model ? ` ${metrics.model}` : ""
+  const firstResponse = metrics.firstResponseMs === undefined ? "-" : formatDuration(metrics.firstResponseMs)
+  const speed = metrics.outputTokensPerSecond === undefined ? "-" : `${formatNumber(metrics.outputTokensPerSecond)}/s`
+  const total = metrics.totalTokens === undefined ? "" : ` total=${formatInteger(metrics.totalTokens)}`
+  const reasoning = metrics.reasoningTokens === undefined ? "" : ` reasoning=${formatInteger(metrics.reasoningTokens)}`
+  return [
+    `\n${title("● Metrics")}\n`,
+    `  provider ${metrics.provider}${model} · calls=${metrics.calls} · latency=${formatDuration(metrics.providerElapsedMs)} · ttft=${firstResponse} · output_rate=${speed}\n`,
+    `  usage input=${formatInteger(metrics.inputTokens)} cached=${formatInteger(metrics.cacheHitTokens)} miss=${formatInteger(metrics.cacheMissTokens)} hit_rate=${formatPercent(metrics.hitRate)} output=${formatInteger(metrics.outputTokens)}${reasoning}${total}\n`,
+    `  cost effective=${formatNumber(metrics.effectiveCost)} per_1M(cache_hit=${formatRate(metrics.rates.inputCacheHit)} cache_miss=${formatRate(metrics.rates.inputCacheMiss)} output=${formatRate(metrics.rates.output)})\n`,
+  ].join("")
+}
+
+function formatInteger(value: number) {
+  if (!Number.isFinite(value)) return "0"
+  return Math.round(value).toLocaleString("en-US")
+}
+
+function formatPercent(value: number) {
+  if (!Number.isFinite(value)) return "0.0%"
+  return `${(value * 100).toFixed(1)}%`
+}
+
+function formatRate(value: number) {
+  if (!Number.isFinite(value)) return "0"
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
+}
+
+function formatNumber(value: number) {
+  if (!Number.isFinite(value)) return "0"
+  if (value !== 0 && Math.abs(value) < 0.0001) return value.toExponential(2)
+  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
 }

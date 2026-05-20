@@ -2,8 +2,8 @@ import path from "node:path"
 import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
 import { AgentRunner } from "./agent"
-import { defaultCachePricing, type CacheStrategy, type StaticContextStrategy } from "./cache-policy"
-import { ContextManager, estimateTextTokens, type ContextAdaptiveState, type ContextStrategyState } from "./context"
+import { defaultCachePricing } from "./cache-policy"
+import { ContextManager, estimateTextTokens, type ContextStrategyState } from "./context"
 import { loadEnvFile } from "./cli"
 import type { AgentMode, Message } from "./message"
 import { defaultPermissionRules, PermissionService } from "./permission"
@@ -11,9 +11,9 @@ import { createProvider, defaultProviderCapabilities, hasProvider, listProviders
 import { normalizeSessionSettings, type SessionSettings } from "./settings"
 import { createBuiltinRegistry, type ToolContext, type ToolRegistryLike, type ToolResult } from "./tool"
 
-type CacheBenchmarkProfile = CacheStrategy | "auto-frozen"
+type CacheBenchmarkProfile = "every-step"
 type BenchmarkProviderName = ProviderName | "simulated"
-type BenchmarkSuite = "real" | "adaptive" | "all"
+type BenchmarkSuite = "real" | "all"
 
 type CacheBenchmarkTask = {
   id: string
@@ -24,7 +24,7 @@ type CacheBenchmarkTask = {
   profiles?: CacheBenchmarkProfile[]
   suite?: BenchmarkSuite
   settings?: Partial<SessionSettings>
-  syntheticToolLoop?: "read-once" | "read-always"
+  syntheticToolLoop?: "read-once" | "read-always" | "semantic-once"
   syntheticUsagePattern?: Array<{ inputTokens: number; outputTokens: number; cacheHitTokens?: number; cacheMissTokens?: number }>
   turns: string[]
 }
@@ -65,39 +65,10 @@ type ProfileSummary = {
   effectiveInputTokens: number
   effectiveOutputTokens: number
   effectiveTotalTokens: number
-  acceptedRevisions: number
-  acceptedAdjustments: number
-  rollbacks: number
   finalStrategyState?: ContextStrategyState
 }
 
-type AdaptiveCaseSummary = {
-  taskID: string
-  baselineCostPerCall: number
-  candidateCostPerCall: number
-  baselineHitRate: number
-  candidateHitRate: number
-  decision: "accept" | "rollback" | "none"
-  expected: "accept" | "rollback"
-  passed: boolean
-}
-
-type AdaptiveObservation = {
-  profile: CacheBenchmarkProfile
-  taskID: string
-  acceptedStrategyRevision: number
-  acceptedAdjustments: number
-  rollbacks: number
-  finalStrategyState: ContextStrategyState
-  finalAdaptiveState: ContextAdaptiveState
-}
-
 type BenchmarkLogger = (message: string) => void
-
-const profileStrategies: Record<Exclude<CacheBenchmarkProfile, "auto" | "auto-frozen">, StaticContextStrategy> = {
-  balanced: "first-step",
-  "cache-heavy": "every-step",
-}
 
 const emptyRegistry: ToolRegistryLike = {
   get: () => undefined,
@@ -214,6 +185,24 @@ class RecordingProvider implements Provider {
     }
     const patterned = this.patternedUsage(observation) ?? usage
 
+    if (this.shouldRepoMap(input)) {
+      yield { type: "tool_call", call: { id: `call_cache_repo_map_${observation.callIndex}`, name: "repo_map", input: { dir: "src", language: "typescript" } } }
+      this.recorder.recordUsage(observation, patterned)
+      this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+      yield patterned
+      yield { type: "done" }
+      return
+    }
+
+    if (this.shouldReadLines(input)) {
+      yield { type: "tool_call", call: { id: `call_cache_read_lines_${observation.callIndex}`, name: "read_lines", input: { filePath: "src/add.ts", startLine: 1, endLine: 3 } } }
+      this.recorder.recordUsage(observation, patterned)
+      this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+      yield patterned
+      yield { type: "done" }
+      return
+    }
+
     if (this.shouldRead(input)) {
       yield { type: "tool_call", call: { id: `call_cache_read_${observation.callIndex}`, name: "read", input: { filePath: "src/add.ts" } } }
       this.recorder.recordUsage(observation, patterned)
@@ -233,6 +222,14 @@ class RecordingProvider implements Provider {
   private shouldRead(input: ProviderInput) {
     if (this.options.syntheticToolLoop === "read-always") return true
     return this.options.syntheticToolLoop === "read-once" && !latestTurnHasToolResult(input.messages, "read")
+  }
+
+  private shouldRepoMap(input: ProviderInput) {
+    return this.options.syntheticToolLoop === "semantic-once" && !latestTurnHasToolResult(input.messages, "repo_map")
+  }
+
+  private shouldReadLines(input: ProviderInput) {
+    return this.options.syntheticToolLoop === "semantic-once" && latestTurnHasToolResult(input.messages, "repo_map") && !latestTurnHasToolResult(input.messages, "read_lines")
   }
 
   private patternedUsage(observation: ProviderCallObservation): Extract<ProviderEvent, { type: "usage" }> | undefined {
@@ -259,13 +256,12 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
   await loadEnvFile(projectRoot)
   const provider = options.provider ?? "deepseek"
   const suite = options.suite ?? "real"
-  const profiles = options.profiles ?? (suite === "real" ? ["balanced", "cache-heavy", "auto-frozen", "auto"] : ["auto"])
+  const profiles = options.profiles ?? ["every-step" as const]
   const defaultPricing = defaultCachePricing()
   const cachedInputMultiplier = options.cachedInputMultiplier ?? defaultPricing.inputCacheHit / defaultPricing.inputCacheMiss
   const outputTokenMultiplier = options.outputTokenMultiplier ?? 0
   const tasks = await loadTasks(projectRoot, provider, suite)
   const observations: ProviderCallObservation[] = []
-  const adaptiveObservations: AdaptiveObservation[] = []
   const logger = options.quiet === false ? benchmarkLogger() : undefined
   logger?.(`start provider=${provider} suite=${suite} profiles=${profiles.join(",")} tasks=${tasks.map((task) => task.id).join(",")} heartbeat_ms=${options.heartbeatMs ?? 10_000}`)
 
@@ -279,9 +275,8 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
       const recorder = new CacheBenchmarkRecorder(profile, task.id)
       const inner = provider === "simulated" ? undefined : createProvider(provider)
       const wrappedProvider = new RecordingProvider(recorder, { inner, syntheticToolLoop: task.syntheticToolLoop, syntheticUsagePattern: task.syntheticUsagePattern, logger, heartbeatMs: options.heartbeatMs })
-      const cacheStrategy = profile === "auto-frozen" ? "auto" : profile
-      const settings = normalizeSessionSettings({ ...task.settings, provider, cacheStrategy }, provider)
-      const context = new ContextManager({ adaptiveEnabled: profile !== "auto-frozen" })
+      const settings = normalizeSessionSettings({ ...task.settings, provider }, provider)
+      const context = new ContextManager()
       const runner = new AgentRunner({
         root: workdir,
         provider: wrappedProvider,
@@ -295,19 +290,10 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
         logger?.(`turn start profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} prompt=${oneLine(prompt)}`)
         recorder.startTurn(turnIndex)
         await runner.run(prompt, task.mode)
-        logger?.(`turn done profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} strategy=${strategyLabel(context.strategyState)} rev=${context.adaptiveState.acceptedStrategyRevision} accept=${context.adaptiveState.acceptedAdjustments} rollback=${context.adaptiveState.rollbacks}${context.adaptiveState.pendingAdjustment ? ` pending=${context.adaptiveState.pendingAdjustment}` : ""}`)
+        logger?.(`turn done profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} strategy=${strategyLabel(context.strategyState)}`)
       }
 
       observations.push(...recorder.snapshot())
-      adaptiveObservations.push({
-        profile,
-        taskID: task.id,
-        acceptedStrategyRevision: context.adaptiveState.acceptedStrategyRevision,
-        acceptedAdjustments: context.adaptiveState.acceptedAdjustments,
-        rollbacks: context.adaptiveState.rollbacks,
-        finalStrategyState: context.strategyState,
-        finalAdaptiveState: context.adaptiveState,
-      })
       await rm(workdir, { recursive: true, force: true })
       logger?.(`task done profile=${profile} task=${task.id} calls=${recorder.snapshot().length} strategy=${strategyLabel(context.strategyState)}`)
     }
@@ -319,16 +305,13 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
     suite,
     cachedInputMultiplier,
     outputTokenMultiplier,
-    summaries: profiles.map((profile) => summarizeProfile(profile, observations, adaptiveObservations, cachedInputMultiplier, outputTokenMultiplier)),
+    summaries: profiles.map((profile) => summarizeProfile(profile, observations, cachedInputMultiplier, outputTokenMultiplier)),
     observations,
-    adaptiveObservations,
-    adaptiveCaseSummaries: summarizeAdaptiveCases(tasks, observations, adaptiveObservations, cachedInputMultiplier),
   }
 }
 
-function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], adaptiveObservations: AdaptiveObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number): ProfileSummary {
+function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number): ProfileSummary {
   const calls = observations.filter((observation) => observation.profile === profile)
-  const adaptive = adaptiveObservations.filter((observation) => observation.profile === profile)
   let inputTokens = 0
   let outputTokens = 0
   let cacheHitTokens = 0
@@ -354,40 +337,8 @@ function summarizeProfile(profile: CacheBenchmarkProfile, observations: Provider
     effectiveInputTokens,
     effectiveOutputTokens,
     effectiveTotalTokens: effectiveInputTokens + effectiveOutputTokens,
-    acceptedRevisions: adaptive.reduce((total, item) => total + item.acceptedStrategyRevision, 0),
-    acceptedAdjustments: adaptive.reduce((total, item) => total + item.acceptedAdjustments, 0),
-    rollbacks: adaptive.reduce((total, item) => total + item.rollbacks, 0),
-    finalStrategyState: adaptive.at(-1)?.finalStrategyState,
+    finalStrategyState: undefined,
   }
-}
-
-function summarizeAdaptiveCases(tasks: CacheBenchmarkTask[], observations: ProviderCallObservation[], adaptiveObservations: AdaptiveObservation[], cachedInputMultiplier: number): AdaptiveCaseSummary[] {
-  const adaptiveTasks = tasks.filter((task) => task.syntheticUsagePattern && task.profiles?.includes("auto") && (task.id.includes("accept") || task.id.includes("rollback")))
-  return adaptiveTasks.flatMap((task) => {
-    const calls = observations.filter((observation) => observation.profile === "auto" && observation.taskID === task.id)
-    if (calls.length < 10) return []
-    const baseline = summarizeCalls(calls.slice(0, 5), cachedInputMultiplier)
-    const candidate = summarizeCalls(calls.slice(-5), cachedInputMultiplier)
-    const adaptive = adaptiveObservations.find((observation) => observation.profile === "auto" && observation.taskID === task.id)
-    const decision = (adaptive?.acceptedAdjustments ?? 0) > 0 ? "accept" : (adaptive?.rollbacks ?? 0) > 0 ? "rollback" : "none"
-    const expected = task.id.includes("accept") ? "accept" : "rollback"
-    return [{ taskID: task.id, baselineCostPerCall: baseline.effectiveInputTokens / baseline.calls, candidateCostPerCall: candidate.effectiveInputTokens / candidate.calls, baselineHitRate: baseline.hitRate, candidateHitRate: candidate.hitRate, decision, expected, passed: decision === expected }]
-  })
-}
-
-function summarizeCalls(calls: ProviderCallObservation[], cachedInputMultiplier: number) {
-  let inputTokens = 0
-  let cacheHitTokens = 0
-  let cacheMissTokens = 0
-  for (const call of calls) {
-    const input = call.actualInputTokens ?? call.estimatedInputTokens
-    const hit = call.actualCacheHitTokens ?? Math.min(call.estimatedCachedPrefixTokens, input)
-    inputTokens += input
-    cacheHitTokens += hit
-    cacheMissTokens += call.actualCacheMissTokens ?? Math.max(0, input - hit)
-  }
-  const effectiveInputTokens = cacheMissTokens + cacheHitTokens * cachedInputMultiplier
-  return { calls: calls.length, inputTokens, cacheHitTokens, cacheMissTokens, hitRate: inputTokens === 0 ? 0 : cacheHitTokens / inputTokens, effectiveInputTokens }
 }
 
 async function loadTasks(projectRoot: string, provider: BenchmarkProviderName, suite: BenchmarkSuite) {
@@ -397,7 +348,7 @@ async function loadTasks(projectRoot: string, provider: BenchmarkProviderName, s
   for (const file of files) {
     const task = JSON.parse(await Bun.file(path.join(taskDir, file)).text()) as CacheBenchmarkTask
     if (task.providers && !task.providers.includes(provider)) continue
-    const taskSuite = task.suite ?? (task.syntheticUsagePattern || task.syntheticToolLoop ? "adaptive" : "real")
+    const taskSuite = task.suite ?? "real"
     if (suite !== "all" && taskSuite !== suite) continue
     if (provider !== "simulated" && task.syntheticToolLoop) continue
     tasks.push(task)
@@ -455,10 +406,10 @@ function parseArgs(argv: string[]): BenchmarkOptions {
   const provider = valueAfter(argv, "--provider") ?? "deepseek"
   if (provider !== "simulated" && !hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: simulated, ${listProviders().join(", ")}`)
   const profile = valueAfter(argv, "--profile")
-  const profiles = profile && profile !== "both" ? [profile as CacheBenchmarkProfile] : undefined
-  if (profiles?.some((item) => item !== "auto" && item !== "auto-frozen" && !(item in profileStrategies))) throw new Error(`Unknown profile: ${profile}. Use balanced, cache-heavy, auto, auto-frozen, or both.`)
+  const profiles = profile ? [profile as CacheBenchmarkProfile] : undefined
+  if (profiles?.some((item) => item !== "every-step")) throw new Error("Unknown profile. Use every-step.")
   const suite = (valueAfter(argv, "--suite") ?? "real") as BenchmarkSuite
-  if (!["real", "adaptive", "all"].includes(suite)) throw new Error("Unknown suite. Use real, adaptive, or all.")
+  if (!["real", "all"].includes(suite)) throw new Error("Unknown suite. Use real or all.")
   const cachedMultiplier = valueAfter(argv, "--cached-input-multiplier")
   const outputMultiplier = valueAfter(argv, "--output-token-multiplier")
   const heartbeatMs = valueAfter(argv, "--heartbeat-ms")
@@ -484,24 +435,10 @@ function formatReport(report: Awaited<ReturnType<typeof runCacheBenchmark>>) {
   const lines = [
     `Cache benchmark provider=${report.provider} suite=${report.suite} cached_input_multiplier=${report.cachedInputMultiplier} output_token_multiplier=${report.outputTokenMultiplier}`,
     `cost ratio: 1 cache-miss input token ~= ${(1 / report.cachedInputMultiplier).toFixed(1)} cached input tokens`,
-    "profile       calls  input  cached  hit%   miss   output  effective_input  rev accept rollback final",
+    "profile       calls  input  cached  hit%   miss   output  effective_input  final",
   ]
   for (const summary of report.summaries) {
-    lines.push(`${summary.profile.padEnd(13)} ${String(summary.calls).padStart(5)} ${String(Math.round(summary.inputTokens)).padStart(6)} ${String(Math.round(summary.cacheHitTokens)).padStart(7)} ${(summary.hitRate * 100).toFixed(1).padStart(5)} ${String(Math.round(summary.cacheMissTokens)).padStart(6)} ${String(Math.round(summary.outputTokens)).padStart(7)} ${String(Math.round(summary.effectiveTotalTokens)).padStart(16)} ${String(summary.acceptedRevisions).padStart(4)} ${String(summary.acceptedAdjustments).padStart(6)} ${String(summary.rollbacks).padStart(8)} ${strategyLabel(summary.finalStrategyState)}`)
-  }
-  const changedAdaptive = report.adaptiveObservations.filter((item) => item.acceptedAdjustments > 0 || item.rollbacks > 0 || item.acceptedStrategyRevision > 0)
-  if (changedAdaptive.length > 0) {
-    lines.push("adaptive:")
-    for (const observation of changedAdaptive) {
-      lines.push(`  ${observation.profile}/${observation.taskID}: rev=${observation.acceptedStrategyRevision} accept=${observation.acceptedAdjustments} rollback=${observation.rollbacks} final=${strategyLabel(observation.finalStrategyState)}${observation.finalAdaptiveState.lastAdjustment ? ` last=${observation.finalAdaptiveState.lastAdjustment}` : ""}`)
-    }
-  }
-  if (report.adaptiveCaseSummaries.length > 0) {
-    lines.push("adaptive windows:")
-    lines.push("case                                  before_cost/call  after_cost/call  before_hit  after_hit  decision  expected  pass")
-    for (const item of report.adaptiveCaseSummaries) {
-      lines.push(`${item.taskID.padEnd(37)} ${String(Math.round(item.baselineCostPerCall)).padStart(16)} ${String(Math.round(item.candidateCostPerCall)).padStart(16)} ${(item.baselineHitRate * 100).toFixed(1).padStart(10)}% ${(item.candidateHitRate * 100).toFixed(1).padStart(8)}% ${item.decision.padStart(9)} ${item.expected.padStart(9)} ${item.passed ? "yes" : "no"}`)
-    }
+    lines.push(`${summary.profile.padEnd(13)} ${String(summary.calls).padStart(5)} ${String(Math.round(summary.inputTokens)).padStart(6)} ${String(Math.round(summary.cacheHitTokens)).padStart(7)} ${(summary.hitRate * 100).toFixed(1).padStart(5)} ${String(Math.round(summary.cacheMissTokens)).padStart(6)} ${String(Math.round(summary.outputTokens)).padStart(7)} ${String(Math.round(summary.effectiveTotalTokens)).padStart(16)} ${strategyLabel(summary.finalStrategyState)}`)
   }
   const best = [...report.summaries].sort((left, right) => left.effectiveTotalTokens - right.effectiveTotalTokens)[0]
   if (best) lines.push(`recommendation: ${best.profile} minimizes effective token cost in this benchmark.`)

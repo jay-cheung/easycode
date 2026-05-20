@@ -48,11 +48,6 @@ describe("cli args", () => {
     expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ once: true, session: undefined, prompt: "hello" })
   })
 
-  test("cache strategy can be set at startup", () => {
-    expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--cache-strategy", "cache-heavy"])).toMatchObject({ cacheStrategy: "cache-heavy", prompt: "hello" })
-    expect(() => parseArgs(["build", "--cache-strategy", "missing"])).toThrow("--cache-strategy requires auto, balanced, or cache-heavy")
-  })
-
   test("context and step budgets can be set at startup", () => {
     expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--max-tokens", "64000", "--max-steps", "24"])).toMatchObject({ maxTokens: 64_000, maxSteps: 24, prompt: "hello" })
     expect(() => parseArgs(["build", "--max-steps", "nope"])).toThrow("--max-steps requires a positive number")

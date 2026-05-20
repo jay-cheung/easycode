@@ -9,7 +9,6 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/skill use demo")).toEqual({ type: "skill", action: "use", name: "demo" })
     expect(parseSlashCommand("/model openai gpt-5-mini")).toEqual({ type: "model", provider: "openai", model: "gpt-5-mini" })
     expect(parseSlashCommand("/effort max")).toEqual({ type: "effort", value: "max" })
-    expect(parseSlashCommand("/cache cache-heavy")).toEqual({ type: "cache", value: "cache-heavy" })
   })
 
   test("accepts the thingking typo as a thinking alias", () => {
@@ -18,11 +17,10 @@ describe("slash commands", () => {
   })
 
   test("normalizes session settings", () => {
-    expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", thinking: true, effort: "high", cacheStrategy: "cache-heavy", maxTokens: 32_000, maxSteps: 20 })
-    expect(normalizeSessionSettings({ provider: "deepseek", effort: "max", selectedSkills: ["demo", "demo", ""], cacheStrategy: "cache-heavy" }, "fake")).toMatchObject({
+    expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", thinking: true, effort: "high", maxTokens: 32_000, maxSteps: 20 })
+    expect(normalizeSessionSettings({ provider: "deepseek", effort: "max", selectedSkills: ["demo", "demo", ""] }, "fake")).toMatchObject({
       provider: "deepseek",
       effort: "max",
-      cacheStrategy: "cache-heavy",
       selectedSkills: ["demo"],
     })
   })

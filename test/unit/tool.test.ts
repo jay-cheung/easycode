@@ -100,6 +100,58 @@ describe("tool", () => {
     expect(edit?.jsonSchema.properties.replaceAll.description).toContain("replace every match")
   })
 
+  test("registers semantic navigation and diff tools in plan and build mode", () => {
+    const registry = createBuiltinRegistry()
+    for (const name of ["rg_search", "read_lines", "find_definition", "find_references", "repo_map", "git_diff"]) {
+      expect(registry.list("plan").some((tool) => tool.name === name)).toBe(true)
+      expect(registry.list("build").some((tool) => tool.name === name)).toBe(true)
+    }
+  })
+
+  test("read_lines returns only the requested file slice", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "sample.ts"), "one\ntwo\nthree\n")
+
+    const result = await registry.run("read_lines", { filePath: "sample.ts", startLine: 2, endLine: 2 }, toolContext(root))
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.title).toBe("sample.ts:2-2")
+    expect(result.output).toBe("2 | two")
+  })
+
+  test("repo_map writes a derived ignored cache without changing source files", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "sample.ts"), "export function sample() {\n  return 1\n}\n")
+
+    const result = await registry.run("repo_map", { dir: "src", language: "typescript" }, toolContext(root))
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.cachePath).toBe(".easycode/cache/repo-map.json")
+    expect(result.output).toContain("function sample")
+    expect(await Bun.file(path.join(root, ".easycode", "cache", "repo-map.json")).exists()).toBe(true)
+    expect(await Bun.file(path.join(root, "src", "sample.ts")).text()).toContain("return 1")
+  })
+
+  test("git_diff reports scoped changes without full bash diff", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await git(root, ["init"])
+    await Bun.write(path.join(root, "sample.ts"), "export const value = 1\n")
+    await git(root, ["add", "sample.ts"])
+    await Bun.write(path.join(root, "sample.ts"), "export const value = 2\n")
+
+    const files = await registry.run("git_diff", { mode: "files" }, toolContext(root))
+    const patch = await registry.run("git_diff", { mode: "file", filePath: "sample.ts", maxBytes: 1000 }, toolContext(root))
+
+    expect(files.metadata.status).toBe("succeeded")
+    expect(files.output.trim()).toBe("sample.ts")
+    expect(patch.output).toContain("-export const value = 1")
+    expect(patch.output).toContain("+export const value = 2")
+  })
+
   test("edit replaces first match by default and all matches when requested", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
@@ -279,6 +331,12 @@ describe("tool", () => {
 
 function toolContext(root = import.meta.dir) {
   return { agentMode: "build" as const, sandbox: new Sandbox(root), permission: PermissionService.autoApprove(defaultPermissionRules("build")), skills: new SkillService(root), messages: [] }
+}
+
+async function git(root: string, args: string[]) {
+  const proc = Bun.spawn(["git", ...args], { cwd: root, stdout: "pipe", stderr: "pipe" })
+  const [stderr, exitCode] = await Promise.all([new Response(proc.stderr).text(), proc.exited])
+  if (exitCode !== 0) throw new Error(`git ${args.join(" ")} failed: ${stderr}`)
 }
 
 function bashResult(input: Partial<BashResult> & Pick<BashResult, "command" | "exitCode">): BashResult {

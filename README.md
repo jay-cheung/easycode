@@ -93,6 +93,14 @@ On macOS, bash commands run with a native write sandbox that blocks writes outsi
 
 Repeated bash and sandbox-bypass approvals are cached for the current session by reviewed scope. Simple read-only commands such as `ls` can reuse a narrow path scope like `readonly ls /tmp/work/*`; complex or side-effectful commands stay scoped to the exact command. The cache is in memory only and is not saved to session files.
 
+## Code Navigation
+
+EasyCode includes semantic-navigation tools for large repositories. Agents should prefer `repo_map` or `find_definition`, then `rg_search`, then `read_lines` for a bounded code slice. Full-file `read` is still available, but should be reserved for small files or clear edit targets.
+
+`repo_map` writes a derived cache to `<project>/.easycode/cache/repo-map.json`. The cache stores file fingerprints and symbol skeletons only; it is not source of truth and can be deleted at any time. Projects should ignore `.easycode` so this local cache is not committed.
+
+`rg_search` and `find_references` require `rg` on `PATH`. `find_definition` requires `ast-grep` on `PATH` and fails clearly when it is unavailable instead of falling back to noisy full-text search.
+
 ## Skills
 
 Skills are discovered from these roots:
