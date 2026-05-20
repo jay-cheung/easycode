@@ -2,6 +2,17 @@ import { describe, expect, test } from "bun:test"
 import { TimelineRenderer } from "../../src/ui/timeline"
 
 describe("timeline renderer", () => {
+  test("renders run start and provider wait progress", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "run_start", mode: "build", provider: "deepseek", model: "deepseek-chat" })
+    renderer.event({ type: "provider_progress", provider: "deepseek", model: "deepseek-chat", elapsedMs: 10_200 })
+
+    expect(output).toContain("● Model deepseek deepseek-chat (build)")
+    expect(output).toContain("waiting for deepseek deepseek-chat after 10s")
+  })
+
   test("renders bash progress and final duration", () => {
     let output = ""
     const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })

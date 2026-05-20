@@ -50,6 +50,7 @@ const stableOperatingProtocol = [
 ].join("\n")
 
 const defaultToolProgressIntervalMs = 10_000
+const defaultProviderProgressIntervalMs = 10_000
 
 export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" | "tool_running" | "completed" | "failed" | "cancelled"
 
@@ -77,6 +78,7 @@ export type AgentRunnerOptions = {
   onTextDelta?: (text: string) => void
   onEvent?: (event: RunUiEvent) => void
   toolProgressIntervalMs?: number
+  providerProgressIntervalMs?: number
   settings?: SessionSettings
   staticContextStrategy?: StaticContextStrategy
 }
@@ -98,6 +100,7 @@ export class AgentRunner {
   readonly onTextDelta?: (text: string) => void
   readonly onEvent?: (event: RunUiEvent) => void
   readonly toolProgressIntervalMs: number
+  readonly providerProgressIntervalMs: number
   readonly settings: SessionSettings
   readonly cacheStrategy: CacheStrategy
 
@@ -113,6 +116,7 @@ export class AgentRunner {
     this.onTextDelta = options.onTextDelta
     this.onEvent = options.onEvent
     this.toolProgressIntervalMs = options.toolProgressIntervalMs ?? defaultToolProgressIntervalMs
+    this.providerProgressIntervalMs = options.providerProgressIntervalMs ?? defaultProviderProgressIntervalMs
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
     this.cacheStrategy = cacheStrategyFor(options.staticContextStrategy, this.settings.cacheStrategy)
     const providerContextWindow = this.provider.capabilities?.contextWindowTokens
@@ -158,25 +162,30 @@ export class AgentRunner {
       let toolCall: ToolCall | undefined
       let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
+      const stopProviderProgress = this.startProviderProgressTimer()
       try {
         for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools, signal: input.signal })) {
           if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
           if (event.type === "reasoning_delta") {
+            stopProviderProgress()
             reasoningTranscript = appendOutput(reasoningTranscript, event.text)
             this.onEvent?.({ type: "reasoning_delta", text: event.text })
             this.onTextDelta?.(event.text)
           }
           if (event.type === "text_delta") {
+            stopProviderProgress()
             text += event.text
             this.onEvent?.({ type: "text_delta", text: event.text })
             this.onTextDelta?.(event.text)
           }
           if (event.type === "failure") {
+            stopProviderProgress()
             failureText = runFailureText(event.error.output || event.error.message, "provider_error")
             this.onEvent?.({ type: "failure", text: failureText })
             this.onTextDelta?.(failureText)
           }
           if (event.type === "tool_call") {
+            stopProviderProgress()
             toolCall = event.call
             this.onEvent?.({ type: "tool_call", call: event.call })
           }
@@ -185,6 +194,7 @@ export class AgentRunner {
           }
         }
       } catch (error) {
+        stopProviderProgress()
         if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
         if (error instanceof ProviderError) {
           const failureText = runFailureText(providerFailureText(error), "provider_error")
@@ -197,6 +207,8 @@ export class AgentRunner {
           return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
         }
         throw error
+      } finally {
+        stopProviderProgress()
       }
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."))
       if (failureText) {
@@ -274,6 +286,21 @@ export class AgentRunner {
     return setInterval(() => {
       this.onEvent?.({ type: "tool_progress", callID: call.id, toolName: call.name, elapsedMs: Date.now() - startedAt })
     }, this.toolProgressIntervalMs)
+  }
+
+  private startProviderProgressTimer() {
+    if (!this.onEvent || this.providerProgressIntervalMs <= 0) return () => {}
+    const startedAt = Date.now()
+    let stopped = false
+    const timer = setInterval(() => {
+      if (stopped) return
+      this.onEvent?.({ type: "provider_progress", provider: this.provider.name, model: this.provider.model, elapsedMs: Date.now() - startedAt })
+    }, this.providerProgressIntervalMs)
+    return () => {
+      if (stopped) return
+      stopped = true
+      clearInterval(timer)
+    }
   }
 
   private cancelledResult(reasoningTranscript: string, usedTools: string[], output = "Run cancelled by user.") {

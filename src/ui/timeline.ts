@@ -2,6 +2,7 @@ import type { ToolCall } from "../message"
 
 export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
+  | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number }
   | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
@@ -37,6 +38,18 @@ export class TimelineRenderer {
   }
 
   event(event: RunUiEvent) {
+    if (event.type === "run_start") {
+      this.closeThought()
+      this.closeAnswer()
+      const model = event.model ? ` ${event.model}` : ""
+      this.output.write(`\n${this.title("thought", "● Model")} ${event.provider}${model} (${event.mode})\n`)
+      return
+    }
+    if (event.type === "provider_progress") {
+      const model = event.model ? ` ${event.model}` : ""
+      this.output.write(`  … waiting for ${this.title("thought", `${event.provider}${model}`)} after ${formatDuration(event.elapsedMs)}\n`)
+      return
+    }
     if (event.type === "reasoning_delta") {
       this.openThought()
       this.thoughtText += event.text

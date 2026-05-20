@@ -347,6 +347,26 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("emits provider wait progress before the first visible model event", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    const provider: Provider = {
+      name: "slow-provider",
+      model: "slow-model",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "request", request: { url: "https://example.test", method: "POST", body: {} } }
+        await new Promise((resolve) => setTimeout(resolve, 20))
+        yield { type: "text_delta", text: "Done." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event), providerProgressIntervalMs: 1 }).run("Wait", "build")
+    expect(result.status).toBe("completed")
+    expect(events.some((event) => event.type === "run_start" && event.provider === "slow-provider")).toBe(true)
+    expect(events.some((event) => event.type === "provider_progress" && event.provider === "slow-provider" && event.elapsedMs > 0)).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("cancels a run while waiting for bash permission without reporting bash progress", async () => {
     const root = await fixture()
     const events: RunUiEvent[] = []
