@@ -145,7 +145,31 @@ export function redactProtectedMessages(messages: Message[]): Message[] {
 export function validProviderMessageSuffix(messages: Message[]) {
   let start = 0
   while (start < messages.length && messages[start].role === "tool") start += 1
-  return messages.slice(start)
+  return stripUnpairedToolExchanges(messages.slice(start))
+}
+
+function stripUnpairedToolExchanges(messages: Message[]): Message[] {
+  const keptCallIDs = new Set<string>()
+  const withMatchedCalls = messages.map((message, index) => {
+    if (message.role !== "assistant") return message
+    const toolCalls = message.parts.filter((part): part is ToolCallPart => part.type === "tool_call")
+    if (toolCalls.length === 0) return message
+    const followingResultIDs = new Set<string>()
+    for (let next = index + 1; next < messages.length && messages[next].role === "tool"; next += 1) {
+      for (const part of messages[next].parts) {
+        if (part.type === "tool_result") followingResultIDs.add(part.callID)
+      }
+    }
+    const parts = message.parts.filter((part) => part.type !== "tool_call" || followingResultIDs.has(part.call.id))
+    for (const part of parts) {
+      if (part.type === "tool_call") keptCallIDs.add(part.call.id)
+    }
+    return { ...message, parts }
+  })
+  return withMatchedCalls.map((message) => {
+    if (message.role !== "tool") return message
+    return { ...message, parts: message.parts.filter((part) => part.type !== "tool_result" || keptCallIDs.has(part.callID)) }
+  }).filter((message) => message.parts.length > 0)
 }
 
 export function redactProtectedMessage(message: Message, protectedCallIDs = new Set<string>()): Message {

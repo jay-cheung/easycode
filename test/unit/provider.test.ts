@@ -48,9 +48,21 @@ describe("provider", () => {
   })
 
   test("maps assistant history to Responses output content", () => {
-    expect(providerMessageToResponseInput({ role: "assistant", content: "done" }).content[0].type).toBe("output_text")
-    expect(providerMessageToResponseInput({ role: "user", content: "hi" }).content[0].type).toBe("input_text")
-    expect(providerMessageToResponseInput({ role: "tool", content: "result" })).toMatchObject({ role: "user", content: [{ type: "input_text", text: "result" }] })
+    expect(providerMessageToResponseInput({ role: "assistant", content: "done" })).toMatchObject([{ type: "message", role: "assistant", content: [{ type: "output_text" }] }])
+    expect(providerMessageToResponseInput({ role: "user", content: "hi" })).toMatchObject([{ type: "message", role: "user", content: [{ type: "input_text" }] }])
+    expect(providerMessageToResponseInput({ role: "tool", content: "result" })).toMatchObject([{ type: "message", role: "user", content: [{ type: "input_text", text: "result" }] }])
+  })
+
+  test("maps structured tool history to Responses items without XML fallback messages", () => {
+    const input = messagesToProviderInput([
+      toolCallMessage({ id: "call_1", name: "read", input: { filePath: "a.ts" } }),
+      toolResultMessage({ callID: "call_1", toolName: "read", status: "succeeded", output: "ok" }),
+    ])
+
+    expect(input.flatMap(providerMessageToResponseInput)).toEqual([
+      { type: "function_call", id: "call_1", call_id: "call_1", name: "read", arguments: "{\"filePath\":\"a.ts\"}" },
+      { type: "function_call_output", call_id: "call_1", output: "ok" },
+    ])
   })
 
   test("emits raw OpenAI request before fetch", async () => {

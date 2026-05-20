@@ -902,7 +902,10 @@ export function recentProviderMessageSuffix(messages: Message[], maxTokens = 1_0
   const suffix: Message[] = []
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const candidate = validProviderMessageSuffix([messages[index], ...suffix])
-    if (candidate.length === 0) continue
+    if (candidate.length === 0) {
+      if (messages[index].role === "tool") suffix.unshift(messages[index])
+      continue
+    }
     if (estimateMessages(candidate) > maxTokens && suffix.length > 0) break
     suffix.unshift(messages[index])
   }

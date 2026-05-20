@@ -71,14 +71,39 @@ export function normalizeModelName(model: string) {
   return model.trim().toLowerCase()
 }
 
-export function providerMessageToResponseInput(message: ProviderInputMessage) {
+type OpenAIInputItem =
+  | { type: "message"; role: string; content: OpenAIContentPart[] }
+  | { type: "function_call"; id: string; call_id: string; name: string; arguments: string }
+  | { type: "function_call_output"; call_id: string; output: string }
+
+export function providerMessageToResponseInput(message: ProviderInputMessage): OpenAIInputItem[] {
   const role = message.role === "tool" ? "user" : message.role
   const content = responseInputContent(message, role)
-  return {
-    type: "message",
-    role,
-    content,
+  const items: OpenAIInputItem[] = []
+  if (content.length) {
+    items.push({ type: "message", role, content })
   }
+  if (message.parts) {
+    for (const part of message.parts) {
+      if (part.type === "tool_call") {
+        items.push({
+          type: "function_call",
+          id: part.call.id,
+          call_id: part.call.id,
+          name: part.call.name,
+          arguments: part.call.rawArguments ?? JSON.stringify(part.call.input),
+        })
+      }
+      if (part.type === "tool_result") {
+        items.push({
+          type: "function_call_output",
+          call_id: part.callID,
+          output: part.output,
+        })
+      }
+    }
+  }
+  return items
 }
 
 export function openAIStreamEventToProviderEvents(parsed: OpenAIStreamEvent, state: OpenAIStreamParseState = createOpenAIStreamParseState()): ProviderEvent[] {
@@ -157,7 +182,7 @@ export class OpenAILikeProvider implements Provider {
     const body: Record<string, unknown> = {
       model: this.model,
       stream: true,
-      input: input.providerMessages.map(providerMessageToResponseInput),
+      input: input.providerMessages.flatMap(providerMessageToResponseInput),
       tools: input.tools.map(toolToResponseTool),
       prompt_cache_key: this.promptCacheKey(input),
     }
@@ -239,7 +264,7 @@ function responseInputContent(message: ProviderInputMessage, role: string) {
       if (text) content.push({ type: role === "assistant" ? "output_text" : "input_text", text })
     }
   }
-  if (content.length === 0) return [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }]
+  if (content.length === 0 && message.parts.length === 0 && message.content) return [{ type: role === "assistant" ? "output_text" : "input_text", text: message.content }]
   return content
 }
 

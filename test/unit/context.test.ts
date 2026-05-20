@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ContextManager, estimateSummaryTokens, estimateTextTokens, type LedgerKind, type LedgerRecord, type LedgerStatus } from "../../src/context"
+import { ContextManager, estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, type LedgerKind, type LedgerRecord, type LedgerStatus } from "../../src/context"
 import { toolCallMessage, toolResultMessage, textMessage } from "../../src/message"
 import { createAgent } from "../../src/agent"
 
@@ -65,6 +65,24 @@ describe("context", () => {
 
     expect(context.compact("summary")).toBe(true)
     expect(context.state.messages.map((message) => message.role)).toEqual(["assistant"])
+  })
+
+  test("recent provider suffix preserves a trailing tool exchange as a pair", () => {
+    const suffix = recentProviderMessageSuffix([
+      toolCallMessage({ id: "call_1", name: "read", input: { filePath: "a.ts" } }),
+      toolResultMessage({ callID: "call_1", toolName: "read", status: "succeeded", output: "ok" }),
+    ], 100)
+
+    expect(suffix.map((message) => message.role)).toEqual(["assistant", "tool"])
+  })
+
+  test("recent provider suffix drops a trailing tool exchange when the result does not fit", () => {
+    const suffix = recentProviderMessageSuffix([
+      toolCallMessage({ id: "call_1", name: "read", input: { filePath: "a.ts" } }),
+      toolResultMessage({ callID: "call_1", toolName: "read", status: "succeeded", output: "x".repeat(10_000) }),
+    ], 10)
+
+    expect(suffix).toEqual([])
   })
 
 
