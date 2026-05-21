@@ -72,6 +72,7 @@ Cause-to-optimization ownership:
 | `summary_loss` | Structured summary slots and long-term memory retention |
 | `summary_hallucination` | Contradiction-preserving summaries |
 | `cache_instability` | Prefix canonicalization and static/dynamic split |
+| `cache_not_eligible` | Stable prefix sizing or provider cache-gate configuration |
 | `retrieval_noise` | RAG filtering, confidence, and no-answer policy |
 | `conflict_policy_error` | Pre-generation priority/timestamp resolver |
 | `format_error` | Provider-native response format and deterministic validators |
@@ -165,6 +166,14 @@ output_tokens_per_resolution = outputTokens / passed_tasks
 compression_failure_rate = failed_compression_cases / compression_cases
 instruction_drift_rate = failed_instruction_cases / instruction_cases
 ```
+
+Cache-gated cases use warmup semantics. When a case declares
+`min_cache_hit_ratio_after_warmup`, the runner must send one identical warmup
+request first and evaluate the cache ratio from the measured request that
+follows. Warmup usage is reported separately and is not added to measured usage.
+If the provider declares a prompt-cache minimum and the composed stable prefix is
+below that minimum, the runner reports `cache_not_eligible` instead of
+`cache_instability`.
 
 ## Test Case Schema
 
@@ -467,6 +476,7 @@ Each failed case must be labeled with one primary cause:
 | `summary_loss` | Compaction removed required long-term state. | APIX-021, APIX-023, APIX-027 |
 | `summary_hallucination` | Summary merged contradictions or invented facts. | APIX-029 |
 | `cache_instability` | Correctness may pass, but stable prefix fails cache targets. | APIX-001, APIX-093 |
+| `cache_not_eligible` | The provider cache minimum is known and the stable prefix is too small to evaluate cache hit ratio. | APIX-001, APIX-093 |
 | `retrieval_noise` | Irrelevant retrieved text pollutes the answer. | APIX-071, APIX-080 |
 | `conflict_policy_error` | Wrong priority or timestamp wins. | APIX-061, APIX-068 |
 | `format_error` | Output violates JSON, schema, diff, or length constraints. | APIX-001, APIX-051, APIX-059 |
@@ -478,8 +488,8 @@ The runner should output one JSON report per run:
 
 ```json
 {
-  "runID": "2026-05-18T10-00-00Z-auto-openai",
-  "profile": "auto",
+  "runID": "2026-05-18T10-00-00Z-every-step-openai",
+  "profile": "every-step",
   "provider": "openai",
   "model": "example-model",
   "quality": {

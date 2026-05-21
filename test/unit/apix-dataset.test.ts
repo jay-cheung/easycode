@@ -85,4 +85,48 @@ describe("APIx golden dataset manifest", () => {
     expect(report.quality.gatedTotal).toBe(report.quality.hardGateTotal)
     expect(report.results.every((result) => result.evaluationMode === "hard_gate" || result.scoreOnly)).toBe(true)
   })
+
+  test("warms cache-gated cases before measuring cache hit ratio", async () => {
+    delete process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS
+    const report = await runAPIxEval({
+      root: path.resolve(import.meta.dir, "../.."),
+      provider: "fake",
+      ids: ["APIX-001"],
+      thinking: false,
+      json: true,
+      table: false,
+      quiet: true,
+    })
+    const result = report.results[0]
+
+    expect(result.passed).toBe(true)
+    expect(result.warmupUsage?.cacheHitTokens).toBe(0)
+    expect(result.measuredUsage?.cacheHitTokens).toBe(800)
+    expect(result.usage.cacheHitTokens).toBe(800)
+  })
+
+  test("reports cache gates as not eligible when the stable prefix is below the provider minimum", async () => {
+    const previous = process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS
+    process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS = "999999"
+    try {
+      const report = await runAPIxEval({
+        root: path.resolve(import.meta.dir, "../.."),
+        provider: "fake",
+        ids: ["APIX-001"],
+        thinking: false,
+        json: true,
+        table: false,
+        quiet: true,
+      })
+      const result = report.results[0]
+
+      expect(result.passed).toBe(false)
+      expect(result.primaryCause).toBe("cache_not_eligible")
+      expect(result.failures.some((failure) => failure.includes("cache not eligible"))).toBe(true)
+      expect(result.warmupUsage).toBeUndefined()
+    } finally {
+      if (previous === undefined) delete process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS
+      else process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS = previous
+    }
+  })
 })

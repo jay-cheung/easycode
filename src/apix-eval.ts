@@ -58,6 +58,31 @@ type APIxOptions = {
   quiet: boolean
 }
 
+type APIxUsage = {
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens: number
+  cacheMissTokens: number
+  totalTokens?: number
+  reasoningTokens?: number
+}
+
+type APIxProviderRun = {
+  output: string
+  usage: APIxUsage
+  providerFailures: string[]
+  latencyMs: number
+  ttftMs?: number
+}
+
+type CacheEvaluation = {
+  requiredRatio?: number
+  eligible: boolean
+  reason?: string
+  staticPrefixTokens?: number
+  minPrefixTokens?: number
+}
+
 type APIxResult = {
   id: string
   dimension: string
@@ -72,14 +97,10 @@ type APIxResult = {
   primaryCause?: string
   optimization?: string
   output: string
-  usage: {
-    inputTokens: number
-    outputTokens: number
-    cacheHitTokens: number
-    cacheMissTokens: number
-    totalTokens?: number
-    reasoningTokens?: number
-  }
+  usage: APIxUsage
+  warmupUsage?: APIxUsage
+  measuredUsage?: APIxUsage
+  cacheEvaluation?: CacheEvaluation
   latencyMs: number
   ttftMs?: number
 }
@@ -153,43 +174,16 @@ export async function runAPIxEval(options: APIxOptions) {
     for (const message of messagesForCase(task)) context.add(message)
     const plan = context.planRequest({ step: 0, agent, skills: [], selectedSkills: [], tools: [] })
     const providerMessages = plan.providerMessages
-    const startedAt = Date.now()
-    let ttftMs: number | undefined
-    let output = ""
-    const providerFailures: string[] = []
-    const usage = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, totalTokens: undefined as number | undefined, reasoningTokens: undefined as number | undefined }
-    const stream = provider.stream({
-      mode: "build",
-      prompt: task.turns.at(-1)?.content ?? task.goal,
-      messages: context.state.messages,
-      providerMessages,
-      tools: [],
-    })
-
-    try {
-      for await (const event of stream) {
-        if (event.type === "text_delta") {
-          if (ttftMs === undefined) ttftMs = Date.now() - startedAt
-          output += event.text
-        }
-        if (event.type === "usage") {
-          mergeUsage(usage, event)
-          context.observeUsage(event)
-        }
-        if (event.type === "failure") {
-          const message = event.error.output || event.error.message
-          providerFailures.push(message)
-          output += message
-        }
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      providerFailures.push(message)
-      output += message
-    }
-
-    const failures = validateCase(task, output.trim(), usage)
-    failures.unshift(...providerFailures.map((failure) => `provider failure: ${failure}`))
+    const cacheEvaluation = cacheEvaluationForCase(task, provider.capabilities?.promptCacheMinPrefixTokens, plan.cacheStats.staticPrefixTokens)
+    const warmup = cacheEvaluation.requiredRatio !== undefined && cacheEvaluation.eligible
+      ? await runProviderForCase(task, context, provider, providerMessages)
+      : undefined
+    const measured = await runProviderForCase(task, context, provider, providerMessages)
+    const usage = measured.usage
+    const output = measured.output.trim()
+    const failures = validateCase(task, output, usage, cacheEvaluation)
+    if (warmup) failures.unshift(...warmup.providerFailures.map((failure) => `warmup provider failure: ${failure}`))
+    failures.unshift(...measured.providerFailures.map((failure) => `provider failure: ${failure}`))
     const primaryCause = failures.length ? primaryCauseFor(task, failures, usage) : undefined
     results.push({
       id: task.id,
@@ -204,10 +198,13 @@ export async function runAPIxEval(options: APIxOptions) {
       ignoredExpectedFields,
       primaryCause,
       optimization: primaryCause ? optimizationForCause(primaryCause) : undefined,
-      output: output.trim(),
+      output,
       usage,
-      latencyMs: Date.now() - startedAt,
-      ttftMs,
+      ...(warmup ? { warmupUsage: warmup.usage } : {}),
+      measuredUsage: measured.usage,
+      ...(cacheEvaluation.requiredRatio !== undefined ? { cacheEvaluation } : {}),
+      latencyMs: measured.latencyMs,
+      ttftMs: measured.ttftMs,
     })
     if (!options.quiet) {
       const latest = results.at(-1)
@@ -216,6 +213,50 @@ export async function runAPIxEval(options: APIxOptions) {
   }
 
   return summarize(options, results)
+}
+
+async function runProviderForCase(
+  task: APIxCase,
+  context: ContextManager,
+  provider: ReturnType<typeof createProvider>,
+  providerMessages: ReturnType<ContextManager["planRequest"]>["providerMessages"],
+): Promise<APIxProviderRun> {
+  const startedAt = Date.now()
+  let ttftMs: number | undefined
+  let output = ""
+  const providerFailures: string[] = []
+  const usage = emptyUsage()
+  const stream = provider.stream({
+    mode: "build",
+    prompt: task.turns.at(-1)?.content ?? task.goal,
+    messages: context.state.messages,
+    providerMessages,
+    tools: [],
+  })
+
+  try {
+    for await (const event of stream) {
+      if (event.type === "text_delta") {
+        if (ttftMs === undefined) ttftMs = Date.now() - startedAt
+        output += event.text
+      }
+      if (event.type === "usage") {
+        mergeUsage(usage, event)
+        context.observeUsage(event)
+      }
+      if (event.type === "failure") {
+        const message = event.error.output || event.error.message
+        providerFailures.push(message)
+        output += message
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    providerFailures.push(message)
+    output += message
+  }
+
+  return { output, usage, providerFailures, latencyMs: Date.now() - startedAt, ttftMs }
 }
 
 async function loadFixture(root: string, task: APIxCase) {
@@ -425,7 +466,11 @@ function singleLine(text: string) {
   return text.replace(/\s+/g, " ").trim()
 }
 
-function mergeUsage(target: APIxResult["usage"], event: Extract<ProviderEvent, { type: "usage" }>) {
+function emptyUsage(): APIxUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, totalTokens: undefined, reasoningTokens: undefined }
+}
+
+function mergeUsage(target: APIxUsage, event: Extract<ProviderEvent, { type: "usage" }>) {
   target.inputTokens += event.inputTokens
   target.outputTokens += event.outputTokens
   target.cacheHitTokens += event.cacheHitTokens ?? 0
@@ -434,12 +479,29 @@ function mergeUsage(target: APIxResult["usage"], event: Extract<ProviderEvent, {
   target.reasoningTokens = (target.reasoningTokens ?? 0) + (event.reasoningTokens ?? 0)
 }
 
-function validateCase(task: APIxCase, output: string, usage: APIxResult["usage"]) {
+function cacheEvaluationForCase(task: APIxCase, minPrefixTokens: number | undefined, staticPrefixTokens: number): CacheEvaluation {
+  const requiredRatio = task.metrics.min_cache_hit_ratio_after_warmup
+  if (requiredRatio === undefined) return { eligible: true, staticPrefixTokens }
+  if (minPrefixTokens !== undefined && staticPrefixTokens < minPrefixTokens) {
+    return {
+      requiredRatio,
+      eligible: false,
+      reason: `static prefix ${staticPrefixTokens} tokens below provider cache minimum ${minPrefixTokens}`,
+      staticPrefixTokens,
+      minPrefixTokens,
+    }
+  }
+  return { requiredRatio, eligible: true, staticPrefixTokens, ...(minPrefixTokens !== undefined ? { minPrefixTokens } : {}) }
+}
+
+function validateCase(task: APIxCase, output: string, usage: APIxUsage, cacheEvaluation: CacheEvaluation) {
   const failures: string[] = []
   if (task.metrics.max_output_tokens !== undefined && usage.outputTokens > task.metrics.max_output_tokens) failures.push(`output tokens ${usage.outputTokens} exceed max ${task.metrics.max_output_tokens}`)
-  if (task.metrics.min_cache_hit_ratio_after_warmup !== undefined && usage.inputTokens > 0) {
+  if (cacheEvaluation.requiredRatio !== undefined && !cacheEvaluation.eligible) {
+    failures.push(`cache not eligible: ${cacheEvaluation.reason}`)
+  } else if (cacheEvaluation.requiredRatio !== undefined && usage.inputTokens > 0) {
     const hitRatio = usage.cacheHitTokens / usage.inputTokens
-    if (hitRatio < task.metrics.min_cache_hit_ratio_after_warmup) failures.push(`cache hit ratio ${hitRatio.toFixed(3)} below min ${task.metrics.min_cache_hit_ratio_after_warmup}`)
+    if (hitRatio < cacheEvaluation.requiredRatio) failures.push(`cache hit ratio ${hitRatio.toFixed(3)} below min ${cacheEvaluation.requiredRatio}`)
   }
   if (task.expected.exact !== undefined && !exactlyMatches(output, task.expected.exact)) failures.push(`expected exact ${JSON.stringify(task.expected.exact)}`)
   if (task.expected.json_schema) {
@@ -470,11 +532,12 @@ function validateCase(task: APIxCase, output: string, usage: APIxResult["usage"]
   return failures
 }
 
-function primaryCauseFor(task: APIxCase, failures: string[], usage: APIxResult["usage"]) {
+function primaryCauseFor(task: APIxCase, failures: string[], usage: APIxUsage) {
   const tracks = new Set(task.metrics.track)
   const pressures = new Set((task as { architecture_pressure?: string[] }).architecture_pressure ?? [])
   const failureText = failures.join("\n")
   if (failureText.includes("missing required fixture") || failureText.includes("provider failure")) return "resource_failure"
+  if (failureText.includes("cache not eligible")) return "cache_not_eligible"
   if (isOnlyCacheFailure(failures)) return "cache_instability"
   if (failureText.includes("output tokens") || usage.outputTokens > 1_000) return "output_control"
   if (task.dimension === "needle_haystack" || pressures.has("long_context")) return "long_context_attention"
@@ -511,6 +574,7 @@ function optimizationForCause(cause: string) {
     summary_loss: "Use structured summaries with typed slots for latest facts, preferences, tasks, and entity graphs; preserve source turn numbers.",
     summary_hallucination: "Store contradictions as competing facts with timestamps instead of merging them into one synthesized statement.",
     cache_instability: "Canonicalize and sort static context, keep dynamic/RAG content after the stable prefix, and inspect every-step cache hit behavior.",
+    cache_not_eligible: "Increase the stable prefix beyond the provider prompt-cache minimum or exclude this case from cache-hit gates for that provider.",
     retrieval_noise: "Add retrieval filtering, source confidence, and explicit no-answer rules before composing RAG content into the prompt.",
     conflict_policy_error: "Resolve timestamp, priority, and scope conflicts before generation; pass only the winning fact plus audit trail.",
     format_error: "Use provider-native JSON/output modes and deterministic post-validators for exact, schema, and length-constrained tasks.",

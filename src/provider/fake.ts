@@ -5,7 +5,8 @@ import type { ProviderCapabilities, ProviderOptions } from "./types"
 export class FakeProvider implements Provider {
   readonly name = "fake"
   readonly model?: string
-  readonly capabilities: ProviderCapabilities = { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high", "max"] }
+  readonly capabilities: ProviderCapabilities = { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high", "max"], promptCacheMinPrefixTokens: numberFromEnv("FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS") }
+  private readonly promptCounts = new Map<string, number>()
 
   constructor(options: ProviderOptions = {}) {
     this.model = options.model
@@ -32,6 +33,14 @@ export class FakeProvider implements Provider {
     }
     if (prompt.includes("queued-ok")) {
       yield { type: "text_delta", text: "Queued done." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("第五轮：输出最终状态")) {
+      const seen = this.promptCounts.get(input.prompt) ?? 0
+      this.promptCounts.set(input.prompt, seen + 1)
+      yield { type: "text_delta", text: "{\"status\":\"ok\"}" }
+      yield { type: "usage", inputTokens: 1000, outputTokens: 10, cacheHitTokens: seen > 0 ? 800 : 0, cacheMissTokens: seen > 0 ? 200 : 1000 }
       yield { type: "done" }
       return
     }
@@ -163,4 +172,11 @@ export class FakeProvider implements Provider {
     yield { type: "usage", inputTokens: 100, outputTokens: 20 }
     yield { type: "done" }
   }
+}
+
+function numberFromEnv(name: string) {
+  const value = process.env[name]
+  if (value === undefined) return undefined
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
 }
