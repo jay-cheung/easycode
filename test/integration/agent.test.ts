@@ -25,6 +25,16 @@ async function fixture() {
   return root
 }
 
+async function waitForPendingPermission(permission: PermissionService, timeoutMs = 1_000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const request = [...permission.pending.values()][0]
+    if (request) return request
+    await new Promise((resolve) => setTimeout(resolve, 10))
+  }
+  throw new Error("Timed out waiting for permission request")
+}
+
 describe("agent integration", () => {
   test("build-simple-edit", async () => {
     const root = await fixture()
@@ -495,12 +505,10 @@ describe("agent integration", () => {
     const permission = new PermissionService(defaultPermissionRules("build"))
     const runner = new AgentRunner({ root, provider: new FakeProvider(), permission })
     const pending = runner.run("Fix the failing test", "build")
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    const request = [...permission.pending.values()][0]
+    const request = await waitForPendingPermission(permission)
     expect(request.permission).toBe("edit")
     permission.reply(request.id, "once")
-    await new Promise((resolve) => setTimeout(resolve, 10))
-    const next = [...permission.pending.values()][0]
+    const next = await waitForPendingPermission(permission)
     permission.reply(next.id, "once")
     const result = await pending
     expect(result.status).toBe("completed")

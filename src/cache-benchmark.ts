@@ -262,6 +262,7 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
   const outputTokenMultiplier = options.outputTokenMultiplier ?? 0
   const tasks = await loadTasks(projectRoot, provider, suite)
   const observations: ProviderCallObservation[] = []
+  const finalStrategyStates = new Map<CacheBenchmarkProfile, ContextStrategyState>()
   const logger = options.quiet === false ? benchmarkLogger() : undefined
   logger?.(`start provider=${provider} suite=${suite} profiles=${profiles.join(",")} tasks=${tasks.map((task) => task.id).join(",")} heartbeat_ms=${options.heartbeatMs ?? 10_000}`)
 
@@ -294,6 +295,7 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
       }
 
       observations.push(...recorder.snapshot())
+      finalStrategyStates.set(profile, context.strategyState)
       await rm(workdir, { recursive: true, force: true })
       logger?.(`task done profile=${profile} task=${task.id} calls=${recorder.snapshot().length} strategy=${strategyLabel(context.strategyState)}`)
     }
@@ -305,12 +307,12 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
     suite,
     cachedInputMultiplier,
     outputTokenMultiplier,
-    summaries: profiles.map((profile) => summarizeProfile(profile, observations, cachedInputMultiplier, outputTokenMultiplier)),
+    summaries: profiles.map((profile) => summarizeProfile(profile, observations, cachedInputMultiplier, outputTokenMultiplier, finalStrategyStates.get(profile))),
     observations,
   }
 }
 
-function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number): ProfileSummary {
+function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number, finalStrategyState: ContextStrategyState | undefined): ProfileSummary {
   const calls = observations.filter((observation) => observation.profile === profile)
   let inputTokens = 0
   let outputTokens = 0
@@ -337,7 +339,7 @@ function summarizeProfile(profile: CacheBenchmarkProfile, observations: Provider
     effectiveInputTokens,
     effectiveOutputTokens,
     effectiveTotalTokens: effectiveInputTokens + effectiveOutputTokens,
-    finalStrategyState: undefined,
+    finalStrategyState,
   }
 }
 

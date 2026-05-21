@@ -69,7 +69,7 @@ describe("provider", () => {
     const previous = process.env.OPENAI_API_KEY
     process.env.OPENAI_API_KEY = "test-key"
     try {
-      const provider = new OpenAIProvider("gpt-5-mini")
+      const provider = new OpenAIProvider("o3-mini")
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
       const first = await stream.next()
       await stream.return?.()
@@ -79,7 +79,7 @@ describe("provider", () => {
           url: "https://api.openai.com/v1/responses",
           method: "POST",
           body: {
-            model: "gpt-5-mini",
+            model: "o3-mini",
             stream: true,
             input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "hi" }] }],
             reasoning: { effort: "high" },
@@ -107,7 +107,6 @@ describe("provider", () => {
         type: "request",
         request: {
           body: {
-            reasoning: { effort: "high" },
             input: [{ type: "message", role: "user", content: [{ type: "input_text", text: "describe" }, { type: "input_image", image_url: "https://example.test/image.png" }] }],
           },
         },

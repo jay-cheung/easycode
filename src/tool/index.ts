@@ -150,6 +150,7 @@ type BashApproval = {
 }
 
 const exactBashApprovalPrefix = "bash:exact:"
+const maxFullReadLines = 100
 
 function bashApprovalForCommand(command: string, cwd = process.cwd()): BashApproval {
   const trimmed = command.trim()
@@ -260,7 +261,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "read",
-    description: "Read a file inside the project root.",
+    description: "Read a small file inside the project root. For code exploration, large files are blocked; use repo_map, find_definition or rg_search, then read_lines.",
     inputSchema: ReadInput,
     jsonSchema: objectSchema({ filePath: { type: "string", description: "File path to read" } }),
     permission: "read",
@@ -268,7 +269,16 @@ export function createBuiltinRegistry() {
     patterns: (input, ctx) => [relativePattern(ctx, ReadInput.parse(input).filePath)],
     execute: async (input, ctx) => {
       const params = ReadInput.parse(input)
-      return { title: params.filePath, output: await ctx.sandbox.readFile(params.filePath), metadata: { status: "succeeded" } }
+      const output = await ctx.sandbox.readFile(params.filePath)
+      const lineCount = countLines(output)
+      if (lineCount > maxFullReadLines) {
+        return {
+          title: params.filePath,
+          output: `Full-file read blocked for ${params.filePath}: ${lineCount} lines exceeds the ${maxFullReadLines}-line limit. Use repo_map first, then find_definition or rg_search to locate the symbol, then read_lines for the smallest relevant range.`,
+          metadata: { status: "failed", error: "large_file_read_forbidden", lineCount, maxLines: maxFullReadLines },
+        }
+      }
+      return { title: params.filePath, output, metadata: { status: "succeeded", lineCount } }
     },
   })
 
@@ -583,6 +593,11 @@ function truncateText(text: string, maxBytes: number) {
   if (Buffer.byteLength(text) <= maxBytes) return text
   const buffer = Buffer.from(text)
   return `${buffer.subarray(0, maxBytes).toString("utf8")}\n[truncated ${buffer.length - maxBytes} bytes; use git_diff mode=file with a narrower file or inspect another file separately]`
+}
+
+function countLines(text: string) {
+  if (!text) return 0
+  return text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length
 }
 
 function clampInt(value: number, min: number, max: number) {

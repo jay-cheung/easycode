@@ -120,6 +120,19 @@ describe("tool", () => {
     expect(result.output).toBe("2 | two")
   })
 
+  test("read blocks large files and points to semantic navigation", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "large.ts"), Array.from({ length: 101 }, (_, index) => `export const v${index} = ${index}`).join("\n"))
+
+    const result = await registry.run("read", { filePath: "large.ts" }, toolContext(root))
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("large_file_read_forbidden")
+    expect(result.output).toContain("Use repo_map first")
+    expect(result.output).toContain("read_lines")
+  })
+
   test("repo_map writes a derived ignored cache without changing source files", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()

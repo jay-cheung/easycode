@@ -4,9 +4,11 @@ import type { ProviderOptions } from "./types"
 
 export class OpenAIProvider extends OpenAILikeProvider {
   constructor(model = process.env.EASYCODE_MODEL ?? "gpt-5-mini", runtime: ProviderOptions = {}) {
+    const normalizedModel = normalizeModelName(model)
+    const reasoningModel = isReasoningModel(normalizedModel)
     super({
       name: "openai",
-      model: normalizeModelName(model),
+      model: normalizedModel,
       apiKeyEnv: "OPENAI_API_KEY",
       url: process.env.OPENAI_API_URL ?? "https://api.openai.com/v1/responses",
       runtime: {
@@ -14,11 +16,15 @@ export class OpenAIProvider extends OpenAILikeProvider {
         promptCacheKey: runtime.promptCacheKey ?? process.env.EASYCODE_PROMPT_CACHE_KEY ?? process.env.OPENAI_PROMPT_CACHE_KEY,
         promptCacheRetention: runtime.promptCacheRetention ?? promptCacheRetentionFromEnv(),
       },
-      capabilities: { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high"], contextWindowTokens: numberFromEnv("OPENAI_CONTEXT_WINDOW_TOKENS") ?? numberFromEnv("EASYCODE_CONTEXT_WINDOW_TOKENS"), promptCacheMinPrefixTokens: numberFromEnv("OPENAI_PROMPT_CACHE_MIN_PREFIX_TOKENS") ?? numberFromEnv("EASYCODE_PROMPT_CACHE_MIN_PREFIX_TOKENS") },
+      capabilities: { supportsImages: true, supportsThinking: reasoningModel, supportsReasoningEffort: reasoningModel, effortValues: reasoningModel ? ["low", "medium", "high"] : [], contextWindowTokens: numberFromEnv("OPENAI_CONTEXT_WINDOW_TOKENS") ?? numberFromEnv("EASYCODE_CONTEXT_WINDOW_TOKENS"), promptCacheMinPrefixTokens: numberFromEnv("OPENAI_PROMPT_CACHE_MIN_PREFIX_TOKENS") ?? numberFromEnv("EASYCODE_PROMPT_CACHE_MIN_PREFIX_TOKENS") },
       missingApiKeyMessage: "OPENAI_API_KEY is required for OpenAIProvider",
       errorPrefix: "Responses API failed",
     })
   }
+}
+
+function isReasoningModel(model: string): boolean {
+  return model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")
 }
 
 function numberFromEnv(name: string) {

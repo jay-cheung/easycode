@@ -54,7 +54,7 @@ bun run src/cli.ts build --once "Fix the failing test" --provider fake
 bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
 ```
 
-Context defaults favor prompt caching: stable context is sent on every provider step, `maxTokens` defaults to `32000`, and `maxSteps` defaults to `20`. Use `--cache-strategy balanced|cache-heavy|auto`, `--max-tokens <n>`, and `--max-steps <n>` to override a run or session. When a session stops on `maxSteps` or a provider error, EasyCode prints a continuation hint and returns to the next prompt.
+Context defaults favor prompt caching with a fixed every-step strategy: stable context is sent on every provider step, `maxTokens` defaults to `32000`, and `maxSteps` defaults to `20`. Use `--max-tokens <n>` and `--max-steps <n>` to override a run or session. When a session stops on `maxSteps` or a provider error, EasyCode prints a continuation hint and returns to the next prompt.
 
 ## Sessions
 
@@ -80,7 +80,6 @@ Interactive sessions support a small command set:
 /model <provider> [id]  switch provider/model
 /effort <level>         set thinking strength: low, medium, high, max
 /thinking on|off        enable or disable model thinking
-/cache <strategy>       set cache strategy: auto, balanced, cache-heavy
 /settings               show current session settings
 /help                   show command help
 ```
@@ -136,16 +135,16 @@ bun run cache:bench
 bun run typecheck
 ```
 
-Cache benchmark can compare balanced, cache-heavy, auto-frozen, and auto prompt strategies. By default it runs the `real` suite, which uses the same non-synthetic tasks for every profile. Use the `adaptive` suite for deterministic controller accept/rollback cases:
+Cache benchmark measures the fixed every-step prompt strategy. By default it runs the `real` suite:
 
 ```bash
 bun run cache:bench -- --provider deepseek --suite real
-bun run cache:bench -- --provider simulated --suite adaptive
+bun run cache:bench -- --provider simulated --suite real
 ```
 
 It prints input tokens, cached tokens, cache misses, output tokens, hit rate, and effective input cost. Output tokens are shown for visibility but are not included in the effective cost because model output length is not controlled by the cache strategy. The default cached-input multiplier is `0.02`, matching cached input 0.02 per 1M tokens and cache-miss input 1.00 per 1M tokens. Override with `--cached-input-multiplier`.
 
-Benchmark progress logs are written to stderr by default, including profile/task/turn progress, provider requests, usage chunks, adaptive accept/rollback state, and a 10s heartbeat while waiting for real provider responses. Use `--quiet` to suppress progress logs or `--heartbeat-ms 30000` to change the heartbeat interval.
+Benchmark progress logs are written to stderr by default, including profile/task/turn progress, provider requests, usage chunks, and a 10s heartbeat while waiting for real provider responses. Use `--quiet` to suppress progress logs or `--heartbeat-ms 30000` to change the heartbeat interval.
 
 Real provider smoke tests are opt-in so the default test suite stays offline and deterministic:
 
