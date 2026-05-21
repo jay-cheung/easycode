@@ -1,10 +1,10 @@
 import path from "node:path"
-import { createAgent, type Agent } from "./agent"
-import { loadEnvFile } from "./cli"
-import { defaultCachePricing } from "./cache-policy"
-import { ContextManager, type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "./context"
-import { createProvider, hasProvider, listProviders, type ProviderEvent, type ProviderName } from "./provider"
-import { textMessage, type Message } from "./message"
+import { createAgent, type Agent } from "../agent"
+import { loadEnvFile } from "../cli"
+import { defaultCachePricing } from "../cache-policy"
+import { ContextManager, type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "../context"
+import { createProvider, hasProvider, listProviders, type ProviderEvent, type ProviderName } from "../provider"
+import { textMessage, type Message } from "../message"
 
 type APIxManifest = {
   cases: APIxCase[]
@@ -735,7 +735,7 @@ function percentile(values: number[], p: number) {
 }
 
 function parseArgs(argv: string[]): APIxOptions {
-  const root = path.resolve(valueAfter(argv, "--root") ?? path.resolve(import.meta.dir, ".."))
+  const root = path.resolve(valueAfter(argv, "--root") ?? path.resolve(import.meta.dir, "../.."))
   const provider = valueAfter(argv, "--provider") ?? "deepseek"
   if (!hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: ${listProviders().join(", ")}`)
   const priority = valueAfter(argv, "--priority") as APIxCase["priority"] | undefined
@@ -785,9 +785,12 @@ function formatReport(report: Awaited<ReturnType<typeof runAPIxEval>>) {
   return lines.join("\n")
 }
 
-if (import.meta.main) {
-  const options = parseArgs(process.argv.slice(2))
+export async function runAPIxEvalCli(argv = process.argv.slice(2)) {
+  const options = parseArgs(argv)
   const report = await runAPIxEval(options)
   console.log(options.table ? formatReport(report) : JSON.stringify(report, null, 2))
   if (report.results.some((result) => !result.scoreOnly && !result.passed)) process.exit(1)
+  return report
 }
+
+if (import.meta.main) await runAPIxEvalCli()

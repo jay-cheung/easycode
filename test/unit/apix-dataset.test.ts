@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
-import { runAPIxEval } from "../../src/apix-eval"
+import { runAPIxEval } from "../../src/evals/apix"
 
 type APIxCase = {
   id: string

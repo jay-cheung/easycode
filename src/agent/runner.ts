@@ -1,94 +1,25 @@
-import { defaultCachePricing, type CachePricing } from "./cache-policy"
-import { ContextManager, type ContextManagerLike, type LedgerKind, type LedgerRecord, type LedgerScope, type LedgerStatus } from "./context"
-import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "./message"
-import { defaultPermissionRules, PermissionService } from "./permission"
-import { createProvider, ProviderError, type Provider, type ProviderEvent, type ProviderName } from "./provider"
-import { Sandbox } from "./sandbox"
-import { SkillService, type SkillServiceLike } from "./skill"
-import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
-import { CliCodeNavigator } from "./tool/code-navigator"
-import { createRunAspect, type RunAspect } from "./instrumentation"
-import type { Logger } from "./logger"
-import { BASE_COMPACT_PROMPT } from "./context/prompt"
-import type { PermissionRule } from "./permission"
-import { defaultSessionSettings, type SessionSettings } from "./settings"
-import type { ProviderRunMetrics, RunUiEvent } from "./ui/timeline"
-
-export type Agent = {
-  name: string
-  mode: AgentMode
-  systemPrompt: string
-}
-
-const stableOperatingProtocol = [
-  "Stable operating protocol:",
-  "1. Read the current repository state before making claims about code behavior. Prefer targeted file reads and fast text search.",
-  "2. Keep changes scoped to the user's request and the surrounding ownership boundary. Avoid unrelated refactors and metadata churn.",
-  "3. Preserve user work. Never revert changes you did not make unless explicitly asked.",
-  "4. Treat tool outputs as evidence. Summarize large outputs, keep paths and commands reproducible, and request more detail only when needed.",
-  "5. For implementation work, make the smallest coherent change, then run focused verification before broader checks.",
-  "6. For planning work, avoid side effects and return one complete proposed plan in the expected tags.",
-  "7. Keep stable instructions, tool contracts, and skill descriptions ahead of dynamic conversation history to preserve prompt-cache prefixes.",
-  "8. Put run-specific facts such as user prompts, command outputs, errors, timestamps, and temporary paths in the dynamic history area.",
-  "9. When context is large, prefer stable facts, recent user intent, and reproducible references over long raw logs.",
-  "10. Report concise results with changed files, verification, and remaining risks when relevant.",
-  "11. Keep answers grounded in the exact files, commands, and provider events available in the current run.",
-  "12. Treat repository operations as stateful work: inspect, decide, change, verify, and summarize in that order.",
-  "13. Prefer deterministic command forms and deterministic output summaries so repeated turns keep a stable prefix.",
-  "14. For code review style tasks, lead with concrete findings and file references before general summaries.",
-  "15. For implementation tasks, update tests near the changed behavior before broadening verification.",
-  "16. For failures, preserve the failing command, short error text, and the next concrete recovery action.",
-  "17. For cache efficiency, keep this protocol unchanged across turns; task-specific information belongs after it.",
-  "18. Tool calls should be purposeful: read/search before editing, avoid duplicate exploration, and keep outputs bounded.",
-  "18a. For code navigation, you MUST: first check repo_map, then use find_definition or rg_search to locate symbols, then use read_lines for the smallest relevant range. Use grep only as a fallback. Full-file read is FORBIDDEN except for files under 100 lines or when you have a confirmed edit target and know the exact line range.",
-  "18b. For repository diffs, use git_diff in summary/files/stat mode first, then request a single-file patch only when needed; avoid bash git diff because full patches waste context.",
-  "19. Context quality is more important than raw volume: retain facts that affect correctness and drop redundant logs.",
-  "20. Session continuity should preserve user intent, accepted plans, changed files, and verification outcomes.",
-  "21. When active skills are listed, load full skill text only when the task actually requires those instructions.",
-  "22. Use stable names and stable ordering for repeated context sections so provider-side prefix caches can match exactly.",
-  "23. Keep fixed guidance in this anchor and avoid introducing per-run values such as dates, random ids, absolute temp paths, or session filenames here.",
-  "24. Prefer compact, structured records for tool results: status, command or path, key output, truncation marker, and where to reread full data.",
-  "25. Use the active window for current reasoning and the summary area for older dynamic facts; do not mix either into the fixed anchor.",
-  "26. When cost and quality trade off, choose the option that preserves correctness while lowering cache-miss and output token cost.",
-].join("\n")
+import { ContextManager, type ContextManagerLike, type LedgerRecord } from "../context"
+import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "../message"
+import { defaultPermissionRules, PermissionService } from "../permission"
+import { createProvider, ProviderError, type Provider, type ProviderName } from "../provider"
+import { Sandbox } from "../sandbox"
+import { SkillService, type SkillServiceLike } from "../skill"
+import { createBuiltinRegistry, type ToolRegistryLike } from "../tool"
+import { CliCodeNavigator } from "../tool/code-navigator"
+import { createRunAspect, type RunAspect } from "../instrumentation"
+import type { Logger } from "../logger"
+import { BASE_COMPACT_PROMPT } from "../context/prompt"
+import type { PermissionRule } from "../permission"
+import { defaultSessionSettings, type SessionSettings } from "../settings"
+import type { RunUiEvent } from "../ui/timeline"
+import { createAgent } from "./protocol"
+import type { AgentRunResult, AgentRunnerOptions } from "./types"
+import { createProviderMetrics, finalizeProviderMetrics, finishProviderMetricCall, observeProviderMetricEvent, startProviderMetricCall, type ProviderMetricsAccumulator } from "./metrics"
+import { ledgerRecord, toolScopeFiles } from "./ledger"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
 
-export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" | "tool_running" | "completed" | "failed" | "cancelled"
-
-export type AgentRunResult = {
-  status: "completed" | "failed" | "cancelled"
-  failureReason?: "provider_error" | "max_steps" | "cancelled"
-  text: string
-  reasoning?: string
-  messages: Message[]
-  usedTools: string[]
-  state: AgentRunState
-}
-
-export type AgentRunnerOptions = {
-  root: string
-  provider: Provider
-  registry?: ToolRegistryLike
-  permission?: PermissionService
-  context?: ContextManagerLike
-  skills?: SkillServiceLike
-  sandbox?: Sandbox
-  maxSteps?: number
-  logger?: Logger
-  aspect?: RunAspect
-  onTextDelta?: (text: string) => void
-  onEvent?: (event: RunUiEvent) => void
-  toolProgressIntervalMs?: number
-  providerProgressIntervalMs?: number
-  settings?: SessionSettings
-}
-
-export function createAgent(mode: AgentMode): Agent {
-  if (mode === "plan") return { name: "plan", mode, systemPrompt: `You are EasyCode in plan mode. Inspect context, avoid side effects, and return the final plan in <proposed_plan> tags.\n\n${stableOperatingProtocol}` }
-  return { name: "build", mode, systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}` }
-}
 
 export class AgentRunner {
   readonly root: string
@@ -451,6 +382,7 @@ export class AgentRunner {
   }
 }
 
+
 function samePermissionRules(left: PermissionRule[], right: PermissionRule[]) {
   if (left.length !== right.length) return false
   return left.every((rule, index) => {
@@ -507,139 +439,6 @@ function recoveryHintForToolFailure(call: ToolCall, result: { output: string; me
   return "next_recovery_action: inspect failure, preserve requested scope, choose smallest safe recovery."
 }
 
-type ProviderMetricsAccumulator = {
-  provider: string
-  model?: string
-  pricing: CachePricing
-  calls: number
-  inputTokens: number
-  outputTokens: number
-  cacheHitTokens: number
-  cacheMissTokens: number
-  totalTokens?: number
-  reasoningTokens?: number
-  providerElapsedMs: number
-  firstResponseMs?: number
-}
-
-type ProviderMetricCall = {
-  startedAt: number
-  firstResponseMs?: number
-}
-
-function createProviderMetrics(provider: string, model?: string): ProviderMetricsAccumulator {
-  return {
-    provider,
-    model,
-    pricing: defaultCachePricing(),
-    calls: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheHitTokens: 0,
-    cacheMissTokens: 0,
-    providerElapsedMs: 0,
-  }
-}
-
-function startProviderMetricCall(metrics?: ProviderMetricsAccumulator): ProviderMetricCall | undefined {
-  if (!metrics) return undefined
-  metrics.calls += 1
-  return { startedAt: Date.now() }
-}
-
-function observeProviderMetricEvent(metrics: ProviderMetricsAccumulator | undefined, call: ProviderMetricCall | undefined, event: ProviderEvent) {
-  if (!metrics || !call) return
-  if (event.type === "text_delta" && call.firstResponseMs === undefined) {
-    call.firstResponseMs = Date.now() - call.startedAt
-    metrics.firstResponseMs = metrics.firstResponseMs === undefined ? call.firstResponseMs : Math.min(metrics.firstResponseMs, call.firstResponseMs)
-  }
-  if (event.type !== "usage") return
-  mergeProviderUsage(metrics, event)
-}
-
-function finishProviderMetricCall(metrics: ProviderMetricsAccumulator | undefined, call: ProviderMetricCall | undefined) {
-  if (!metrics || !call) return
-  metrics.providerElapsedMs += Date.now() - call.startedAt
-}
-
-function mergeProviderUsage(target: ProviderMetricsAccumulator, event: Extract<ProviderEvent, { type: "usage" }>) {
-  target.inputTokens += event.inputTokens
-  target.outputTokens += event.outputTokens
-  target.cacheHitTokens += event.cacheHitTokens ?? 0
-  target.cacheMissTokens += event.cacheMissTokens ?? Math.max(0, event.inputTokens - (event.cacheHitTokens ?? 0))
-  target.totalTokens = (target.totalTokens ?? 0) + (event.totalTokens ?? event.inputTokens + event.outputTokens)
-  target.reasoningTokens = (target.reasoningTokens ?? 0) + (event.reasoningTokens ?? 0)
-}
-
-function finalizeProviderMetrics(metrics: ProviderMetricsAccumulator): ProviderRunMetrics {
-  const hitRate = metrics.inputTokens === 0 ? 0 : metrics.cacheHitTokens / metrics.inputTokens
-  const outputSeconds = metrics.providerElapsedMs / 1_000
-  const outputTokensPerSecond = outputSeconds <= 0 || metrics.outputTokens === 0 ? undefined : metrics.outputTokens / outputSeconds
-  return {
-    provider: metrics.provider,
-    model: metrics.model,
-    calls: metrics.calls,
-    inputTokens: metrics.inputTokens,
-    outputTokens: metrics.outputTokens,
-    cacheHitTokens: metrics.cacheHitTokens,
-    cacheMissTokens: metrics.cacheMissTokens,
-    totalTokens: metrics.totalTokens,
-    reasoningTokens: metrics.reasoningTokens,
-    hitRate,
-    providerElapsedMs: metrics.providerElapsedMs,
-    firstResponseMs: metrics.firstResponseMs,
-    outputTokensPerSecond,
-    effectiveCost: metrics.cacheHitTokens * metrics.pricing.inputCacheHit + metrics.cacheMissTokens * metrics.pricing.inputCacheMiss + metrics.outputTokens * metrics.pricing.output,
-    rates: metrics.pricing,
-  }
-}
-
-function ledgerRecord(kind: LedgerKind, subject: string, value: string, status: LedgerStatus, turn: number, input: { scope?: LedgerScope; reason?: string; evidence?: LedgerRecord["evidence"] } = {}): LedgerRecord {
-  return {
-    id: `run_${kind}_${hashLedgerID(`${subject}\n${value}\n${JSON.stringify(input.scope ?? {})}`)}`,
-    kind,
-    subject,
-    value,
-    status,
-    ...(input.scope ? { scope: input.scope } : {}),
-    ...(input.reason ? { reason: input.reason } : {}),
-    ...(input.evidence ? { evidence: input.evidence } : {}),
-    createdAtTurn: turn,
-    updatedAtTurn: turn,
-  }
-}
-
-function toolScopeFiles(call: ToolCall, result?: { metadata: Record<string, unknown> }) {
-  const files = new Set<string>()
-  collectFileRefs(call.input, files)
-  collectFileRefs(result?.metadata.changed, files)
-  return [...files]
-}
-
-function collectFileRefs(value: unknown, output: Set<string>) {
-  if (typeof value === "string") {
-    for (const match of value.matchAll(/(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z0-9]+|[\w.-]+\.(?:ts|tsx|js|jsx|json|md|txt|css|html|go|py|rs|toml|yaml|yml)/g)) {
-      output.add(match[0].replaceAll("\\", "/").replace(/^\.\//, ""))
-    }
-    return
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectFileRefs(item, output)
-    return
-  }
-  if (value && typeof value === "object") {
-    for (const item of Object.values(value)) collectFileRefs(item, output)
-  }
-}
-
-function hashLedgerID(input: string) {
-  let hash = 2166136261
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index)
-    hash = Math.imul(hash, 16777619)
-  }
-  return (hash >>> 0).toString(36)
-}
 
 function assistantMessage(reasoningText: string, text: string) {
   const parts: MessagePart[] = []

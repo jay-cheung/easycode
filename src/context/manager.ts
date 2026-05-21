@@ -1,0 +1,332 @@
+import { defaultCachePricing, type CachePricing } from "../cache-policy"
+import { createMessage, messagesToProviderInput, redactProtectedMessages, summaryPart, textMessage, type Message, type ProviderInputMessage } from "../message"
+import type { Agent } from "../agent"
+import type { SkillInfo } from "../skill"
+import type { ToolDef } from "../tool"
+import { mergeLedger, normalizedLedger, renderContextLedger, selectContextLedger, stableStringify, summaryLedgerConflicts, validateLedger } from "./ledger"
+import { estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, splitRecentUserTurns } from "./tokens"
+import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextRunOutcome, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
+
+type WindowStats = {
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens: number
+  cacheMissTokens: number
+}
+
+const defaultMaxTokens = 32_000
+const defaultMaxSteps = 20
+const minMaxTokens = 16_000
+const minMaxSteps = 8
+const maxMaxSteps = 30
+
+export class ContextManager implements ContextManagerLike {
+  readonly state: ContextState
+  readonly compactPreserveTokens: number
+  private readonly pricing: CachePricing
+  private readonly minTokenFloor: number
+  private responseReserveTokens: number
+  private contextWindowTokens: number
+  private totalStats: WindowStats = emptyWindowStats()
+  private _strategyState: ContextStrategyState
+
+  constructor(options: ContextOptions = {}) {
+    this.minTokenFloor = options.maxTokens !== undefined && options.maxTokens < minMaxTokens ? Math.max(1, Math.round(options.maxTokens)) : minMaxTokens
+    const maxTokens = clampInt(options.maxTokens ?? defaultMaxTokens, this.minTokenFloor, options.contextWindowTokens ?? Number.MAX_SAFE_INTEGER)
+    this.contextWindowTokens = options.contextWindowTokens ?? maxTokens
+    this.responseReserveTokens = options.responseReserveTokens ?? Math.max(2_000, Math.min(8_000, Math.floor(maxTokens * 0.2)))
+    this.pricing = options.pricing ?? defaultCachePricing()
+    this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
+    this._strategyState = {
+      staticContextStrategy: "every-step",
+      maxTokens,
+      compactAt: clampNumber(options.compactAt ?? 0.75, 0.6, 0.9),
+      activeWindowUserTurns: clampInt(options.activeWindowUserTurns ?? options.preserveRecentUserTurns ?? 3, 1, 10),
+      toolResultTokenBudget: clampInt(options.toolResultTokenBudget ?? 1_200, 300, 4_000),
+      dynamicSummaryTokenBudget: clampInt(options.dynamicSummaryTokenBudget ?? 3_000, 800, 8_000),
+      maxSteps: clampInt(options.maxSteps ?? defaultMaxSteps, minMaxSteps, maxMaxSteps),
+    }
+    this.state = { messages: [], tokenEstimate: 0, maxTokens }
+  }
+
+  get strategyState() {
+    return cloneStrategy(this._strategyState)
+  }
+
+  get compactAt() {
+    return this._strategyState.compactAt
+  }
+
+  get preserveRecentUserTurns() {
+    return this._strategyState.activeWindowUserTurns
+  }
+
+  add(message: Message) {
+    this.state.messages.push(message)
+    this.recalculateTokenEstimate()
+  }
+
+  setLedger(ledger: ContextLedger | undefined) {
+    this.state.ledger = normalizedLedger(ledger)
+    this.recalculateTokenEstimate()
+  }
+
+  updateLedger(patch: ContextLedger) {
+    this.setLedger(mergeLedger(this.state.ledger, patch))
+  }
+
+  clearLedger() {
+    this.setLedger(undefined)
+  }
+
+  estimate(messages: Message[]) {
+    return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
+  }
+
+  recordUsage(inputTokens: number) {
+    this.state.latestActualInputTokens = inputTokens
+  }
+
+  configureStrategy(input: Partial<ContextStrategyState> & { responseReserveTokens?: number; contextWindowTokens?: number }) {
+    if (input.contextWindowTokens !== undefined) this.contextWindowTokens = Math.max(minMaxTokens, input.contextWindowTokens)
+    if (input.responseReserveTokens !== undefined) this.responseReserveTokens = Math.max(0, input.responseReserveTokens)
+    this.applyStrategy({ ...this._strategyState, ...input })
+  }
+
+  observeUsage(observation: ContextUsageObservation) {
+    this.recordUsage(observation.inputTokens)
+    const hit = observation.cacheHitTokens ?? 0
+    const miss = observation.cacheMissTokens ?? Math.max(0, observation.inputTokens - hit)
+    const normalized = { calls: 1, inputTokens: observation.inputTokens, outputTokens: observation.outputTokens, cacheHitTokens: hit, cacheMissTokens: miss }
+    addWindowStats(this.totalStats, normalized)
+  }
+
+  recordRunOutcome(_outcome: ContextRunOutcome) {
+  }
+
+  needsCompaction() {
+    return this.state.tokenEstimate > this.state.maxTokens * this.compactAt
+  }
+
+  compactionInput() {
+    if (!this.needsCompaction()) return []
+    const { compacted } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
+    const messages: Message[] = []
+    const ledger = renderContextLedger(this.state.ledger)
+    if (ledger) messages.push(textMessage("system", ledger))
+    if (this.state.summary) messages.push(createMessage("system", [summaryPart(`Previous summary:\n${this.state.summary}`)]))
+    messages.push(...redactProtectedMessages(compacted))
+    return messagesToProviderInput(messages, { redactProtectedToolResults: true })
+  }
+
+  compact(summary: string) {
+    if (!this.needsCompaction()) return false
+    const { recent } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
+    const preserved = recentProviderMessageSuffix(recent, this.compactPreserveTokens)
+    const nextSummary = truncateToTokenBudget(summary, this._strategyState.dynamicSummaryTokenBudget)
+    const conflicts = summaryLedgerConflicts(nextSummary, this.state.ledger, this.state.messages.length)
+    if (conflicts.length) this.state.ledger = mergeLedger(this.state.ledger, { current: conflicts })
+    this.state.summary = nextSummary
+    this.state.messages = preserved
+    this.recalculateTokenEstimate()
+    return true
+  }
+
+  planRequest(input: ContextPlanInput): ContextPlan {
+    const providerMessages = this.compose(input)
+    const ledgerStats = this.ledgerStats()
+    const staticPrefixTokens = estimateStaticPrefixTokens(providerMessages)
+    this.staticPrefixTokens = Math.max(this.staticPrefixTokens, staticPrefixTokens)
+    return {
+      providerMessages,
+      strategyState: this.strategyState,
+      cacheStats: this.cacheStats(),
+      budgetStats: this.budgetStats(),
+      ledgerStats,
+    }
+  }
+
+  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
+    const messages: Message[] = []
+    if (input) {
+      const skills = sortedSkills(input.skills)
+      const selected = sortedSkills(input.selectedSkills ?? []).map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
+      const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
+      const toolList = sortedTools(input.tools).map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${stableStringify(tool.jsonSchema)}`).join("\n")
+      const toolPriorityDirective = [
+        "Tool usage priority (MUST follow this order for code exploration):",
+        "1. repo_map — structural overview first, never skip.",
+        "2. find_definition or rg_search — locate symbols, find line numbers.",
+        "3. read_lines — read only the confirmed line range (max 200 lines).",
+        "4. grep — fallback text search, use only when above tools are unavailable.",
+        "5. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
+        "6. edit / write — only after reading the relevant lines.",
+        "7. bash — last resort for commands; prefer git_diff for git operations.",
+        "VIOLATION: using read before repo_map + find_definition/rg_search + read_lines is explicitly forbidden.",
+      ].join("\n")
+      const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
+      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`, toolPriorityDirective].join("\n\n")
+      messages.push(textMessage("system", system))
+    }
+    const ledger = this.renderSelectedLedger()
+    if (ledger) messages.push(textMessage("system", ledger))
+    if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
+    messages.push(...this.state.messages)
+    return messagesToProviderInput(messages, { largeOutputLimit: Math.ceil(this._strategyState.toolResultTokenBudget / 0.3) })
+  }
+
+  private recalculateTokenEstimate() {
+    this.state.tokenEstimate = this.estimate(this.state.messages) + estimateSummaryTokens(this.state.summary) + estimateTextTokens(this.renderSelectedLedger())
+  }
+
+  private staticPrefixTokens = 0
+
+  private cacheStats(): ContextCacheStats {
+    const hitRate = this.totalStats.inputTokens === 0 ? 0 : this.totalStats.cacheHitTokens / this.totalStats.inputTokens
+    const totalEffectiveCost = effectiveWindowCost(this.totalStats, this.pricing)
+    return {
+      observedCalls: this.totalStats.calls,
+      inputTokens: this.totalStats.inputTokens,
+      outputTokens: this.totalStats.outputTokens,
+      cacheHitTokens: this.totalStats.cacheHitTokens,
+      cacheMissTokens: this.totalStats.cacheMissTokens,
+      hitRate,
+      effectiveCost: totalEffectiveCost,
+      effectiveCostPerCall: this.totalStats.calls === 0 ? 0 : totalEffectiveCost / this.totalStats.calls,
+      staticPrefixTokens: this.staticPrefixTokens,
+    }
+  }
+
+  private budgetStats(): ContextBudgetStats {
+    const stats = this.ledgerStats()
+    return {
+      tokenEstimate: this.state.tokenEstimate,
+      maxTokens: this.state.maxTokens,
+      compactAt: this.compactAt,
+      responseReserveTokens: this.responseReserveTokens,
+      availableInputTokens: Math.max(0, this.state.maxTokens - this.responseReserveTokens),
+      ledgerTokens: stats.tokenEstimate,
+      selectedLedgerRecords: stats.selectedRecords,
+      ledgerConflicts: stats.validationIssues,
+    }
+  }
+
+  private selectedLedger() {
+    return selectContextLedger(this.state.ledger, this.state.messages, this.ledgerTokenBudget())
+  }
+
+  private renderSelectedLedger() {
+    return renderContextLedger(this.selectedLedger())
+  }
+
+  private ledgerStats(): ContextLedgerStats {
+    const ledger = normalizedLedger(this.state.ledger)
+    const selected = selectContextLedger(ledger, this.state.messages, this.ledgerTokenBudget())
+    return {
+      currentRecords: ledger?.current.length ?? 0,
+      historyRecords: ledger?.history.length ?? 0,
+      selectedRecords: (selected?.current.length ?? 0) + (selected?.history.length ?? 0),
+      selectedCurrentRecords: selected?.current.length ?? 0,
+      selectedHistoryRecords: selected?.history.length ?? 0,
+      tokenEstimate: estimateTextTokens(renderContextLedger(selected)),
+      validationIssues: validateLedger(ledger).length,
+    }
+  }
+
+  private ledgerTokenBudget() {
+    const dynamicBudget = Math.max(0, this.state.maxTokens - this.responseReserveTokens)
+    return Math.max(400, Math.floor(dynamicBudget * 0.15))
+  }
+
+  private applyStrategy(input: ContextStrategyState) {
+    const maxTokens = clampInt(input.maxTokens, this.minTokenFloor, this.contextWindowTokens)
+    this._strategyState = {
+      staticContextStrategy: "every-step",
+      maxTokens,
+      compactAt: clampNumber(input.compactAt, 0.6, 0.9),
+      activeWindowUserTurns: clampInt(input.activeWindowUserTurns, 1, 10),
+      toolResultTokenBudget: clampInt(input.toolResultTokenBudget, 300, 4_000),
+      dynamicSummaryTokenBudget: clampInt(input.dynamicSummaryTokenBudget, 800, 8_000),
+      maxSteps: clampInt(input.maxSteps, minMaxSteps, maxMaxSteps),
+    }
+    this.state.maxTokens = maxTokens
+  }
+}
+
+
+const contextExecutionContract = [
+  "Context execution contract:",
+  "- Treat the current prompt, selected context ledger, summary, and message history as the complete available state unless the user explicitly says otherwise.",
+  "- Answer the latest user request directly; do not ask for prior turns that are already represented in summaries, ledgers, fixtures, or placeholders.",
+  "- Resolve pronouns, implicit intent, latest overrides, preferences, conflicts, and task progress from the active window plus the context ledger before responding.",
+  "- Preserve exact user-supplied entity names, versions, paths, identifiers, and constraints when they are relevant.",
+  "- Prefer current ledger records over older summary text when they conflict; history records explain previous decisions but do not override current records.",
+  "- Keep dynamic run facts in the ledger or message history, after the stable static prefix, to protect prompt-cache reuse.",
+].join("\n")
+
+
+function sortedSkills(skills: SkillInfo[]) {
+  return [...skills].sort((left, right) => left.name.localeCompare(right.name))
+}
+
+const toolPriority = new Map([
+  ["repo_map", 0],
+  ["find_definition", 1],
+  ["rg_search", 2],
+  ["find_references", 3],
+  ["read_lines", 4],
+  ["git_diff", 5],
+  ["read", 6],
+  ["list", 7],
+  ["grep", 8],
+  ["edit", 9],
+  ["write", 10],
+  ["bash", 20],
+])
+
+function sortedTools(tools: ToolDef[]) {
+  return [...tools].sort((left, right) => (toolPriority.get(left.name) ?? 100) - (toolPriority.get(right.name) ?? 100) || left.name.localeCompare(right.name))
+}
+
+
+function estimateStaticPrefixTokens(messages: ProviderInputMessage[]) {
+  const first = messages[0]
+  return first?.role === "system" ? estimateTextTokens(first.content) : 0
+}
+
+function emptyWindowStats(): WindowStats {
+  return { calls: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 }
+}
+
+function addWindowStats(target: WindowStats, input: WindowStats) {
+  target.calls += input.calls
+  target.inputTokens += input.inputTokens
+  target.outputTokens += input.outputTokens
+  target.cacheHitTokens += input.cacheHitTokens
+  target.cacheMissTokens += input.cacheMissTokens
+}
+
+function cloneStrategy(input: ContextStrategyState): ContextStrategyState {
+  return { ...input }
+}
+
+function effectiveWindowCost(input: WindowStats, pricing: CachePricing) {
+  return input.cacheMissTokens * pricing.inputCacheMiss + input.cacheHitTokens * pricing.inputCacheHit
+}
+
+function truncateToTokenBudget(text: string, tokenBudget: number) {
+  if (estimateTextTokens(text) <= tokenBudget) return text
+  const charBudget = Math.max(0, Math.floor(tokenBudget / 0.3))
+  return `${text.slice(0, charBudget)}\n[truncated summary to ${tokenBudget} estimated tokens]`
+}
+
+function clampInt(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min
+  return Math.max(min, Math.min(max, Math.round(value)))
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min
+  return Math.max(min, Math.min(max, value))
+}
