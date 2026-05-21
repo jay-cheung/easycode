@@ -5,7 +5,7 @@ import { defaultPermissionRules, PermissionService } from "./permission"
 import { createProvider, ProviderError, type Provider, type ProviderEvent, type ProviderName } from "./provider"
 import { Sandbox } from "./sandbox"
 import { SkillService, type SkillServiceLike } from "./skill"
-import { createBuiltinRegistry, formatRepoMap, type ToolRegistryLike } from "./tool"
+import { createBuiltinRegistry, type ToolRegistryLike } from "./tool"
 import { CliCodeNavigator } from "./tool/code-navigator"
 import { createRunAspect, type RunAspect } from "./instrumentation"
 import type { Logger } from "./logger"
@@ -378,25 +378,27 @@ export class AgentRunner {
     const turn = this.context.state.messages.length
     try {
       const map = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({})
-      
+
       let checkpointText = `repo_map ${map.cache.hit ? "cache hit" : "refreshed"}: ${map.entries.length} files at ${map.cache.path}`
       let dynamicMapRecord: LedgerRecord | undefined
-      
+      let relevantFiles: number | undefined
+
       if (prompt) {
         const filteredMap = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({ query: prompt })
         if (filteredMap.entries.length > 0) {
+          relevantFiles = filteredMap.entries.length
           checkpointText += ` (query-targeted subset containing ${filteredMap.entries.length} relevant files)`
-          const formatted = formatRepoMap(filteredMap)
           dynamicMapRecord = ledgerRecord(
-            "entity",
+            "checkpoint",
             "query_targeted_repo_map",
-            `A skeletal outline of the most relevant files/symbols for the query:\n${formatted}`,
+            `query-targeted repo_map prepared: ${filteredMap.entries.length} relevant files. Use repo_map with query="${truncateForLedger(prompt, 80)}" to fetch the current skeleton instead of reading whole files.`,
             "current",
             turn,
             { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }
           )
         }
       }
+      this.onEvent?.({ type: "repo_map", status: "succeeded", cacheHit: map.cache.hit, files: map.entries.length, relevantFiles, cachePath: map.cache.path })
 
       this.context.updateLedger({
         current: [
@@ -406,6 +408,7 @@ export class AgentRunner {
         ],
       })
     } catch (error) {
+      this.onEvent?.({ type: "repo_map", status: "failed", error: error instanceof Error ? error.message : String(error) })
       this.context.updateLedger({
         current: [
           ledgerRecord("failure", "repo_map_prewarm_failure", error instanceof Error ? error.message : String(error), "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
@@ -419,7 +422,7 @@ export class AgentRunner {
     const turn = this.context.state.messages.length
     if (result.metadata.status === "succeeded") {
       const files = toolScopeFiles(call, result)
-      const toolEvidence = { source: "tool" as const, toolCallID: call.id.slice(0, 12) }
+      const toolEvidence = { source: "tool" as const }
       const current: LedgerRecord[] = [
         ledgerRecord("failure", "last_tool_failure", `resolved by ${call.name}`, "resolved", turn, { reason: "a later tool call succeeded", evidence: toolEvidence }),
       ]
@@ -436,7 +439,7 @@ export class AgentRunner {
 
     const summary = toolFailureSummary(call, result)
     const recovery = recoveryHintForToolFailure(call, result)
-    const failureEvidence = { source: "tool" as const, toolCallID: call.id.slice(0, 12) }
+    const failureEvidence = { source: "tool" as const }
     this.context.updateLedger({
       current: [
         ledgerRecord("failure", "last_tool_failure", summary, "current", turn, { evidence: failureEvidence, scope: toolScopeFiles(call, result).length ? { files: toolScopeFiles(call, result) } : undefined }),

@@ -27,6 +27,18 @@ describe("timeline renderer", () => {
     expect(output).toContain("done")
   })
 
+  test("renders repo map prewarm status", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "repo_map", status: "succeeded", cacheHit: true, files: 12, relevantFiles: 3, cachePath: ".easycode/cache/repo-map.json" })
+
+    expect(output).toContain("● repo_map prewarm")
+    expect(output).toContain("cache hit")
+    expect(output).toContain("files=12")
+    expect(output).toContain("relevant=3")
+  })
+
   test("renders provider metrics with APIx usage and latency labels", () => {
     let output = ""
     const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })

@@ -138,6 +138,17 @@ describe("context", () => {
     expect(context.state.ledger?.history).toContainEqual(expect.objectContaining({ kind: "entity", subject: "last_tool_failure", value: "old failure", status: "superseded" }))
   })
 
+  test("ledger updates skip identical current-state records", () => {
+    const context = new ContextManager()
+    const record = ledgerRecord("constraint", "main_objective", "complete latest request end-to-end", "current", 1)
+
+    context.updateLedger({ current: [record] })
+    context.updateLedger({ current: [ledgerRecord("constraint", "main_objective", "complete latest request end-to-end", "current", 2)] })
+
+    expect(context.state.ledger?.current).toHaveLength(1)
+    expect(context.state.ledger?.history ?? []).toHaveLength(0)
+  })
+
   test("structured ledger preserves rejected history with reasons", () => {
     const context = new ContextManager()
     context.setLedger({

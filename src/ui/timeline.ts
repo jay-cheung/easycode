@@ -26,6 +26,7 @@ export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
   | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number }
   | { type: "provider_metrics"; metrics: ProviderRunMetrics }
+  | { type: "repo_map"; status: "succeeded" | "failed"; cacheHit?: boolean; files?: number; relevantFiles?: number; cachePath?: string; error?: string }
   | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
   | { type: "tool_call"; call: ToolCall }
@@ -77,6 +78,18 @@ export class TimelineRenderer {
       this.closeThought()
       this.closeAnswer()
       this.output.write(formatProviderMetrics(event.metrics, (text) => this.title("thought", text)))
+      return
+    }
+    if (event.type === "repo_map") {
+      this.closeThought()
+      this.closeAnswer()
+      if (event.status === "succeeded") {
+        const cache = event.cacheHit ? "cache hit" : "refreshed"
+        const relevant = event.relevantFiles === undefined ? "" : `, relevant=${event.relevantFiles}`
+        this.output.write(`\n${this.title("tool", "● repo_map prewarm")} ${cache}, files=${event.files ?? 0}${relevant}, path=${event.cachePath ?? "-"}\n`)
+      } else {
+        this.output.write(`\n${this.title("tool", "● repo_map prewarm")} failed${event.error ? `: ${event.error}` : ""}\n`)
+      }
       return
     }
     if (event.type === "reasoning_delta") {

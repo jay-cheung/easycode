@@ -58,6 +58,7 @@ describe("agent integration", () => {
   test("prewarms repo map before the provider turn", async () => {
     const root = await fixture()
     let cacheExistedAtProvider = false
+    const events: RunUiEvent[] = []
     const provider: Provider = {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
@@ -66,10 +67,11 @@ describe("agent integration", () => {
       },
     }
 
-    const result = await new AgentRunner({ root, provider }).run("Inspect current code", "build")
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event) }).run("Inspect current code", "build")
 
     expect(result.status).toBe("completed")
     expect(cacheExistedAtProvider).toBe(true)
+    expect(events.some((event) => event.type === "repo_map" && event.status === "succeeded" && event.cachePath === ".easycode/cache/repo-map.json")).toBe(true)
     expect(result.messages.some((message) => message.parts.some((part) => part.type === "text" && part.text.includes("Done.")))).toBe(true)
     await rm(root, { recursive: true, force: true })
   })

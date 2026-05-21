@@ -462,11 +462,17 @@ function mergeLedger(current: StructuredContextLedger | undefined, patch: Contex
   for (const record of [...incoming.current, ...incoming.history]) {
     const key = ledgerRecordKey(record)
     const replaced: LedgerRecord[] = []
+    let alreadyCurrent = false
     next.current = next.current.filter((existing) => {
       if (ledgerRecordKey(existing) !== key) return true
+      if (sameLedgerRecordContent(existing, record)) {
+        alreadyCurrent = true
+        return true
+      }
       replaced.push(existing)
       return false
     })
+    if (alreadyCurrent) continue
     for (const existing of replaced) {
       const status = record.status === "current" ? "superseded" : record.status
       next.history.push({ ...existing, status, updatedAtTurn: Math.max(existing.updatedAtTurn, record.updatedAtTurn), supersedes: uniqueStrings([...(existing.supersedes ?? []), record.id]) })
@@ -475,6 +481,16 @@ function mergeLedger(current: StructuredContextLedger | undefined, patch: Contex
     else next.history.push(record)
   }
   return normalizeStructuredLedger(next)
+}
+
+function sameLedgerRecordContent(left: LedgerRecord, right: LedgerRecord) {
+  return left.kind === right.kind &&
+    left.subject === right.subject &&
+    left.value === right.value &&
+    left.status === right.status &&
+    (left.reason ?? "") === (right.reason ?? "") &&
+    scopeKey(left.scope) === scopeKey(right.scope) &&
+    evidenceKey(left.evidence) === evidenceKey(right.evidence)
 }
 
 function emptyLedger(): StructuredContextLedger {
@@ -627,7 +643,7 @@ function formatLedgerRecord(record: LedgerRecord) {
   const scope = formatScope(record.scope)
   if (scope) parts.push(`scope: ${scope}`)
   if (record.reason) parts.push(`reason: ${record.reason}`)
-  if (record.evidence) parts.push(`evidence: ${record.evidence.source}${record.evidence.toolCallID ? `:${record.evidence.toolCallID.slice(0, 12)}` : ""}`)
+  if (record.evidence) parts.push(`evidence: ${record.evidence.source}`)
   return parts.join(" | ")
 }
 
@@ -653,6 +669,11 @@ function scopeKey(scope: LedgerScope | undefined) {
     symbols: [...(scope.symbols ?? [])].sort(),
     topics: [...(scope.topics ?? [])].sort(),
   })
+}
+
+function evidenceKey(evidence: LedgerEvidence | undefined) {
+  if (!evidence) return ""
+  return evidence.source
 }
 
 function normalizeLedgerScope(scope: LedgerScope | undefined) {
