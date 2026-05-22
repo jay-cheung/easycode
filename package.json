@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "bun run src/cli.ts",
-    "dev": "bun run src/cli.ts build --provider deepseek",
+    "dev": "bun run src/cli.ts build --provider deepseek --logger",
     "dev:plan": "bun run src/cli.ts plan --provider deepseek --logger",
     "dev:build": "bun run src/cli.ts build --provider deepseek --logger",
     "test": "bun test",
