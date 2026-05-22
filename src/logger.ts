@@ -1,3 +1,6 @@
+import path from "node:path"
+import { appendFileSync, mkdirSync } from "node:fs"
+
 export type LogEventType = "state" | "data" | "context" | "provider" | "tool" | "error"
 
 export type LogEvent = {
@@ -7,28 +10,38 @@ export type LogEvent = {
   detail?: Record<string, unknown>
 }
 
-export type Logger = (event: LogEvent) => void
+export type Logger = ((event: LogEvent) => void) & { filePath?: string; transcriptFilePath?: string }
 
-let stdoutLineOpen = false
+export type LoggerOptions = {
+  root?: string
+  session?: string
+}
 
 export function emitLog(logger: Logger | undefined, event: Omit<LogEvent, "at">) {
   if (!logger) return
   logger({ at: Date.now(), ...event })
 }
 
-export function createLogger(): Logger {
-  return (event) => {
-    if (stdoutLineOpen) {
-      process.stdout.write("\n")
-      stdoutLineOpen = false
+export function createLogger(options: LoggerOptions = {}): Logger {
+  const root = options.root ?? process.cwd()
+  const session = safeLogSegment(options.session ?? "default")
+  const dir = path.join(root, ".easycode", "logs", "sessions")
+  const filePath = path.join(dir, `${session}.jsonl`)
+  const transcriptFilePath = path.join(dir, `${session}.txt`)
+  mkdirSync(dir, { recursive: true })
+  let transcriptTurn = 0
+  let previousTranscriptInput = ""
+  const logger = ((event: LogEvent) => {
+    appendFileSync(filePath, `${JSON.stringify(event)}\n`)
+    if (event.type === "provider" && event.name === "provider.transcript") {
+      transcriptTurn += 1
+      appendFileSync(transcriptFilePath, formatTranscriptTurn(transcriptTurn, event, previousTranscriptInput))
+      previousTranscriptInput = stringDetail(event.detail?.input)
     }
-    const write = event.type === "error" ? console.error : console.info
-    write(formatLogEvent(event))
-  }
-}
-
-export function markStdoutText(text: string) {
-  stdoutLineOpen = text.length > 0 && !text.endsWith("\n")
+  }) as Logger
+  logger.filePath = filePath
+  logger.transcriptFilePath = transcriptFilePath
+  return logger
 }
 
 export function formatLogEvent(event: LogEvent) {
@@ -38,4 +51,92 @@ export function formatLogEvent(event: LogEvent) {
   if (event.type === "provider" && (event.name === "provider.response" || event.name === "provider.response.raw")) return `\x1b[1;33m${line}\x1b[0m`
   if (event.type === "state") return `\x1b[1;36m${line}\x1b[0m`
   return line
+}
+
+function safeLogSegment(value: string) {
+  const safe = value.trim().replace(/[^A-Za-z0-9_.-]/g, "_")
+  if (!safe) return "default"
+  return safe
+}
+
+function formatTranscriptTurn(turn: number, event: LogEvent, previousInput = "") {
+  const detail = event.detail ?? {}
+  return [
+    transcriptHeader(`turn${turn}`),
+    transcriptHeader("input"),
+    transcriptHeader("cached"),
+    cachedInputText(detail, previousInput),
+    transcriptHeader("cache miss"),
+    cacheMissInputText(detail),
+    transcriptHeader("output"),
+    stringDetail(detail.output),
+    transcriptHeader("hit rate"),
+    hitRateLine(detail),
+    "",
+  ].join("\n")
+}
+
+function cachedInputText(detail: Record<string, unknown>, previousInput: string) {
+  const cachedInput = stringDetail(detail.cachedInput)
+  const cacheHitTokens = usageNumber(detail, "cacheHitTokens") ?? 0
+  const currentInput = stringDetail(detail.input)
+  const commonPrefix = previousInput ? commonPrefixLength(previousInput, currentInput) : 0
+  const lines = [
+    `provider reported cached tokens: ${cacheHitTokens}`,
+    "exact cached text span: unavailable from provider",
+  ]
+  if (previousInput) lines.push(`common prefix with previous turn: chars=${commonPrefix}, estimated_tokens=${estimateTextTokens(currentInput.slice(0, commonPrefix))}`)
+  lines.push("estimated cached prefix:")
+  lines.push(cachedInput || "(none)")
+  return lines.join("\n")
+}
+
+function cacheMissInputText(detail: Record<string, unknown>) {
+  const uncachedInput = stringDetail(detail.uncachedInput)
+  if (uncachedInput) return uncachedInput
+  return stringDetail(detail.input)
+}
+
+function hitRateLine(detail: Record<string, unknown>) {
+  const inputTokens = usageNumber(detail, "inputTokens")
+  const cacheHitTokens = usageNumber(detail, "cacheHitTokens") ?? 0
+  const cacheMissTokens = usageNumber(detail, "cacheMissTokens")
+  const outputTokens = usageNumber(detail, "outputTokens")
+  const hitRate = inputTokens && inputTokens > 0 ? `${((cacheHitTokens / inputTokens) * 100).toFixed(1)}%` : "n/a"
+  return [
+    hitRate,
+    `cache hit: ${cacheHitTokens > 0 ? "yes" : "no"}`,
+    inputTokens === undefined ? undefined : `input=${inputTokens}`,
+    `cached=${cacheHitTokens}`,
+    cacheMissTokens === undefined ? undefined : `miss=${cacheMissTokens}`,
+    outputTokens === undefined ? undefined : `output=${outputTokens}`,
+  ].filter((part): part is string => Boolean(part)).join(", ")
+}
+
+function usageNumber(detail: Record<string, unknown>, key: string) {
+  const usage = detail.usage
+  if (!usage || typeof usage !== "object") return undefined
+  const value = (usage as Record<string, unknown>)[key]
+  return typeof value === "number" ? value : undefined
+}
+
+function stringDetail(value: unknown) {
+  return typeof value === "string" ? value : value === undefined || value === null ? "" : String(value)
+}
+
+function transcriptHeader(label: string) {
+  return `-------${label}---------`
+}
+
+function commonPrefixLength(left: string, right: string) {
+  let index = 0
+  const length = Math.min(left.length, right.length)
+  while (index < length && left[index] === right[index]) index += 1
+  return index
+}
+
+function estimateTextTokens(text: string) {
+  let tokens = 0
+  for (const char of text) tokens += /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/u.test(char) ? 0.6 : 0.3
+  return Math.ceil(tokens)
 }

@@ -90,8 +90,9 @@ describe("context", () => {
   test("compose includes only skill descriptions", () => {
     const context = new ContextManager()
     const messages = context.compose({ agent: createAgent("plan"), skills: [{ name: "demo", description: "Demo skill", location: "x", content: "hidden" }], tools: [] })
-    expect(messages[0].content).toContain("demo: Demo skill")
-    expect(messages[0].content).not.toContain("hidden")
+    expect(messages[0].content).not.toContain("demo: Demo skill")
+    expect(messages[1].content).toContain("demo: Demo skill")
+    expect(messages[1].content).not.toContain("hidden")
   })
 
   test("compose lists tools without duplicating provider schemas in the system prompt", () => {
@@ -137,8 +138,23 @@ describe("context", () => {
     expect(messages[0].content).toContain("Context execution contract")
     expect(messages[1]).toMatchObject({ role: "system" })
     expect(messages[1].content).toContain("<context_state_ledger>")
+    expect(messages[1].content).not.toContain("current:")
+    expect(messages[1].content).not.toContain("history:")
     expect(messages[1].content).toContain("User moved from New York to London.")
     expect(messages[2]).toMatchObject({ role: "user", content: "Which timezone now?" })
+  })
+
+  test("ledger renders as one chronological list with latest records last", () => {
+    const context = new ContextManager()
+    context.setLedger({
+      current: [ledgerRecord("intent", "latest", "latest value", "current", 3)],
+      history: [ledgerRecord("intent", "older", "older value", "superseded", 1)],
+    })
+
+    const ledger = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).find((message) => message.content.includes("<context_state_ledger>"))?.content ?? ""
+    expect(ledger).not.toContain("current:")
+    expect(ledger).not.toContain("history:")
+    expect(ledger.indexOf("older value")).toBeLessThan(ledger.indexOf("latest value"))
   })
 
   test("ledger updates replace keyed current-state entries", () => {

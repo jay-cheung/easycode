@@ -9,14 +9,7 @@ export function renderContextLedger(ledger: StructuredContextLedger | ContextLed
   const normalized = normalizedLedger(ledger)
   if (!normalized) return ""
   const lines = ["<context_state_ledger>"]
-  if (normalized.current.length) {
-    lines.push("current:")
-    for (const record of normalized.current) lines.push(`- ${formatLedgerRecord(record)}`)
-  }
-  if (normalized.history.length) {
-    lines.push("history:")
-    for (const record of normalized.history) lines.push(`- ${formatLedgerRecord(record)}`)
-  }
+  for (const record of ledgerRecordsInTimelineOrder(normalized)) lines.push(`- ${formatLedgerRecord(record)}`)
   lines.push("</context_state_ledger>")
   return lines.join("\n")
 }
@@ -77,6 +70,15 @@ function sameLedgerRecordContent(left: LedgerRecord, right: LedgerRecord) {
 
 function emptyLedger(): StructuredContextLedger {
   return { current: [], history: [] }
+}
+
+function ledgerRecordsInTimelineOrder(ledger: StructuredContextLedger) {
+  return [...ledger.history, ...ledger.current].sort((left, right) =>
+    left.updatedAtTurn - right.updatedAtTurn ||
+    left.createdAtTurn - right.createdAtTurn ||
+    left.subject.localeCompare(right.subject) ||
+    left.id.localeCompare(right.id)
+  )
 }
 
 const maxHistoryRecords = 25
@@ -350,4 +352,3 @@ export function stableStringify(value: unknown): string {
   if (!value || typeof value !== "object") return JSON.stringify(value)
   return `{${Object.entries(value).sort(([left], [right]) => left.localeCompare(right)).map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`).join(",")}}`
 }
-

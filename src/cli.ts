@@ -4,7 +4,7 @@ import { createInterface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner } from "./agent"
 import { imageLabel, imagePartFromInput } from "./image"
-import { createLogger, emitLog, markStdoutText, type Logger } from "./logger"
+import { createLogger, emitLog } from "./logger"
 import type { AgentMode, ImagePart } from "./message"
 import { defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders, type ProviderName } from "./provider"
@@ -172,38 +172,40 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
 
 if (import.meta.main) {
   const args = parseArgs(process.argv.slice(2))
-  const logger = args.logger ? createLogger() : undefined
-  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session: args.session, once: args.once } })
   const loadedEnvVars = await loadEnvFile(args.root)
-  emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
-  const status = args.once ? await runOnce(args, logger) : await runSession(args, logger)
+  const status = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
   process.exit(status === "completed" ? 0 : 1)
 }
 
-async function runOnce(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
+async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   if (!args.prompt) throw new Error("Prompt is required")
+  const logger = args.logger ? createLogger({ root: args.root, session: args.session ?? "once" }) : undefined
+  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session: args.session, once: args.once } })
+  emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
   const reader = new LineReader(createInterface({ input, output }))
   const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
   const timeline = new TimelineRenderer(output)
-  const onEvent = timelineEventHandler(timeline, Boolean(logger))
+  const onEvent = timelineEventHandler(timeline)
   try {
     const controller = new AbortController()
     const permission = permissionService(args.mode, reader, () => controller.abort())
-    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent }).run(args.prompt, args.mode, { signal: controller.signal })
-    if (!logger) timeline.finish()
-    if (logger) writeResult(result.text, true)
+    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent }).run(args.prompt, args.mode, { signal: controller.signal })
+    timeline.finish()
     return result.status
   } finally {
     reader.close()
   }
 }
 
-async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | undefined) {
+async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   const store = new SessionStore(args.root)
   const reader = new LineReader(createInterface({ input, output }))
   try {
     const session = await selectSession(args.session, store, reader)
     if (!session) return "completed"
+    const logger = args.logger ? createLogger({ root: args.root, session }) : undefined
+    emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, once: args.once } })
+    emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
     emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
     const context = await store.context(session)
     const storedSettings = await store.settings(session, args.provider)
@@ -216,9 +218,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
     let runner: ReturnType<typeof createRunner> | undefined
     let activeAbort: AbortController | undefined
     const timeline = new TimelineRenderer(output)
-    const onEvent = timelineEventHandler(timeline, Boolean(logger))
+    const onEvent = timelineEventHandler(timeline)
     const getRunner = () => {
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onTextDelta: logger ? textDeltaWriter() : undefined, onEvent })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onEvent })
       return runner
     }
     while (true) {
@@ -249,8 +251,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, logger: Logger | u
       const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
       runInput.stop()
       activeAbort = undefined
-      if (!logger) timeline.finish()
-      if (logger) writeResult(result.text, true)
+      timeline.finish()
       await store.save(session, activeRunner.context, activeSettings)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
         activeMode = "build"
@@ -464,23 +465,8 @@ Allow sandbox bypass for this command? [Y]es/[a]lways/[n]o`
   return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
 }
 
-function textDeltaWriter() {
-  return (text: string) => {
-    process.stdout.write(text)
-    markStdoutText(text)
-  }
-}
-
-function timelineEventHandler(timeline: TimelineRenderer, loggerEnabled: boolean) {
+function timelineEventHandler(timeline: TimelineRenderer) {
   return (event: RunUiEvent) => {
-    if (loggerEnabled && event.type !== "provider_metrics") return
     timeline.event(event)
-  }
-}
-
-function writeResult(text: string, loggerEnabled: boolean) {
-  if (text && !text.endsWith("\n")) {
-    process.stdout.write("\n")
-    markStdoutText("\n")
   }
 }

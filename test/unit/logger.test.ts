@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtemp, rm } from "node:fs/promises"
+import path from "node:path"
+import os from "node:os"
 import { createLogger, formatLogEvent, type LogEvent } from "../../src/logger"
 
 function event(type: LogEvent["type"]): LogEvent {
@@ -6,7 +9,8 @@ function event(type: LogEvent["type"]): LogEvent {
 }
 
 describe("logger", () => {
-  test("writes only error events to stderr", () => {
+  test("writes events to the session log file without terminal output", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-logger-"))
     const infoLines: string[] = []
     const errorLines: string[] = []
     const originalInfo = console.info
@@ -14,17 +18,50 @@ describe("logger", () => {
     console.info = (line?: unknown) => infoLines.push(String(line))
     console.error = (line?: unknown) => errorLines.push(String(line))
     try {
-      const logger = createLogger()
+      const logger = createLogger({ root, session: "demo/session" })
       logger(event("data"))
       logger(event("state"))
       logger(event("error"))
+      logger({
+        at: 2,
+        type: "provider",
+        name: "provider.transcript",
+        detail: {
+          input: "cachedmiss",
+          cachedInput: "cached",
+          uncachedInput: "miss",
+          output: "answer",
+          usage: { inputTokens: 10, cacheHitTokens: 4, cacheMissTokens: 6, outputTokens: 2 },
+        },
+      })
+      logger({
+        at: 3,
+        type: "provider",
+        name: "provider.transcript",
+        detail: {
+          input: "cachedmiss2",
+          cachedInput: "cached",
+          uncachedInput: "miss2",
+          output: "answer2",
+          usage: { inputTokens: 11, cacheHitTokens: 4, cacheMissTokens: 7, outputTokens: 3 },
+        },
+      })
+      expect(logger.filePath).toBe(path.join(root, ".easycode", "logs", "sessions", "demo_session.jsonl"))
+      expect(logger.transcriptFilePath).toBe(path.join(root, ".easycode", "logs", "sessions", "demo_session.txt"))
     } finally {
       console.info = originalInfo
       console.error = originalError
     }
-    expect(infoLines).toHaveLength(2)
-    expect(errorLines).toHaveLength(1)
-    expect(errorLines[0]).toContain("\"type\":\"error\"")
+    expect(infoLines).toHaveLength(0)
+    expect(errorLines).toHaveLength(0)
+    const lines = (await Bun.file(path.join(root, ".easycode", "logs", "sessions", "demo_session.jsonl")).text()).trim().split("\n")
+    expect(lines).toHaveLength(5)
+    expect(JSON.parse(lines[2])).toMatchObject({ type: "error", name: "error.event" })
+    const transcript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "demo_session.txt")).text()
+    expect(transcript).toContain("-------turn1---------\n-------input---------\n-------cached---------\nprovider reported cached tokens: 4\nexact cached text span: unavailable from provider\nestimated cached prefix:\ncached\n-------cache miss---------\nmiss\n-------output---------\nanswer\n-------hit rate---------\n40.0%, cache hit: yes, input=10, cached=4, miss=6, output=2")
+    expect(transcript).toContain("-------turn2---------")
+    expect(transcript).toContain("common prefix with previous turn: chars=10, estimated_tokens=3")
+    await rm(root, { recursive: true, force: true })
   })
 
   test("highlights state events", () => {

@@ -1,5 +1,5 @@
 import type { AgentRunState } from "./agent"
-import type { Message, ToolCall } from "./message"
+import type { Message, ProviderInputMessage, ToolCall } from "./message"
 import { ProviderError, type Provider, type ProviderEvent } from "./provider"
 import type { SkillServiceLike } from "./skill"
 import { estimateTextTokens, type ContextLedger, type ContextManagerLike } from "./context"
@@ -79,17 +79,35 @@ export class LoggingRunAspect implements RunAspect {
     const logger = this.logger
     return {
       name: provider.name,
+      model: provider.model,
+      capabilities: provider.capabilities,
       async *stream(input) {
         let totalLength = 0
         let reasoningContent = ""
         let output = ""
+        let usage: ProviderUsageLog | undefined
         const toolCalls: Array<{ tool: string; callID: string }> = []
         const summaryRequest = input.prompt.includes("Summarize conversation")
+        const inputText = renderProviderInput(input.providerMessages)
         emitLog(logger, { type: "provider", name: "provider.input_tokens", detail: providerInputTokenEstimate(input.providerMessages, input.tools) })
+        emitLog(logger, {
+          type: "provider",
+          name: "provider.input",
+          detail: {
+            provider: provider.name,
+            model: provider.model,
+            mode: input.mode,
+            prompt: input.prompt,
+            tools: input.tools.map((tool) => tool.name),
+            input: inputText,
+            messages: input.providerMessages.map((message) => ({ role: message.role, content: message.content })),
+          },
+        })
         if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_request", detail: { prompt: input.prompt, content: input.providerMessages[0]?.content ?? "" } })
         try {
           for await (const event of provider.stream(input)) {
-            logProviderEvent(logger, event, totalLength)
+            if (event.type === "usage") usage = providerUsageLog(event)
+            logProviderEvent(logger, event, totalLength, inputText)
             if (event.type === "reasoning_delta") {
               reasoningContent += event.text
             }
@@ -105,9 +123,11 @@ export class LoggingRunAspect implements RunAspect {
             yield event
           }
           emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: output.length, output, toolCalls } })
+          emitProviderTranscript(logger, { provider: provider.name, model: provider.model, prompt: input.prompt, input: inputText, output, reasoningContent, toolCalls, usage })
           if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_output", detail: { summary: output } })
         } catch (error) {
           if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: error.output.length, output: error.output, toolCalls } })
+          emitProviderTranscript(logger, { provider: provider.name, model: provider.model, prompt: input.prompt, input: inputText, output, reasoningContent, toolCalls, usage, error: providerErrorDetail(provider.name, error) })
           emitLog(logger, { type: "error", name: "provider.error", detail: providerErrorDetail(provider.name, error) })
           throw error
         }
@@ -185,7 +205,29 @@ function providerInputTokenEstimate(providerMessages: Array<{ content: string }>
   }
 }
 
-function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefore: number) {
+type ProviderUsageLog = {
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens?: number
+  cacheMissTokens?: number
+  totalTokens?: number
+  reasoningTokens?: number
+  cacheHit: boolean
+}
+
+function providerUsageLog(event: Extract<ProviderEvent, { type: "usage" }>): ProviderUsageLog {
+  return {
+    inputTokens: event.inputTokens,
+    outputTokens: event.outputTokens,
+    cacheHitTokens: event.cacheHitTokens,
+    cacheMissTokens: event.cacheMissTokens,
+    totalTokens: event.totalTokens,
+    reasoningTokens: event.reasoningTokens,
+    cacheHit: (event.cacheHitTokens ?? 0) > 0,
+  }
+}
+
+function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefore: number, inputText = "") {
   if (event.type === "response" && !event.response.ok) emitLog(logger, { type: "provider", name: "provider.response", detail: { body: event.response.body ?? "" } })
   if (event.type === "response_raw" && rawProviderResponseHasError(event.response)) emitLog(logger, { type: "provider", name: "provider.response.raw", detail: { response: event.response } })
   if (event.type === "failure") {
@@ -194,20 +236,92 @@ function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefor
   }
   if (event.type === "tool_call") emitLog(logger, { type: "provider", name: "provider.tool_call", detail: { tool: event.call.name, callID: event.call.id } })
   if (event.type === "usage") {
+    const usage = providerUsageLog(event)
+    const cached = cachedInputMark(inputText, usage.cacheHitTokens)
     emitLog(logger, {
       type: "provider",
       name: "provider.usage",
       detail: {
-        inputTokens: event.inputTokens,
-        outputTokens: event.outputTokens,
-        cacheHitTokens: event.cacheHitTokens,
-        cacheMissTokens: event.cacheMissTokens,
-        totalTokens: event.totalTokens,
-        reasoningTokens: event.reasoningTokens,
+        ...usage,
+        cachedInput: cached.cachedInput,
+        uncachedInput: cached.uncachedInput,
+        markedInput: cached.markedInput,
       },
     })
   }
   if (event.type === "done") emitLog(logger, { type: "provider", name: "provider.done" })
+}
+
+function emitProviderTranscript(logger: Logger, input: {
+  provider: string
+  model?: string
+  prompt: string
+  input: string
+  output: string
+  reasoningContent: string
+  toolCalls: Array<{ tool: string; callID: string }>
+  usage?: ProviderUsageLog
+  error?: Record<string, unknown>
+}) {
+  const cached = cachedInputMark(input.input, input.usage?.cacheHitTokens)
+  emitLog(logger, {
+    type: "provider",
+    name: "provider.transcript",
+    detail: {
+      provider: input.provider,
+      model: input.model,
+      prompt: input.prompt,
+      input: input.input,
+      output: input.output,
+      reasoningContent: input.reasoningContent,
+      toolCalls: input.toolCalls,
+      usage: input.usage,
+      cacheHit: input.usage?.cacheHit ?? false,
+      cachedInput: cached.cachedInput,
+      uncachedInput: cached.uncachedInput,
+      markedInput: cached.markedInput,
+      ...(input.error ? { error: input.error } : {}),
+    },
+  })
+}
+
+function renderProviderInput(messages: ProviderInputMessage[]) {
+  return messages.map((message, index) => `<message index="${index}" role="${message.role}">\n${message.content}\n</message>`).join("\n\n")
+}
+
+function cachedInputMark(input: string, cacheHitTokens = 0) {
+  if (cacheHitTokens <= 0) {
+    return {
+      cacheHit: false,
+      cachedInput: "",
+      uncachedInput: input,
+      markedInput: `<cache_miss_input>\n${input}\n</cache_miss_input>`,
+    }
+  }
+  const splitIndex = cachedPrefixIndex(input, cacheHitTokens)
+  const cachedInput = input.slice(0, splitIndex)
+  const uncachedInput = input.slice(splitIndex)
+  return {
+    cacheHit: true,
+    cachedInput,
+    uncachedInput,
+    markedInput: `<cached_input cache_hit="true" tokens="${cacheHitTokens}">\n${cachedInput}\n</cached_input>\n<cache_miss_input>\n${uncachedInput}\n</cache_miss_input>`,
+  }
+}
+
+function cachedPrefixIndex(input: string, cacheHitTokens: number) {
+  let tokens = 0
+  let index = 0
+  for (const char of input) {
+    tokens += estimatedCharTokens(char)
+    index += char.length
+    if (Math.ceil(tokens) >= cacheHitTokens) return index
+  }
+  return input.length
+}
+
+function estimatedCharTokens(char: string) {
+  return /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/u.test(char) ? 0.6 : 0.3
 }
 
 function rawProviderResponseHasError(response: unknown) {

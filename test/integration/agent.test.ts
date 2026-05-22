@@ -91,6 +91,32 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("logger records actual provider prompt, output, and cached input marking", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "text_delta", text: "cached answer" }
+        yield { type: "usage", inputTokens: 100, outputTokens: 10, cacheHitTokens: 60, cacheMissTokens: 40 }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Use cached context", "build")
+    const inputEvent = events.find((event) => event.type === "provider" && event.name === "provider.input")
+    const transcript = events.find((event) => event.type === "provider" && event.name === "provider.transcript")
+    const usage = events.find((event) => event.type === "provider" && event.name === "provider.usage")
+
+    expect(result.status).toBe("completed")
+    expect(inputEvent?.detail?.prompt).toBe("Use cached context")
+    expect(String(inputEvent?.detail?.input)).toContain("Use cached context")
+    expect(transcript?.detail?.output).toBe("cached answer")
+    expect(transcript?.detail?.cacheHit).toBe(true)
+    expect(String(transcript?.detail?.markedInput)).toContain("<cached_input cache_hit=\"true\" tokens=\"60\">")
+    expect(usage?.detail?.cacheHit).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("emits provider metrics with APIx usage aggregation", async () => {
     const root = await fixture()
     const events: RunUiEvent[] = []
