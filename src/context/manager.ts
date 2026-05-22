@@ -20,16 +20,21 @@ const defaultMaxSteps = 20
 const minMaxTokens = 16_000
 const minMaxSteps = 8
 const maxMaxSteps = 30
+const defaultSafetyMultiplier = 1.6
+const minSafetyMultiplier = 1
+const maxSafetyMultiplier = 4
 
 export class ContextManager implements ContextManagerLike {
   readonly state: ContextState
   readonly compactPreserveTokens: number
   private readonly pricing: CachePricing
   private readonly minTokenFloor: number
+  private readonly safetyMultiplier: number
   private responseReserveTokens: number
   private contextWindowTokens: number
   private totalStats: WindowStats = emptyWindowStats()
   private _strategyState: ContextStrategyState
+  private lastStaticPrefixTokens = 0
 
   constructor(options: ContextOptions = {}) {
     this.minTokenFloor = options.maxTokens !== undefined && options.maxTokens < minMaxTokens ? Math.max(1, Math.round(options.maxTokens)) : minMaxTokens
@@ -38,6 +43,7 @@ export class ContextManager implements ContextManagerLike {
     this.responseReserveTokens = options.responseReserveTokens ?? Math.max(2_000, Math.min(8_000, Math.floor(maxTokens * 0.2)))
     this.pricing = options.pricing ?? defaultCachePricing()
     this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
+    this.safetyMultiplier = clampNumber(options.tokenEstimateSafetyMultiplier ?? defaultSafetyMultiplier, minSafetyMultiplier, maxSafetyMultiplier)
     this._strategyState = {
       staticContextStrategy: "every-step",
       maxTokens,
@@ -103,7 +109,7 @@ export class ContextManager implements ContextManagerLike {
   }
 
   needsCompaction() {
-    return this.state.tokenEstimate > this.state.maxTokens * this.compactAt
+    return this.compactionBasis() > this.state.maxTokens * this.compactAt
   }
 
   compactionInput() {
@@ -134,6 +140,7 @@ export class ContextManager implements ContextManagerLike {
     const providerMessages = this.compose(input)
     const ledgerStats = this.ledgerStats()
     const staticPrefixTokens = estimateStaticPrefixTokens(providerMessages)
+    this.lastStaticPrefixTokens = staticPrefixTokens
     this.maxStaticPrefixTokens = Math.max(this.maxStaticPrefixTokens, staticPrefixTokens)
     return {
       providerMessages,
@@ -170,15 +177,21 @@ export class ContextManager implements ContextManagerLike {
         messages.push(textMessage("system", [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`].join("\n\n")))
       }
     }
-    const ledger = this.renderSelectedLedger()
-    if (ledger) messages.push(textMessage("system", ledger))
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
     messages.push(...this.state.messages)
-    return messagesToProviderInput(messages, { largeOutputLimit: Math.ceil(this._strategyState.toolResultTokenBudget / 0.3) })
+    const ledger = this.renderSelectedLedger()
+    if (ledger) messages.push(textMessage("system", ledger))
+    return messagesToProviderInput(messages, { largeOutputLimit: this.largeOutputLimit() })
   }
 
   private recalculateTokenEstimate() {
-    this.state.tokenEstimate = this.estimate(this.state.messages) + estimateSummaryTokens(this.state.summary) + estimateTextTokens(this.renderSelectedLedger())
+    const messageProviderInput = messagesToProviderInput(this.state.messages, { largeOutputLimit: this.largeOutputLimit() })
+    const messageTokens = estimateTextTokens(messageProviderInput.map((message) => message.content).join("\n"))
+    this.state.tokenEstimate = messageTokens + estimateSummaryTokens(this.state.summary) + estimateTextTokens(this.renderSelectedLedger())
+  }
+
+  private largeOutputLimit() {
+    return Math.ceil(this._strategyState.toolResultTokenBudget / 0.3)
   }
 
   private maxStaticPrefixTokens = 0
@@ -205,6 +218,9 @@ export class ContextManager implements ContextManagerLike {
     const stats = this.ledgerStats()
     return {
       tokenEstimate: this.state.tokenEstimate,
+      compactionBasis: this.compactionBasis(),
+      staticPrefixTokens: this.lastStaticPrefixTokens,
+      safetyMultiplier: this.safetyMultiplier,
       maxTokens: this.state.maxTokens,
       compactAt: this.compactAt,
       responseReserveTokens: this.responseReserveTokens,
@@ -213,6 +229,12 @@ export class ContextManager implements ContextManagerLike {
       selectedLedgerRecords: stats.selectedRecords,
       ledgerConflicts: stats.validationIssues,
     }
+  }
+
+  private compactionBasis() {
+    const inflatedEstimate = Math.ceil(this.state.tokenEstimate * this.safetyMultiplier) + this.lastStaticPrefixTokens
+    const actual = this.state.latestActualInputTokens ?? 0
+    return Math.max(inflatedEstimate, actual)
   }
 
   private selectedLedger() {

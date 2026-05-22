@@ -121,7 +121,7 @@ describe("context", () => {
     expect(second.staticPrefixTokens).toBe(second.currentStaticPrefixTokens)
   })
 
-  test("compose injects structured context ledger before dynamic history", () => {
+  test("compose injects structured context ledger after dynamic history to protect prompt cache", () => {
     const context = new ContextManager()
     context.setLedger({
       current: [
@@ -136,12 +136,12 @@ describe("context", () => {
     const messages = context.compose({ agent: createAgent("build"), skills: [], tools: [] })
     expect(messages[0]).toMatchObject({ role: "system" })
     expect(messages[0].content).toContain("Context execution contract")
-    expect(messages[1]).toMatchObject({ role: "system" })
-    expect(messages[1].content).toContain("<context_state_ledger>")
-    expect(messages[1].content).not.toContain("current:")
-    expect(messages[1].content).not.toContain("history:")
-    expect(messages[1].content).toContain("User moved from New York to London.")
-    expect(messages[2]).toMatchObject({ role: "user", content: "Which timezone now?" })
+    expect(messages[1]).toMatchObject({ role: "user", content: "Which timezone now?" })
+    expect(messages[2]).toMatchObject({ role: "system" })
+    expect(messages[2].content).toContain("<context_state_ledger>")
+    expect(messages[2].content).not.toContain("current:")
+    expect(messages[2].content).not.toContain("history:")
+    expect(messages[2].content).toContain("User moved from New York to London.")
   })
 
   test("ledger renders as one chronological list with latest records last", () => {

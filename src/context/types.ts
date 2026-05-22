@@ -62,6 +62,7 @@ export type ContextOptions = {
   responseReserveTokens?: number
   contextWindowTokens?: number
   pricing?: CachePricing
+  tokenEstimateSafetyMultiplier?: number
 }
 
 export type ContextStrategyState = {
@@ -90,6 +91,9 @@ export type ContextCacheStats = {
 
 export type ContextBudgetStats = {
   tokenEstimate: number
+  compactionBasis: number
+  staticPrefixTokens: number
+  safetyMultiplier: number
   maxTokens: number
   compactAt: number
   responseReserveTokens: number
