@@ -1,5 +1,6 @@
 export * from "./types"
 export * from "./cli"
 export * from "./repo-map"
+export * from "./code-index"
 export * from "./parsing"
 export * from "./language"

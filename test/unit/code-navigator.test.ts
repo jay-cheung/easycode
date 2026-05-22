@@ -84,7 +84,7 @@ describe("code navigator", () => {
     await expect(navigator.rgSearch({ query: "missing", dir: "src" })).resolves.toEqual([])
   })
 
-  test("findDefinition falls back to pure JS search when ast-grep is missing", async () => {
+  test("findDefinition uses the code index when ast-grep is missing", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })
     await Bun.write(path.join(root, "src", "payment.ts"), "export class PaymentService {\n  pay(amount: number): boolean {\n    return true\n  }\n}\n")
@@ -96,7 +96,7 @@ describe("code navigator", () => {
 
     const results = await navigator.findDefinition({ symbol: "PaymentService", language: "typescript" })
     expect(results).toEqual([
-      { filePath: "src/payment.ts", line: 1, preview: "export class PaymentService {" }
+      { filePath: "src/payment.ts", line: 1, preview: "export class PaymentService" }
     ])
   })
 
@@ -113,8 +113,43 @@ describe("code navigator", () => {
     expect(second.cache.hit).toBe(true)
     expect(second.cache.path).toBe(".easycode/cache/repo-map.json")
     expect(await Bun.file(path.join(root, ".easycode", "cache", "repo-map.json")).exists()).toBe(true)
+    expect(await Bun.file(path.join(root, ".easycode", "cache", "code-index", "index.json")).exists()).toBe(true)
     expect(second.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "AuthService", kind: "class" }))
     expect(second.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "login", kind: "method" }))
+  })
+
+  test("code index records graph edges and powers definition/reference lookup", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "auth.ts"), [
+      "import { tokenStore } from './store'",
+      "export class AuthService extends BaseService implements LoginProvider {",
+      "  login(user: string): string {",
+      "    return verifyToken(user)",
+      "  }",
+      "}",
+      "export function verifyToken(user: string): string {",
+      "  return tokenStore.get(user)",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      },
+    })
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+    const index = await Bun.file(path.join(root, ".easycode", "cache", "code-index", "index.json")).json()
+    const definitions = await navigator.findDefinition({ symbol: "verifyToken", language: "typescript" })
+    const references = await navigator.findReferences({ symbol: "verifyToken", language: "typescript" })
+
+    expect(index.files[0]?.imports).toEqual(["./store"])
+    expect(index.files[0]?.exports).toContain("AuthService")
+    expect(index.edges).toContainEqual(expect.objectContaining({ kind: "inherits", to: "BaseService" }))
+    expect(index.edges).toContainEqual(expect.objectContaining({ kind: "implements", to: "LoginProvider" }))
+    expect(index.edges).toContainEqual(expect.objectContaining({ kind: "calls", to: "verifyToken", line: 4 }))
+    expect(definitions).toEqual([{ filePath: "src/auth.ts", line: 7, preview: "export function verifyToken(user: string): string" }])
+    expect(references).toEqual([{ filePath: "src/auth.ts", line: 4, preview: "    return verifyToken(user)" }])
   })
 
   test("repoMap filters symbols and files based on semantic query", async () => {
@@ -150,7 +185,7 @@ describe("code navigator", () => {
     ])
   })
 
-  test("pure JS findDefinition fallback matches symbol declarations", async () => {
+  test("indexed findDefinition matches symbol declarations without external tools", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })
     await Bun.write(path.join(root, "src", "payment.ts"), "export class PaymentService {\n  pay(amount: number): boolean {\n    return true\n  }\n}\n")
@@ -163,7 +198,7 @@ describe("code navigator", () => {
 
     const results = await navigator.findDefinition({ symbol: "PaymentService", language: "typescript" })
     expect(results).toEqual([
-      { filePath: "src/payment.ts", line: 1, preview: "export class PaymentService {" }
+      { filePath: "src/payment.ts", line: 1, preview: "export class PaymentService" }
     ])
   })
 })

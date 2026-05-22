@@ -39,6 +39,52 @@ export type RepoMapResult = {
   }
 }
 
+export type CodeIndexFile = {
+  filePath: string
+  hash: string
+  mtimeMs: number
+  size: number
+  imports: string[]
+  exports: string[]
+}
+
+export type CodeIndexSymbol = {
+  id: string
+  filePath: string
+  name: string
+  kind: string
+  startLine: number
+  endLine: number
+  signature?: string
+}
+
+export type CodeIndexEdgeKind = "imports" | "exports" | "calls" | "inherits" | "implements"
+
+export type CodeIndexEdge = {
+  kind: CodeIndexEdgeKind
+  from: string
+  to: string
+  filePath: string
+  line: number
+  preview?: string
+}
+
+export type CodeIndexResult = {
+  root: string
+  dir: string
+  generatedAt: string
+  generatorVersion: string
+  toolVersions: Record<string, string>
+  files: CodeIndexFile[]
+  symbols: CodeIndexSymbol[]
+  edges: CodeIndexEdge[]
+  cache: {
+    path: string
+    hit: boolean
+    gitIgnored: boolean
+  }
+}
+
 export interface CodeNavigator {
   rgSearch(input: { query: string; dir?: string; fileType?: string; maxResults?: number }): Promise<CodeSearchResult[]>
   readLines(input: { filePath: string; startLine: number; endLine: number }): Promise<CodeRange & { content: string }>

@@ -155,7 +155,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "repo_map",
-    description: "First-choice codebase orientation tool. Generate or read a cached lightweight code skeleton under .easycode/cache/repo-map.json. Use before grep/read when exploring code. Returns paths and symbols only, not function bodies. Supports optional query parameter to dynamically filter and slice symbols by relevance.",
+    description: "First-choice codebase orientation tool. Generate or read a cached lightweight code skeleton under .easycode/cache/repo-map.json. The backing code-index cache is tool-private and must never be returned wholesale to model context. Use before grep/read when exploring code. Returns paths and symbols only, not function bodies. Supports optional query parameter to dynamically filter and slice symbols by relevance.",
     inputSchema: RepoMapInput,
     jsonSchema: objectSchema(
       {
@@ -289,4 +289,3 @@ export function createBuiltinRegistry() {
 
   return registry
 }
-

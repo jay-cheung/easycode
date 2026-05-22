@@ -23,11 +23,11 @@ export function extractSymbols(text: string) {
   return symbols
 }
 
-function normalizeSymbolKind(kind: string) {
+export function normalizeSymbolKind(kind: string) {
   return kind.replace(/^async\s+/, "")
 }
 
-function cleanSignature(line: string) {
+export function cleanSignature(line: string) {
   return line.trim().replace(/\s*\{.*$/, "").replace(/\s+/g, " ")
 }
 

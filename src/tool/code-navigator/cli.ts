@@ -1,12 +1,13 @@
 import path from "node:path"
 import { mkdir, readdir, stat } from "node:fs/promises"
 import type { Sandbox } from "../../sandbox"
-import { codeExtensions, defaultReadLineLimit, ignoredDirs, repoMapCachePath, repoMapGeneratorVersion } from "./constants"
-import { commandFailure, defaultRunner, firstLine, getRgPath } from "./commands"
+import { defaultReadLineLimit, ignoredDirs, repoMapCachePath, repoMapGeneratorVersion } from "./constants"
+import { defaultRunner, firstLine, getRgPath } from "./commands"
 import { definitionPatterns, escapeRegExp, extensionsForLanguage, fileTypeArgs, languageToFileType, normalizeMaxResults, clampInt } from "./language"
 import { parseAstGrepJson, parseRgJson, uniqueSortedResults } from "./parsing"
-import { extractSymbols, hashText, projectIgnoresEasyCode, readCachedRepoMap, repoMapCacheValid, scoreAndFilterRepoMap } from "./repo-map"
-import type { CodeNavigator, CodeRange, CodeSearchResult, CommandRunner, RepoMapEntry, RepoMapResult } from "./types"
+import { codeIndex, findDefinitionsInCodeIndex, findReferencesInCodeIndex, repoMapEntriesFromCodeIndex } from "./code-index"
+import { projectIgnoresEasyCode, readCachedRepoMap, repoMapCacheValid, scoreAndFilterRepoMap } from "./repo-map"
+import type { CodeIndexResult, CodeNavigator, CodeSearchResult, CommandRunner, RepoMapEntry, RepoMapResult } from "./types"
 
 export class CliCodeNavigator implements CodeNavigator {
   constructor(
@@ -53,6 +54,10 @@ export class CliCodeNavigator implements CodeNavigator {
 
   async findDefinition(input: { symbol: string; language?: string; maxResults?: number }) {
     const maxResults = normalizeMaxResults(input.maxResults)
+    const index = await this.codeIndex({ language: input.language })
+    const indexed = findDefinitionsInCodeIndex(index, input.symbol, maxResults)
+    if (indexed.length > 0) return indexed
+
     const language = input.language ?? "typescript"
     const patterns = definitionPatterns(input.symbol)
     const results: CodeSearchResult[] = []
@@ -80,6 +85,11 @@ export class CliCodeNavigator implements CodeNavigator {
   }
 
   async findReferences(input: { symbol: string; language?: string; maxResults?: number }) {
+    const maxResults = normalizeMaxResults(input.maxResults)
+    const index = await this.codeIndex({ language: input.language })
+    const indexed = findReferencesInCodeIndex(index, input.symbol, maxResults)
+    if (indexed.length > 0) return indexed
+
     const query = `\\b${escapeRegExp(input.symbol)}\\b`
     const fileType = languageToFileType(input.language)
     return this.rgSearch({ query, fileType, maxResults: input.maxResults })
@@ -92,6 +102,7 @@ export class CliCodeNavigator implements CodeNavigator {
     const cacheIgnored = await projectIgnoresEasyCode(this.sandbox.root)
     const toolVersions = await this.toolVersions()
     const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
+    const index = await this.codeIndexFromFingerprint({ dir, files: fingerprint.files, toolVersions, useCache: input.useCache, gitIgnored: cacheIgnored })
     
     let result: RepoMapResult | undefined
     
@@ -103,17 +114,7 @@ export class CliCodeNavigator implements CodeNavigator {
     }
 
     if (!result) {
-      const entries: RepoMapEntry[] = []
-      for (const file of fingerprint.files) {
-        const text = await Bun.file(this.sandbox.resolve(file.filePath)).text().catch(() => "")
-        entries.push({
-          filePath: file.filePath,
-          hash: hashText(text),
-          mtimeMs: file.mtimeMs,
-          size: file.size,
-          symbols: extractSymbols(text),
-        })
-      }
+      const entries: RepoMapEntry[] = repoMapEntriesFromCodeIndex(index)
       result = {
         root: this.sandbox.root,
         dir,
@@ -131,6 +132,26 @@ export class CliCodeNavigator implements CodeNavigator {
       return scoreAndFilterRepoMap(result, input.query)
     }
     return result
+  }
+
+  private async codeIndex(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean }): Promise<CodeIndexResult> {
+    const dir = this.relativeDir(input.dir)
+    const maxFiles = clampInt(input.maxFiles ?? 200, 1, 2_000)
+    const cacheIgnored = await projectIgnoresEasyCode(this.sandbox.root)
+    const toolVersions = await this.toolVersions()
+    const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
+    return this.codeIndexFromFingerprint({ dir, files: fingerprint.files, toolVersions, useCache: input.useCache, gitIgnored: cacheIgnored })
+  }
+
+  private codeIndexFromFingerprint(input: { dir: string; files: Array<{ filePath: string; mtimeMs: number; size: number }>; toolVersions: Record<string, string>; useCache?: boolean; gitIgnored: boolean }) {
+    return codeIndex({
+      sandbox: this.sandbox,
+      dir: input.dir,
+      files: input.files,
+      toolVersions: input.toolVersions,
+      useCache: input.useCache,
+      gitIgnored: input.gitIgnored,
+    })
   }
 
   private async repoFingerprint(input: { dir: string; language?: string; maxFiles: number }) {
@@ -174,15 +195,6 @@ export class CliCodeNavigator implements CodeNavigator {
       return firstLine(result.stdout || result.stderr) || "unknown"
     } catch {
       return "missing"
-    }
-  }
-
-  private async runRequired(command: string, args: string[]) {
-    try {
-      return await this.run(command, args)
-    } catch (error) {
-      if (error instanceof Error && /ENOENT|not found|No such file/i.test(error.message)) throw new Error(`${command} is required for this tool but was not found on PATH`)
-      throw error
     }
   }
 
@@ -311,4 +323,3 @@ export class CliCodeNavigator implements CodeNavigator {
     return uniqueSortedResults(results)
   }
 }
-

@@ -3,7 +3,7 @@ import { createMessage, messagesToProviderInput, redactProtectedMessages, summar
 import type { Agent } from "../agent"
 import type { SkillInfo } from "../skill"
 import type { ToolDef } from "../tool"
-import { mergeLedger, normalizedLedger, renderContextLedger, selectContextLedger, stableStringify, summaryLedgerConflicts, validateLedger } from "./ledger"
+import { mergeLedger, normalizedLedger, renderContextLedger, selectContextLedger, summaryLedgerConflicts, validateLedger } from "./ledger"
 import { estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, splitRecentUserTurns } from "./tokens"
 import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextRunOutcome, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
 
@@ -153,7 +153,7 @@ export class ContextManager implements ContextManagerLike {
       const skills = sortedSkills(input.skills)
       const selected = sortedSkills(input.selectedSkills ?? []).map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
       const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
-      const toolList = sortedTools(input.tools).map((tool) => `- ${tool.name}: ${tool.description}\n  input_schema: ${stableStringify(tool.jsonSchema)}`).join("\n")
+      const toolList = sortedTools(input.tools).map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")
       const toolPriorityDirective = [
         "Tool usage priority (MUST follow this order for code exploration):",
         "1. repo_map — structural overview first, never skip.",
@@ -164,6 +164,7 @@ export class ContextManager implements ContextManagerLike {
         "6. edit / write — only after reading the relevant lines.",
         "7. bash — last resort for commands; prefer git_diff for git operations.",
         "VIOLATION: using read before repo_map + find_definition/rg_search + read_lines is explicitly forbidden.",
+        "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
       ].join("\n")
       const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
       const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, `Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, `Available tools:\n${toolList}`, toolPriorityDirective].join("\n\n")
