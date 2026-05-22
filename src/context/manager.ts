@@ -157,7 +157,6 @@ export class ContextManager implements ContextManagerLike {
       const skills = sortedSkills(input.skills)
       const selected = sortedSkills(input.selectedSkills ?? []).map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
       const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
-      const toolList = sortedTools(input.tools).map((tool) => `- ${tool.name}: ${tool.description}`).join("\n")
       const toolPriorityDirective = [
         "Tool usage priority (MUST follow this order for code exploration):",
         "1. repo_map — structural overview first, never skip.",
@@ -171,7 +170,7 @@ export class ContextManager implements ContextManagerLike {
         "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
       ].join("\n")
       const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
-      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, `Available tools:\n${toolList}`, toolPriorityDirective].join("\n\n")
+      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, toolPriorityDirective].join("\n\n")
       messages.push(textMessage("system", system))
       if (input.skills.length > 0 || (input.selectedSkills?.length ?? 0) > 0) {
         messages.push(textMessage("system", [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`].join("\n\n")))

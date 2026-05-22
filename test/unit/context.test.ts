@@ -95,25 +95,27 @@ describe("context", () => {
     expect(messages[1].content).not.toContain("hidden")
   })
 
-  test("compose lists tools without duplicating provider schemas in the system prompt", () => {
+  test("compose keeps tool policy without duplicating provider tool definitions in the system prompt", () => {
     const context = new ContextManager()
     const readTool = createBuiltinRegistry().get("read")
     if (!readTool) throw new Error("missing read tool")
 
     const messages = context.compose({ agent: createAgent("build"), skills: [], tools: [readTool] })
 
-    expect(messages[0].content).toContain("- read: Read a small file")
+    expect(messages[0].content).toContain("Tool usage priority")
+    expect(messages[0].content).not.toContain("Available tools:")
+    expect(messages[0].content).not.toContain("- read:")
     expect(messages[0].content).not.toContain("input_schema")
     expect(messages[0].content).not.toContain("additionalProperties")
   })
 
   test("cache stats report current and maximum static prefix tokens separately", () => {
     const context = new ContextManager()
-    const readTool = createBuiltinRegistry().get("read")
-    if (!readTool) throw new Error("missing read tool")
+    const baseAgent = createAgent("build")
+    const verboseAgent = { ...baseAgent, systemPrompt: `${baseAgent.systemPrompt}\n${"extra context ".repeat(100)}` }
 
-    const first = context.planRequest({ step: 0, agent: createAgent("build"), skills: [], tools: [readTool] }).cacheStats
-    const second = context.planRequest({ step: 1, agent: createAgent("build"), skills: [], tools: [] }).cacheStats
+    const first = context.planRequest({ step: 0, agent: verboseAgent, skills: [], tools: [] }).cacheStats
+    const second = context.planRequest({ step: 1, agent: baseAgent, skills: [], tools: [] }).cacheStats
 
     expect(first.currentStaticPrefixTokens).toBeGreaterThan(second.currentStaticPrefixTokens)
     expect(first.maxStaticPrefixTokens).toBe(first.currentStaticPrefixTokens)

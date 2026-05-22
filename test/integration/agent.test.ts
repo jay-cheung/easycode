@@ -310,8 +310,10 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
     expect(result.status).toBe("completed")
-    expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(true)
-    expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(true)
+    expect(providerMessageContents[0].some((content) => content.includes("Tool usage priority"))).toBe(true)
+    expect(providerMessageContents[1].some((content) => content.includes("Tool usage priority"))).toBe(true)
+    expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(false)
+    expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(false)
     expect(providerMessageContents[1].some((content) => content.includes("Fix"))).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
