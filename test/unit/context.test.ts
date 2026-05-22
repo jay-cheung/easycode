@@ -106,6 +106,20 @@ describe("context", () => {
     expect(messages[0].content).not.toContain("additionalProperties")
   })
 
+  test("cache stats report current and maximum static prefix tokens separately", () => {
+    const context = new ContextManager()
+    const readTool = createBuiltinRegistry().get("read")
+    if (!readTool) throw new Error("missing read tool")
+
+    const first = context.planRequest({ step: 0, agent: createAgent("build"), skills: [], tools: [readTool] }).cacheStats
+    const second = context.planRequest({ step: 1, agent: createAgent("build"), skills: [], tools: [] }).cacheStats
+
+    expect(first.currentStaticPrefixTokens).toBeGreaterThan(second.currentStaticPrefixTokens)
+    expect(first.maxStaticPrefixTokens).toBe(first.currentStaticPrefixTokens)
+    expect(second.maxStaticPrefixTokens).toBe(first.currentStaticPrefixTokens)
+    expect(second.staticPrefixTokens).toBe(second.currentStaticPrefixTokens)
+  })
+
   test("compose injects structured context ledger before dynamic history", () => {
     const context = new ContextManager()
     context.setLedger({
@@ -251,10 +265,15 @@ describe("context", () => {
     context.add(textMessage("user", "show logs"))
     context.add(toolResultMessage({ callID: "call_logs", toolName: "bash", status: "succeeded", output: "x".repeat(28_000) }))
 
+    const messages = context.compose()
+    const providerInput = messages.map((message) => message.content).join("\n")
+    const providerToolResult = messages.flatMap((message) => message.parts ?? []).find((part) => part.type === "tool_result")
+
     expect(context.state.tokenEstimate).toBeLessThan(4_000)
-    const providerInput = context.compose().map((message) => message.content).join("\n")
     expect(providerInput).toContain("[truncated")
     expect(providerInput).not.toContain("x".repeat(9_000))
+    expect(providerToolResult).toMatchObject({ type: "tool_result", output: expect.stringContaining("[truncated") })
+    expect(providerToolResult).not.toMatchObject({ output: expect.stringContaining("x".repeat(9_000)) })
   })
 })
 

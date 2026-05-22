@@ -136,7 +136,6 @@ export class AgentRunner {
           this.onEvent?.({ type: "failure", text: failureText })
           const output = appendOutput(text, failureText)
           this.context.add(assistantMessage(reasoningTranscript, output))
-          this.context.recordRunOutcome({ status: "failed", failureReason: "provider_error" })
           state = this.aspect.runFailed("provider_error", usedTools)
           this.emitRunDone("failed", providerMetrics)
           return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -150,7 +149,6 @@ export class AgentRunner {
       if (failureText) {
         const output = appendOutput(text, failureText)
         this.context.add(assistantMessage(reasoningTranscript, output))
-        this.context.recordRunOutcome({ status: "failed", failureReason: "provider_error" })
         state = this.aspect.runFailed("provider_error", usedTools)
         this.emitRunDone("failed", providerMetrics)
         return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -159,7 +157,6 @@ export class AgentRunner {
       if (!toolCall) {
         const output = text
         this.context.add(assistantMessage(reasoningTranscript, output))
-        this.context.recordRunOutcome({ status: "completed" })
         state = this.aspect.transition("completed", { usedTools })
         this.emitRunDone("completed", providerMetrics)
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -178,7 +175,6 @@ export class AgentRunner {
         this.onEvent?.({ type: "text_delta", text: result.output })
         this.onTextDelta?.(result.output)
         this.context.add(assistantMessage(reasoningTranscript, output))
-        this.context.recordRunOutcome({ status: "completed" })
         state = this.aspect.transition("completed", { usedTools })
         this.emitRunDone("completed", providerMetrics)
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
@@ -190,7 +186,6 @@ export class AgentRunner {
     this.onEvent?.({ type: "failure", text: maxStepsText })
     this.onTextDelta?.(maxStepsText)
     this.context.add(assistantMessage(reasoningTranscript, text))
-    this.context.recordRunOutcome({ status: "failed", failureReason: "max_steps" })
     state = this.aspect.runFailed("max_steps", usedTools)
     this.emitRunDone("failed", providerMetrics)
     return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }

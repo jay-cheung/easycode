@@ -5,7 +5,7 @@ import type { SkillInfo } from "../skill"
 import type { ToolDef } from "../tool"
 import { mergeLedger, normalizedLedger, renderContextLedger, selectContextLedger, summaryLedgerConflicts, validateLedger } from "./ledger"
 import { estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, splitRecentUserTurns } from "./tokens"
-import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextRunOutcome, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
+import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
 
 type WindowStats = {
   calls: number
@@ -102,9 +102,6 @@ export class ContextManager implements ContextManagerLike {
     addWindowStats(this.totalStats, normalized)
   }
 
-  recordRunOutcome(_outcome: ContextRunOutcome) {
-  }
-
   needsCompaction() {
     return this.state.tokenEstimate > this.state.maxTokens * this.compactAt
   }
@@ -137,11 +134,11 @@ export class ContextManager implements ContextManagerLike {
     const providerMessages = this.compose(input)
     const ledgerStats = this.ledgerStats()
     const staticPrefixTokens = estimateStaticPrefixTokens(providerMessages)
-    this.staticPrefixTokens = Math.max(this.staticPrefixTokens, staticPrefixTokens)
+    this.maxStaticPrefixTokens = Math.max(this.maxStaticPrefixTokens, staticPrefixTokens)
     return {
       providerMessages,
       strategyState: this.strategyState,
-      cacheStats: this.cacheStats(),
+      cacheStats: this.cacheStats(staticPrefixTokens),
       budgetStats: this.budgetStats(),
       ledgerStats,
     }
@@ -181,9 +178,9 @@ export class ContextManager implements ContextManagerLike {
     this.state.tokenEstimate = this.estimate(this.state.messages) + estimateSummaryTokens(this.state.summary) + estimateTextTokens(this.renderSelectedLedger())
   }
 
-  private staticPrefixTokens = 0
+  private maxStaticPrefixTokens = 0
 
-  private cacheStats(): ContextCacheStats {
+  private cacheStats(currentStaticPrefixTokens: number): ContextCacheStats {
     const hitRate = this.totalStats.inputTokens === 0 ? 0 : this.totalStats.cacheHitTokens / this.totalStats.inputTokens
     const totalEffectiveCost = effectiveWindowCost(this.totalStats, this.pricing)
     return {
@@ -195,7 +192,9 @@ export class ContextManager implements ContextManagerLike {
       hitRate,
       effectiveCost: totalEffectiveCost,
       effectiveCostPerCall: this.totalStats.calls === 0 ? 0 : totalEffectiveCost / this.totalStats.calls,
-      staticPrefixTokens: this.staticPrefixTokens,
+      currentStaticPrefixTokens,
+      maxStaticPrefixTokens: this.maxStaticPrefixTokens,
+      staticPrefixTokens: currentStaticPrefixTokens,
     }
   }
 

@@ -78,7 +78,7 @@ export async function runAPIxEval(options: APIxOptions) {
     for (const message of messagesForCase(task)) context.add(message)
     const plan = context.planRequest({ step: 0, agent, skills: [], selectedSkills: [], tools: [] })
     const providerMessages = plan.providerMessages
-    const cacheEvaluation = cacheEvaluationForCase(task, provider.capabilities?.promptCacheMinPrefixTokens, plan.cacheStats.staticPrefixTokens)
+    const cacheEvaluation = cacheEvaluationForCase(task, provider.capabilities?.promptCacheMinPrefixTokens, plan.cacheStats.currentStaticPrefixTokens)
     const warmup = cacheEvaluation.requiredRatio !== undefined && cacheEvaluation.eligible
       ? await runProviderForCase(task, context, provider, providerMessages)
       : undefined

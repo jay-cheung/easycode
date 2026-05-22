@@ -83,6 +83,8 @@ export type ContextCacheStats = {
   hitRate: number
   effectiveCost: number
   effectiveCostPerCall: number
+  currentStaticPrefixTokens: number
+  maxStaticPrefixTokens: number
   staticPrefixTokens: number
 }
 
@@ -130,11 +132,6 @@ export type ContextUsageObservation = {
   cacheMissTokens?: number
 }
 
-export type ContextRunOutcome = {
-  status: "completed" | "failed"
-  failureReason?: "provider_error" | "max_steps"
-}
-
 export interface ContextManagerLike {
   readonly state: ContextState
   readonly strategyState: ContextStrategyState
@@ -149,11 +146,9 @@ export interface ContextManagerLike {
   configureStrategy(input: Partial<ContextStrategyState> & { responseReserveTokens?: number; contextWindowTokens?: number }): void
   recordUsage(inputTokens: number): void
   observeUsage(observation: ContextUsageObservation): void
-  recordRunOutcome(outcome: ContextRunOutcome): void
   needsCompaction(): boolean
   compactionInput(): ProviderInputMessage[]
   compact(summary: string): boolean
   planRequest(input: ContextPlanInput): ContextPlan
   compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
 }
-

@@ -317,11 +317,6 @@ class LoggingContextDecorator implements ContextManagerLike {
     emitLog(this.logger, { type: "context", name: "context.usage_observed", detail: { observation, strategy: this.inner.strategyState } })
   }
 
-  recordRunOutcome(outcome: Parameters<ContextManagerLike["recordRunOutcome"]>[0]) {
-    this.inner.recordRunOutcome(outcome)
-    emitLog(this.logger, { type: "context", name: "context.run_outcome", detail: outcome })
-  }
-
   needsCompaction() {
     return this.inner.needsCompaction()
   }

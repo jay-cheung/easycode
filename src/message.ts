@@ -200,12 +200,13 @@ export function partToText(part: MessagePart, options: MessageTextOptions = {}) 
 export function messageToText(message: Message, options: MessageTextOptions = {}) {
   return message.parts.map((part) => {
     if (message.role === "assistant" && part.type === "text") return truncateLargeOutput(part.text, options.truncateLargeOutputs, options.largeOutputLimit)
+    if (message.role === "assistant" && part.type === "reasoning") return `<reasoning>\n${truncateLargeOutput(part.text, options.truncateLargeOutputs, options.largeOutputLimit)}\n</reasoning>`
     return partToText(part, options)
   }).join("\n")
 }
 
 export function messagesToProviderInput(messages: Message[], options: MessageTextOptions = {}): ProviderInputMessage[] {
-  return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: message.parts }))
+  return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: providerParts(message, options) }))
 }
 
 export function toolResults(messages: Message[]) {
@@ -230,6 +231,22 @@ function truncateLargeOutput(text: string, enabled = true, limit = largeOutputLi
   const tail = limit === largeOutputLimit ? largeOutputTail : Math.max(0, Math.floor(limit * 0.35))
   const omitted = Math.max(0, text.length - head - tail)
   return `${text.slice(0, head)}\n\n[truncated ${omitted} chars from large historical output]\n\n${text.slice(-tail)}`
+}
+
+function providerParts(message: Message, options: MessageTextOptions) {
+  return message.parts.map((part): MessagePart => {
+    if (part.type === "tool_result") {
+      const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
+      return { ...part, output: truncateLargeOutput(output, options.truncateLargeOutputs, options.largeOutputLimit) }
+    }
+    if (message.role === "assistant" && part.type === "text") {
+      return { ...part, text: truncateLargeOutput(part.text, options.truncateLargeOutputs, options.largeOutputLimit) }
+    }
+    if (message.role === "assistant" && part.type === "reasoning") {
+      return { ...part, text: truncateLargeOutput(part.text, options.truncateLargeOutputs, options.largeOutputLimit) }
+    }
+    return part
+  })
 }
 
 function imageSourceLabel(source: ImageSource) {
