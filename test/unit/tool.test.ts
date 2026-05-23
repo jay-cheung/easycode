@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
 import { createBuiltinRegistry, ToolRegistry } from "../../src/tool"
+import { ContextManager } from "../../src/context"
 import { type BashResult, Sandbox } from "../../src/sandbox"
 import { PermissionService, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
@@ -36,6 +37,32 @@ describe("tool", () => {
     const registry = createBuiltinRegistry()
     expect(registry.list("plan").some((tool) => tool.name === "edit")).toBe(false)
     expect(registry.list("build").some((tool) => tool.name === "edit")).toBe(true)
+  })
+
+  test("ledger tool pulls structured context only when called", async () => {
+    const registry = createBuiltinRegistry()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "intent:current_user_request",
+          kind: "intent",
+          subject: "current_user_request",
+          value: "continue the APIx evaluation",
+          status: "current",
+          evidence: { source: "user", messageIndex: 0 },
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+
+    const result = await registry.run("ledger", { query: "confirm progress" }, { ...toolContext(), context })
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.empty).toBe(false)
+    expect(result.output).toContain("<context_state_ledger>")
+    expect(result.output).toContain("continue the APIx evaluation")
   })
 
   test("accepts null for optional model arguments", async () => {

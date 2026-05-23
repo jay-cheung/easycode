@@ -123,7 +123,7 @@ describe("context", () => {
     expect(second.staticPrefixTokens).toBe(second.currentStaticPrefixTokens)
   })
 
-  test("compose injects structured context ledger after dynamic history to protect prompt cache", () => {
+  test("compose keeps structured context ledger out of provider messages by default", () => {
     const context = new ContextManager()
     context.setLedger({
       current: [
@@ -139,11 +139,14 @@ describe("context", () => {
     expect(messages[0]).toMatchObject({ role: "system" })
     expect(messages[0].content).toContain("Context execution contract")
     expect(messages[1]).toMatchObject({ role: "user", content: "Which timezone now?" })
-    expect(messages[2]).toMatchObject({ role: "system" })
-    expect(messages[2].content).toContain("<context_state_ledger>")
-    expect(messages[2].content).not.toContain("current:")
-    expect(messages[2].content).not.toContain("history:")
-    expect(messages[2].content).toContain("User moved from New York to London.")
+    expect(messages).toHaveLength(2)
+    expect(messages.map((message) => message.content).join("\n")).not.toContain("<context_state_ledger>")
+
+    const ledger = context.selectedLedgerText()
+    expect(ledger).toContain("<context_state_ledger>")
+    expect(ledger).not.toContain("current:")
+    expect(ledger).not.toContain("history:")
+    expect(ledger).toContain("User moved from New York to London.")
   })
 
   test("ledger renders as one chronological list with latest records last", () => {
@@ -153,7 +156,7 @@ describe("context", () => {
       history: [ledgerRecord("intent", "older", "older value", "superseded", 1)],
     })
 
-    const ledger = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).find((message) => message.content.includes("<context_state_ledger>"))?.content ?? ""
+    const ledger = context.selectedLedgerText()
     expect(ledger).not.toContain("current:")
     expect(ledger).not.toContain("history:")
     expect(ledger.indexOf("older value")).toBeLessThan(ledger.indexOf("latest value"))
@@ -202,10 +205,10 @@ describe("context", () => {
     })
     context.add(textMessage("user", "为什么之前不用方案 A？"))
 
-    const input = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).map((message) => message.content).join("\n")
-    expect(input).toContain("方案 B: 增加重试逻辑")
-    expect(input).toContain("方案 A: 增加超时时间")
-    expect(input).toContain("用户认为治标不治本")
+    const ledger = context.selectedLedgerText()
+    expect(ledger).toContain("方案 B: 增加重试逻辑")
+    expect(ledger).toContain("方案 A: 增加超时时间")
+    expect(ledger).toContain("用户认为治标不治本")
   })
 
   test("ledger selector omits unrelated file records", () => {
@@ -218,9 +221,9 @@ describe("context", () => {
     })
     context.add(textMessage("user", "继续改 src/auth.ts 的测试"))
 
-    const input = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).map((message) => message.content).join("\n")
-    expect(input).toContain("auth timeout fix is pending verification")
-    expect(input).not.toContain("readme copy was updated")
+    const ledger = context.selectedLedgerText()
+    expect(ledger).toContain("auth timeout fix is pending verification")
+    expect(ledger).not.toContain("readme copy was updated")
   })
 
   test("summary conflicts are recorded without overriding current ledger", () => {
@@ -233,7 +236,7 @@ describe("context", () => {
     expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "conflict", subject: "summary_conflict:current_user_request", value: expect.stringContaining("run partial probe") }))
   })
 
-  test("token estimate uses selected ledger instead of all history", () => {
+  test("token estimate excludes dynamic ledger until the ledger tool is called", () => {
     const context = new ContextManager()
     context.setLedger({
       current: [ledgerRecord("intent", "current_user_request", "say hello", "current", 1)],
@@ -241,10 +244,11 @@ describe("context", () => {
     })
     context.add(textMessage("user", "hello"))
 
-    expect(context.state.tokenEstimate).toBeLessThan(300)
+    expect(context.state.tokenEstimate).toBe(context.estimate(context.state.messages))
     const input = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).map((message) => message.content).join("\n")
-    expect(input).toContain("say hello")
+    expect(input).not.toContain("say hello")
     expect(input).not.toContain("x".repeat(200))
+    expect(context.selectedLedgerText()).toContain("say hello")
   })
 
   test("compose can omit static system context after the first provider turn", () => {

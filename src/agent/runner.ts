@@ -200,6 +200,7 @@ export class AgentRunner {
         permission: this.permissionFor(mode),
         skills: this.skills,
         messages: this.context.state.messages,
+        context: this.context,
         signal,
         onExecuteStart: () => {
           progressTimer = this.startToolProgressTimer(call, Date.now())

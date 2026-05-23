@@ -155,4 +155,5 @@ export interface ContextManagerLike {
   compact(summary: string): boolean
   planRequest(input: ContextPlanInput): ContextPlan
   compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
+  selectedLedgerText(): string
 }

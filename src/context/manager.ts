@@ -159,14 +159,16 @@ export class ContextManager implements ContextManagerLike {
       const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
       const toolPriorityDirective = [
         "Tool usage priority (MUST follow this order for code exploration):",
-        "1. repo_map — structural overview first, never skip.",
-        "2. find_definition or rg_search — locate symbols, find line numbers.",
+        "1. repo_map — always use query, never full load (structural overview first, never skip).",
+        "2. find_definition / find_references / rg_search — locate symbols, find references, and search code.",
         "3. read_lines — read only the confirmed line range (max 200 lines).",
-        "4. grep — fallback text search, use only when above tools are unavailable.",
-        "5. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
-        "6. edit / write — only after reading the relevant lines.",
-        "7. bash — last resort for commands; prefer git_diff for git operations.",
-        "VIOLATION: using read before repo_map + find_definition/rg_search + read_lines is explicitly forbidden.",
+        "4. list — list directory contents for structural navigation.",
+        "5. git_diff — inspect git changes in stat/summary/file mode.",
+        "6. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
+        "7. grep — fallback text search, use only when semantic tools are unavailable.",
+        "8. edit / write — only after reading the relevant lines.",
+        "9. bash — last resort for commands.",
+        "VIOLATION: using read before repo_map + find_definition/find_references/rg_search + read_lines is explicitly forbidden for files over 100 lines.",
         "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
       ].join("\n")
       const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
@@ -178,15 +180,17 @@ export class ContextManager implements ContextManagerLike {
     }
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
     messages.push(...this.state.messages)
-    const ledger = this.renderSelectedLedger()
-    if (ledger) messages.push(textMessage("system", ledger))
     return messagesToProviderInput(messages, { largeOutputLimit: this.largeOutputLimit() })
+  }
+
+  selectedLedgerText() {
+    return this.renderSelectedLedger()
   }
 
   private recalculateTokenEstimate() {
     const messageProviderInput = messagesToProviderInput(this.state.messages, { largeOutputLimit: this.largeOutputLimit() })
     const messageTokens = estimateTextTokens(messageProviderInput.map((message) => message.content).join("\n"))
-    this.state.tokenEstimate = messageTokens + estimateSummaryTokens(this.state.summary) + estimateTextTokens(this.renderSelectedLedger())
+    this.state.tokenEstimate = messageTokens + estimateSummaryTokens(this.state.summary)
   }
 
   private largeOutputLimit() {
@@ -297,12 +301,12 @@ function sortedSkills(skills: SkillInfo[]) {
 const toolPriority = new Map([
   ["repo_map", 0],
   ["find_definition", 1],
-  ["rg_search", 2],
-  ["find_references", 3],
+  ["find_references", 2],
+  ["rg_search", 3],
   ["read_lines", 4],
-  ["git_diff", 5],
-  ["read", 6],
-  ["list", 7],
+  ["list", 5],
+  ["git_diff", 6],
+  ["read", 7],
   ["grep", 8],
   ["edit", 9],
   ["write", 10],

@@ -3,6 +3,7 @@ import type { AgentMode, Message } from "../message"
 import { PermissionDeniedError, PermissionRejectedError, type PermissionRequest, type PermissionService } from "../permission"
 import type { Sandbox } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
+import type { ContextManagerLike } from "../context/types"
 import { BashInput, bashApprovalForCommand, bashCwd } from "./bash"
 import { invalidProviderToolArguments } from "./utils/arguments"
 
@@ -25,6 +26,7 @@ export type ToolContext = {
   permission: PermissionService
   skills: SkillServiceLike
   messages: Message[]
+  context?: ContextManagerLike
   signal?: AbortSignal
   onExecuteStart?: (name: string) => void
 }
@@ -133,5 +135,4 @@ function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContex
   }
   return { permission: tool.permission, patterns, always: patterns, metadata: { tool: tool.name } }
 }
-
 

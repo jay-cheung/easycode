@@ -67,7 +67,8 @@ describe("session store", () => {
     const restored = await store.context("demo")
     expect(restored.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "entity", value: "User lives in London.", status: "current" }))
     expect(restored.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "preference", value: "Avoid Brand Z.", status: "current" }))
-    expect(restored.compose({ agent: { name: "test", mode: "build", systemPrompt: "test" }, skills: [], tools: [] }).map((message) => message.content).join("\n")).toContain("User lives in London.")
+    expect(restored.compose({ agent: { name: "test", mode: "build", systemPrompt: "test" }, skills: [], tools: [] }).map((message) => message.content).join("\n")).not.toContain("User lives in London.")
+    expect(restored.selectedLedgerText()).toContain("User lives in London.")
     await rm(root, { recursive: true, force: true })
   })
 

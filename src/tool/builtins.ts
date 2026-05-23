@@ -12,6 +12,7 @@ function objectSchema(properties: JsonSchema["properties"], required = Object.ke
 
 const SkillInput = z.object({ name: z.string() })
 const PlanExitInput = z.object({ markdown: z.string() })
+const LedgerInput = z.object({ query: z.string().optional() })
 
 export function createBuiltinRegistry() {
   const registry = new ToolRegistry()
@@ -254,6 +255,24 @@ export function createBuiltinRegistry() {
       const params = BashInput.parse(input)
       const result = await executeBashWithSandboxRecovery(params, ctx)
       return bashResultToToolResult(params.command, result)
+    },
+  })
+
+  registry.register({
+    name: "ledger",
+    description: "Pull the current structured context ledger only when the user asks to confirm progress or execute/continue a task and the current state is unclear, or when you are unsure about the active objective, status, or next step. Do not call this on every turn.",
+    inputSchema: LedgerInput,
+    jsonSchema: objectSchema({ query: { type: "string", description: "Optional reason or keyword for pulling the ledger." } }, []),
+    permission: "read",
+    modes: ["build", "plan"],
+    patterns: () => ["context_ledger"],
+    execute: async (_input, ctx) => {
+      const output = ctx.context?.selectedLedgerText() ?? ""
+      return {
+        title: "context ledger",
+        output: output || "No context ledger records.",
+        metadata: { status: "succeeded", empty: output.length === 0 },
+      }
     },
   })
 

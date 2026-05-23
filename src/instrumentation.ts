@@ -460,6 +460,12 @@ class LoggingContextDecorator implements ContextManagerLike {
     return providerMessages
   }
 
+  selectedLedgerText() {
+    const text = this.inner.selectedLedgerText()
+    emitLog(this.logger, { type: "data", name: "context ledger -> tool", detail: { textLength: text.length } })
+    return text
+  }
+
   private logAdd(message: Message) {
     for (const part of message.parts) {
       if (message.role === "user" && part.type === "text") emitLog(this.logger, { type: "data", name: "user_input -> context", detail: { promptLength: part.text.length } })
