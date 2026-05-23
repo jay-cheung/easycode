@@ -83,4 +83,87 @@ describe("timeline renderer", () => {
     expect(output).toContain("usage input=100 cached=80 miss=20 hit_rate=80.0% output=20 reasoning=5 total=120")
     expect(output).toContain("cost effective=61.6")
   })
+
+  test("renders markdown formatting in answer text for tty output", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: true })
+
+    renderer.event({ type: "text_delta", text: "# Summary\n- **Done** with `src/ui/timeline.ts`\n```ts\nconst ok = true\n```\n" })
+    renderer.finish()
+
+    expect(output).toContain("\x1b[1mSummary\x1b[0m")
+    expect(output).toContain("- \x1b[1mDone\x1b[0m with \x1b[90msrc/ui/timeline.ts\x1b[0m")
+    expect(output).toContain("\x1b[2m    const ok = true\x1b[0m")
+    expect(output).not.toContain("# Summary")
+    expect(output).not.toContain("```")
+  })
+
+  test("renders markdown formatting in answer text without ansi for non-tty output", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "text_delta", text: "# Summary\n- **Done** with `src/ui/timeline.ts`\n" })
+    renderer.finish()
+
+    expect(output).toContain("Summary")
+    expect(output).toContain("- Done with src/ui/timeline.ts")
+    expect(output).not.toContain("# Summary")
+    expect(output).not.toContain("**Done**")
+    expect(output).not.toContain("`src/ui/timeline.ts`")
+  })
+
+  test("buffers partial answer lines before rendering markdown", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "text_delta", text: "# Head" })
+    renderer.event({ type: "text_delta", text: "ing\n- **Bo" })
+    renderer.event({ type: "text_delta", text: "ld** item" })
+    renderer.finish()
+
+    expect(output).toContain("Heading")
+    expect(output).toContain("- Bold item")
+    expect(output).not.toContain("# Heading")
+    expect(output).not.toContain("**Bold**")
+  })
+
+  test("renders markdown tables in answer text", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "text_delta", text: "| Name | Purpose |\n|---|---|\n| ReadInput | Read files |\n| RgSearchInput | Search code |\n" })
+    renderer.finish()
+
+    expect(output).toContain("+---------------+-------------+")
+    expect(output).toContain("| Name          | Purpose     |")
+    expect(output).toContain("| ReadInput     | Read files  |")
+    expect(output).toContain("| RgSearchInput | Search code |")
+    expect(output).not.toContain("|---|---|")
+  })
+
+  test("buffers partial table rows before rendering markdown tables", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "text_delta", text: "| Name | Purpose |\n|---|---|\n| Read" })
+    renderer.event({ type: "text_delta", text: "Input | Read files |" })
+    renderer.finish()
+
+    expect(output).toContain("| Name      | Purpose    |")
+    expect(output).toContain("| ReadInput | Read files |")
+    expect(output).not.toContain("|---|---|")
+  })
+
+  test("wraps markdown table cells to the terminal width", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false, columns: 42 })
+
+    renderer.event({ type: "text_delta", text: "| 轮次 | 你说的 | 我回的 |\n|:---|---|---|\n| ① | 你是谁 | 介绍了我是 EasyCode 的 AI 编程助手，擅长代码探索、编写、重构、调试 |\n" })
+    renderer.finish()
+
+    expect(output).toContain("+------+--------+------------------------+")
+    expect(output).toContain("| ①    | 你是谁 | 介绍了我是 EasyCode 的 |")
+    expect(output).toContain("|      |        | AI 编程助手，擅长代码  |")
+    expect(output).not.toContain("|:---|---|---|")
+  })
 })
