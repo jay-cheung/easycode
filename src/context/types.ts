@@ -137,23 +137,41 @@ export type ContextUsageObservation = {
 }
 
 export interface ContextManagerLike {
+  /**
+   * Live manager state. This exposes the owned state object for persistence and
+   * inspection; it is not a deep-readonly snapshot, so callers should not mutate
+   * nested arrays or records directly.
+   */
   readonly state: ContextState
+  /** Current clamped strategy settings used by planning, budget checks, and compaction. */
   readonly strategyState: ContextStrategyState
   readonly compactAt: number
   readonly preserveRecentUserTurns: number
   readonly compactPreserveTokens: number
+  /** Append a conversation message and refresh the message/summary token estimate. */
   add(message: Message): void
+  /** Replace the structured ledger with a normalized copy, or clear it with undefined. */
   setLedger(ledger: ContextLedger | undefined): void
+  /** Merge a partial ledger patch into the current ledger using ledger keys and history rules. */
   updateLedger(patch: ContextLedger): void
+  /** Clear the structured ledger without changing message history or summary. */
   clearLedger(): void
+  /** Estimate provider-input tokens for the supplied messages using the local heuristic. */
   estimate(messages: Message[]): number
+  /** Clamp and apply strategy updates; changes affect subsequent budgets and compaction checks. */
   configureStrategy(input: Partial<ContextStrategyState> & { responseReserveTokens?: number; contextWindowTokens?: number }): void
   recordUsage(inputTokens: number): void
   observeUsage(observation: ContextUsageObservation): void
+  /** Return whether the current message/summary state exceeds the compaction threshold. */
   needsCompaction(): boolean
+  /** Build the provider-safe messages used to ask the model for a compaction summary. */
   compactionInput(): ProviderInputMessage[]
+  /** Compact history with the supplied summary; false means the threshold was not reached. */
   compact(summary: string): boolean
+  /** Compose provider messages and attach budget/cache/ledger stats for the next provider call. */
   planRequest(input: ContextPlanInput): ContextPlan
+  /** Build provider input messages; planRequest calls this and then computes stats. */
   compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
+  /** Render the currently selected ledger records for the ledger tool. */
   selectedLedgerText(): string
 }

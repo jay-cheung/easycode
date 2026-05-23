@@ -1,20 +1,33 @@
 import { messagesToProviderInput, validProviderMessageSuffix, type Message } from "../message"
 
+/**
+ * Estimate text tokens with a local heuristic for budget decisions.
+ * This is not a provider tokenizer and must not be used as billing truth.
+ */
 export function estimateTextTokens(text: string) {
   let tokens = 0
   for (const char of text) tokens += isCJK(char) ? 0.6 : 0.3
   return Math.ceil(tokens)
 }
 
+/** Estimate the budget cost of a summary after wrapping it like provider input. */
 export function estimateSummaryTokens(summary: string | undefined) {
   if (!summary) return 0
   return estimateTextTokens(messageToSummaryText(summary))
 }
 
+/**
+ * Keep the last user turns while preserving provider-valid tool call/result pairs.
+ * Used for active conversation context after older turns become compaction input.
+ */
 export function recentUserTurnMessages(messages: Message[], preserveRecentUserTurns = 2) {
   return validProviderMessageSuffix(splitRecentUserTurns(messages, preserveRecentUserTurns).recent)
 }
 
+/**
+ * Trim a recent suffix to the token budget without leaving orphan tool results
+ * or unmatched tool calls in provider history.
+ */
 export function recentProviderMessageSuffix(messages: Message[], maxTokens = 1_000) {
   const suffix: Message[] = []
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -29,6 +42,7 @@ export function recentProviderMessageSuffix(messages: Message[], maxTokens = 1_0
   return validProviderMessageSuffix(suffix)
 }
 
+/** Split history into compacted turns and the recent active window by user turns. */
 export function splitRecentUserTurns(messages: Message[], preserveRecentUserTurns: number) {
   if (preserveRecentUserTurns <= 0) return { compacted: messages, recent: [] }
   let userTurns = 0
@@ -51,7 +65,7 @@ function isCJK(char: string) {
   return /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\uAC00-\uD7AF]/u.test(char)
 }
 
+/** Estimate tokens for messages after the same text conversion used for provider input. */
 export function estimateMessages(messages: Message[]) {
   return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
 }
-

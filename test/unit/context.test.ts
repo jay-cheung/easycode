@@ -68,6 +68,19 @@ describe("context", () => {
     expect(context.state.messages.map((message) => message.role)).toEqual(["assistant"])
   })
 
+  test("compact returns false below threshold without mutating state", () => {
+    const context = new ContextManager({ maxTokens: 32_000, compactAt: 0.9 })
+    context.state.summary = "existing summary"
+    context.add(textMessage("user", "short request"))
+    const messages = [...context.state.messages]
+    const tokenEstimate = context.state.tokenEstimate
+
+    expect(context.compact("new summary")).toBe(false)
+    expect(context.state.summary).toBe("existing summary")
+    expect(context.state.messages).toEqual(messages)
+    expect(context.state.tokenEstimate).toBe(tokenEstimate)
+  })
+
   test("recent provider suffix preserves a trailing tool exchange as a pair", () => {
     const suffix = recentProviderMessageSuffix([
       toolCallMessage({ id: "call_1", name: "read", input: { filePath: "a.ts" } }),
@@ -121,6 +134,41 @@ describe("context", () => {
     expect(first.maxStaticPrefixTokens).toBe(first.currentStaticPrefixTokens)
     expect(second.maxStaticPrefixTokens).toBe(first.currentStaticPrefixTokens)
     expect(second.staticPrefixTokens).toBe(second.currentStaticPrefixTokens)
+  })
+
+  test("configureStrategy clamps boundary values", () => {
+    const context = new ContextManager()
+
+    context.configureStrategy({ compactAt: 0, maxSteps: 1, toolResultTokenBudget: 1, dynamicSummaryTokenBudget: 1 })
+    expect(context.strategyState).toMatchObject({
+      compactAt: 0.6,
+      maxSteps: 8,
+      toolResultTokenBudget: 300,
+      dynamicSummaryTokenBudget: 800,
+    })
+
+    context.configureStrategy({ compactAt: 1, maxSteps: 100, toolResultTokenBudget: 10_000, dynamicSummaryTokenBudget: 20_000 })
+    expect(context.strategyState).toMatchObject({
+      compactAt: 0.9,
+      maxSteps: 30,
+      toolResultTokenBudget: 4_000,
+      dynamicSummaryTokenBudget: 8_000,
+    })
+  })
+
+  test("compose without input omits static agent and tool system context", () => {
+    const context = new ContextManager()
+    context.state.summary = "known summary"
+    context.add(textMessage("user", "hello"))
+
+    const messages = context.compose()
+    const content = messages.map((message) => message.content).join("\n")
+
+    expect(messages).toHaveLength(2)
+    expect(messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("known summary") })
+    expect(content.includes("Context execution contract")).toBe(false)
+    expect(content.includes("Tool usage priority")).toBe(false)
+    expect(messages[1]).toMatchObject({ role: "user", content: "hello" })
   })
 
   test("compose keeps structured context ledger out of provider messages by default", () => {
@@ -186,6 +234,21 @@ describe("context", () => {
     expect(context.state.ledger?.history).toContainEqual(expect.objectContaining({ kind: "entity", subject: "last_tool_failure", value: "old failure", status: "superseded" }))
   })
 
+  test("ledger updates normalize patch data without retaining patch references", () => {
+    const context = new ContextManager()
+    const patch = {
+      current: [ledgerRecord("intent", "main_objective", "old objective", "current", 1)],
+    }
+
+    context.updateLedger(patch)
+    patch.current[0].value = "mutated outside"
+    context.updateLedger({ current: [ledgerRecord("intent", "main_objective", "new objective", "current", 2)] })
+
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "main_objective", value: "new objective", status: "current" }))
+    expect(context.state.ledger?.history).toContainEqual(expect.objectContaining({ subject: "main_objective", value: "old objective", status: "superseded" }))
+    expect(context.state.ledger?.history).not.toContainEqual(expect.objectContaining({ value: "mutated outside" }))
+  })
+
   test("ledger updates skip identical current-state records", () => {
     const context = new ContextManager()
     const record = ledgerRecord("constraint", "main_objective", "complete latest request end-to-end", "current", 1)
@@ -249,6 +312,25 @@ describe("context", () => {
     expect(input).not.toContain("say hello")
     expect(input).not.toContain("x".repeat(200))
     expect(context.selectedLedgerText()).toContain("say hello")
+  })
+
+  test("setLedger undefined and clearLedger remove ledger without changing message estimate", () => {
+    const context = new ContextManager()
+    context.add(textMessage("user", "hello"))
+    const messageEstimate = context.state.tokenEstimate
+
+    context.setLedger({ current: [ledgerRecord("intent", "current_user_request", "say hello", "current", 1)] })
+    expect(context.state.ledger?.current).toHaveLength(1)
+    expect(context.state.tokenEstimate).toBe(messageEstimate)
+
+    context.setLedger(undefined)
+    expect(context.state.ledger).toBeUndefined()
+    expect(context.state.tokenEstimate).toBe(messageEstimate)
+
+    context.setLedger({ current: [ledgerRecord("intent", "current_user_request", "say hello again", "current", 2)] })
+    context.clearLedger()
+    expect(context.state.ledger).toBeUndefined()
+    expect(context.state.tokenEstimate).toBe(messageEstimate)
   })
 
   test("compose can omit static system context after the first provider turn", () => {

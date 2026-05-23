@@ -3,6 +3,8 @@ import { estimateTextTokens } from "./tokens"
 import type { ContextLedger, LedgerEvidence, LedgerKind, LedgerRecord, LedgerScope, LedgerStatus, StructuredContextLedger } from "./types"
 
 const currentAlwaysKinds = new Set<LedgerKind>(["intent", "decision", "constraint", "preference", "entity", "failure", "conflict"])
+// History is selected only when the latest request asks for prior context; match
+// both English and Chinese because the ledger is shared across bilingual turns.
 const historyTriggerPattern = /\b(previous|prior|rollback|revert|why|reason|tried|rejected|superseded)\b|之前|以前|回退|为什么|原因|试过|拒绝|废弃|覆盖/i
 
 export function renderContextLedger(ledger: StructuredContextLedger | ContextLedger | undefined) {
@@ -14,6 +16,10 @@ export function renderContextLedger(ledger: StructuredContextLedger | ContextLed
   return lines.join("\n")
 }
 
+/**
+ * Convert partial ledger input into a structured ledger and drop empty/invalid
+ * records. Current records stay current; all other statuses move to history.
+ */
 export function normalizedLedger(ledger: StructuredContextLedger | ContextLedger | undefined): StructuredContextLedger | undefined {
   if (!ledger) return undefined
   const records: LedgerRecord[] = []
@@ -30,32 +36,51 @@ export function normalizedLedger(ledger: StructuredContextLedger | ContextLedger
   return normalizeStructuredLedger({ current, history })
 }
 
+/**
+ * Merge a ledger patch into the current ledger by stable record key.
+ * Replaced current records are retained as history so rejected/superseded
+ * context remains available when a later request asks for prior decisions.
+ */
 export function mergeLedger(current: StructuredContextLedger | undefined, patch: ContextLedger) {
   const base = normalizedLedger(current) ?? emptyLedger()
   const incoming = normalizedLedger(patch) ?? emptyLedger()
   const next = { current: [...base.current], history: [...base.history] }
   for (const record of [...incoming.current, ...incoming.history]) {
-    const key = ledgerRecordKey(record)
-    const replaced: LedgerRecord[] = []
-    let alreadyCurrent = false
-    next.current = next.current.filter((existing) => {
-      if (ledgerRecordKey(existing) !== key) return true
-      if (sameLedgerRecordContent(existing, record)) {
-        alreadyCurrent = true
-        return true
-      }
-      replaced.push(existing)
-      return false
-    })
-    if (alreadyCurrent) continue
-    for (const existing of replaced) {
-      const status = record.status === "current" ? "superseded" : record.status
-      next.history.push({ ...existing, status, updatedAtTurn: Math.max(existing.updatedAtTurn, record.updatedAtTurn), supersedes: uniqueStrings([...(existing.supersedes ?? []), record.id]) })
-    }
-    if (record.status === "current") next.current.push({ ...record, supersedes: uniqueStrings([...(record.supersedes ?? []), ...replaced.map((item) => item.id)]) })
+    const match = removeCurrentMatches(next.current, record)
+    next.current = match.current
+    if (match.alreadyCurrent) continue
+    next.history.push(...replacedCurrentRecords(match.replaced, record))
+    if (record.status === "current") next.current.push(currentRecordWithSupersedes(record, match.replaced))
     else next.history.push(record)
   }
   return normalizeStructuredLedger(next)
+}
+
+function removeCurrentMatches(current: LedgerRecord[], record: LedgerRecord) {
+  const key = ledgerRecordKey(record)
+  const replaced: LedgerRecord[] = []
+  let alreadyCurrent = false
+  const remaining = current.filter((existing) => {
+    if (ledgerRecordKey(existing) !== key) return true
+    if (sameLedgerRecordContent(existing, record)) {
+      alreadyCurrent = true
+      return true
+    }
+    replaced.push(existing)
+    return false
+  })
+  return { current: remaining, replaced, alreadyCurrent }
+}
+
+function replacedCurrentRecords(replaced: LedgerRecord[], record: LedgerRecord) {
+  return replaced.map((existing) => {
+    const status = record.status === "current" ? "superseded" : record.status
+    return { ...existing, status, updatedAtTurn: Math.max(existing.updatedAtTurn, record.updatedAtTurn), supersedes: uniqueStrings([...(existing.supersedes ?? []), record.id]) }
+  })
+}
+
+function currentRecordWithSupersedes(record: LedgerRecord, replaced: LedgerRecord[]) {
+  return { ...record, supersedes: uniqueStrings([...(record.supersedes ?? []), ...replaced.map((item) => item.id)]) }
 }
 
 function sameLedgerRecordContent(left: LedgerRecord, right: LedgerRecord) {
@@ -124,6 +149,10 @@ function normalizeLedgerRecord(input: Partial<LedgerRecord> | undefined): Ledger
   return record
 }
 
+/**
+ * Select ledger records relevant to the latest messages and fit them to the
+ * dynamic token budget used by the ledger tool.
+ */
 export function selectContextLedger(ledger: StructuredContextLedger | ContextLedger | undefined, messages: Message[], tokenBudget: number) {
   const normalized = normalizedLedger(ledger)
   if (!normalized) return undefined
@@ -270,6 +299,10 @@ function normalizeLedgerScope(scope: LedgerScope | undefined) {
   return Object.keys(next).length ? next : undefined
 }
 
+/**
+ * Detect summary text that contradicts current ledger records and emit conflict
+ * records. This records the conflict; it does not override the current ledger.
+ */
 export function summaryLedgerConflicts(summary: string, ledger: StructuredContextLedger | undefined, turn: number) {
   const normalized = normalizedLedger(ledger)
   if (!normalized) return []
@@ -292,6 +325,10 @@ export function summaryLedgerConflicts(summary: string, ledger: StructuredContex
   return conflicts
 }
 
+/**
+ * Return structural ledger issues for diagnostics. Validation is non-throwing
+ * so context planning can continue with best-effort ledger data.
+ */
 export function validateLedger(ledger: StructuredContextLedger | undefined) {
   if (!ledger) return []
   const issues: string[] = []

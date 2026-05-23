@@ -155,29 +155,9 @@ export class ContextManager implements ContextManagerLike {
   compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
     const messages: Message[] = []
     if (input) {
-      const skills = sortedSkills(input.skills)
-      const selected = sortedSkills(input.selectedSkills ?? []).map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
-      const skillList = skills.map((skill) => `- ${skill.name}: ${skill.description}`).join("\n") || "(none)"
-      const toolPriorityDirective = [
-        "Tool usage priority (MUST follow this order for code exploration):",
-        "1. repo_map — always use query, never full load (structural overview first, never skip).",
-        "2. find_definition / find_references / rg_search — locate symbols, find references, and search code.",
-        "3. read_lines — read only the confirmed line range (max 200 lines).",
-        "4. list — list directory contents for structural navigation.",
-        "5. git_diff — inspect git changes in stat/summary/file mode.",
-        "6. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
-        "7. grep — fallback text search, use only when semantic tools are unavailable.",
-        "8. edit / write — only after reading the relevant lines.",
-        "9. bash — last resort for commands.",
-        "VIOLATION: using read before repo_map + find_definition/find_references/rg_search + read_lines is explicitly forbidden for files over 100 lines.",
-        "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
-      ].join("\n")
-      const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
-      const system = [input.agent.systemPrompt, contextExecutionContract, `Mode: ${input.agent.mode}`, toolPriorityDirective].join("\n\n")
-      messages.push(textMessage("system", system))
-      if (input.skills.length > 0 || (input.selectedSkills?.length ?? 0) > 0) {
-        messages.push(textMessage("system", [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`].join("\n\n")))
-      }
+      messages.push(textMessage("system", buildSystemPrompt(input.agent)))
+      const skillPrompt = buildSkillPrompt(input.skills, input.selectedSkills ?? [])
+      if (skillPrompt) messages.push(textMessage("system", skillPrompt))
     }
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
     messages.push(...this.state.messages)
@@ -298,6 +278,39 @@ const contextExecutionContract = [
 function sortedSkills(skills: SkillInfo[]) {
   return [...skills].sort((left, right) => left.name.localeCompare(right.name))
 }
+
+function buildSystemPrompt(agent: Agent) {
+  return [agent.systemPrompt, contextExecutionContract, `Mode: ${agent.mode}`, toolPriorityDirective].join("\n\n")
+}
+
+function buildSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[]) {
+  if (skills.length === 0 && selectedSkills.length === 0) return ""
+  const skillList = sortedSkills(skills).map(formatSkillDescription).join("\n") || "(none)"
+  const selected = sortedSkills(selectedSkills).map(formatSkillDescription).join("\n") || "(none)"
+  const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
+  return [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`].join("\n\n")
+}
+
+function formatSkillDescription(skill: SkillInfo) {
+  return `- ${skill.name}: ${skill.description}`
+}
+
+// Keep exploration policy in the stable system prefix so every provider turn
+// gets the same tool-ordering contract without duplicating schemas.
+const toolPriorityDirective = [
+  "Tool usage priority (MUST follow this order for code exploration):",
+  "1. repo_map — always use query, never full load (structural overview first, never skip).",
+  "2. find_definition / find_references / rg_search — locate symbols, find references, and search code.",
+  "3. read_lines — read only the confirmed line range (max 200 lines).",
+  "4. list — list directory contents for structural navigation.",
+  "5. git_diff — inspect git changes in stat/summary/file mode.",
+  "6. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
+  "7. grep — fallback text search, use only when semantic tools are unavailable.",
+  "8. edit / write — only after reading the relevant lines.",
+  "9. bash — last resort for commands.",
+  "VIOLATION: using read before repo_map + find_definition/find_references/rg_search + read_lines is explicitly forbidden for files over 100 lines.",
+  "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
+].join("\n")
 
 const toolPriority = new Map([
   ["repo_map", 0],
