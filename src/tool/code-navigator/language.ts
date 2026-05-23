@@ -1,11 +1,8 @@
+import { clampInt } from "../../utils/math"
 import { codeExtensions, defaultMaxResults, maxMaxResults } from "./constants"
 
 export function normalizeMaxResults(value: number | undefined) {
   return clampInt(value ?? defaultMaxResults, 1, maxMaxResults)
-}
-
-export function clampInt(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, Math.round(value)))
 }
 
 export function fileTypeArgs(fileType: string | undefined) {

@@ -3,6 +3,7 @@ import { createMessage, messagesToProviderInput, redactProtectedMessages, summar
 import type { Agent } from "../agent"
 import type { SkillInfo } from "../skill"
 import type { ToolDef } from "../tool"
+import { clampInt, clampNumber } from "../utils/math"
 import { mergeLedger, normalizedLedger, renderContextLedger, selectContextLedger, summaryLedgerConflicts, validateLedger } from "./ledger"
 import { estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, splitRecentUserTurns } from "./tokens"
 import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
@@ -347,14 +348,4 @@ function truncateToTokenBudget(text: string, tokenBudget: number) {
   if (estimateTextTokens(text) <= tokenBudget) return text
   const charBudget = Math.max(0, Math.floor(tokenBudget / 0.3))
   return `${text.slice(0, charBudget)}\n[truncated summary to ${tokenBudget} estimated tokens]`
-}
-
-function clampInt(value: number, min: number, max: number) {
-  if (!Number.isFinite(value)) return min
-  return Math.max(min, Math.min(max, Math.round(value)))
-}
-
-function clampNumber(value: number, min: number, max: number) {
-  if (!Number.isFinite(value)) return min
-  return Math.max(min, Math.min(max, value))
 }

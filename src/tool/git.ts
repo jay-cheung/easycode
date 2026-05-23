@@ -1,5 +1,6 @@
 import path from "node:path"
 import { z } from "zod"
+import { clampInt } from "../utils/math"
 import type { ToolContext, ToolResult } from "./registry"
 
 const OptionalString = z.string().nullish().transform((value) => value ?? undefined)
@@ -50,13 +51,7 @@ function truncateText(text: string, maxBytes: number) {
 }
 
 
-function clampInt(value: number, min: number, max: number) {
-  return Math.max(min, Math.min(max, Math.round(value)))
-}
-
-
 function firstLine(text: string) {
   return text.split(/\r?\n/).find((line) => line.trim())?.trim() ?? ""
 }
-
 
