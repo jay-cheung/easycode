@@ -246,7 +246,10 @@ export class AgentRunner {
 
   private async compactContext(mode: AgentMode, signal?: AbortSignal, providerMetrics?: ProviderMetricsAccumulator) {
     if (!this.context.needsCompaction()) return
-    const providerMessages = [{ role: "user" as const, content: compactPrompt(this.context.compactionInput()) }]
+    const startedAt = Date.now()
+    const compactionInput = this.context.compactionInput()
+    this.onEvent?.({ type: "context_compaction", status: "started", inputMessages: compactionInput.length })
+    const providerMessages = [{ role: "user" as const, content: compactPrompt(compactionInput) }]
     let summary = ""
     const metricCall = startProviderMetricCall(providerMetrics)
     try {
@@ -256,10 +259,15 @@ export class AgentRunner {
         if (event.type === "usage") this.context.recordUsage(event.inputTokens)
         if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
       }
+    } catch (error) {
+      this.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) })
+      throw error
     } finally {
       finishProviderMetricCall(providerMetrics, metricCall)
     }
-    this.context.compact(extractSummary(summary))
+    const extracted = extractSummary(summary)
+    this.context.compact(extracted)
+    this.onEvent?.({ type: "context_compaction", status: "completed", elapsedMs: Date.now() - startedAt, summaryChars: extracted.length })
   }
 
   private emitRunDone(status: string, providerMetrics: ProviderMetricsAccumulator | undefined) {

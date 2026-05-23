@@ -557,6 +557,7 @@ describe("agent integration", () => {
   test("context compaction asks provider for a summary", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    const events: RunUiEvent[] = []
     let summaryPrompt = ""
     const provider: Provider = {
       name: "test-provider",
@@ -569,11 +570,13 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider, context }).run("Fix the failing test with a very long instruction ".repeat(20), "build")
+    const result = await new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) }).run("Fix the failing test with a very long instruction ".repeat(20), "build")
     expect(result.status).toBe("completed")
     expect(summaryPrompt).toContain("Your task is to create a detailed summary")
     expect(summaryPrompt).toContain("Conversation to summarize:")
     expect(context.state.summary).toBe("Model generated summary.")
+    expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "started" }))
+    expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "completed", summaryChars: "Model generated summary.".length }))
     await rm(root, { recursive: true, force: true })
   })
 
