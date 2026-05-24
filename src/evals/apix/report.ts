@@ -5,9 +5,15 @@ import { optimizationForCause } from "./validation"
 export function summarize(options: APIxOptions, results: APIxResult[]) {
   const gated = results.filter((result) => result.evaluationMode === "hard_gate")
   const softOracle = results.filter((result) => result.evaluationMode === "soft_oracle")
+  const strict = gated.filter((result) => result.trust.level === "strict")
+  const strictP0 = strict.filter((result) => result.priority === "P0")
+  const assisted = results.filter((result) => result.trust.level === "assisted")
+  const tainted = results.filter((result) => result.trust.level === "tainted")
   const passed = gated.filter((result) => result.passed).length
   const p0 = gated.filter((result) => result.priority === "P0")
   const p0Passed = p0.filter((result) => result.passed).length
+  const strictPassed = strict.filter((result) => result.passed).length
+  const strictP0Passed = strictP0.filter((result) => result.passed).length
   const inputTokens = results.reduce((total, result) => total + result.usage.inputTokens, 0)
   const outputTokens = results.reduce((total, result) => total + result.usage.outputTokens, 0)
   const cacheHitTokens = results.reduce((total, result) => total + result.usage.cacheHitTokens, 0)
@@ -17,6 +23,8 @@ export function summarize(options: APIxOptions, results: APIxResult[]) {
   const ttfts = results.map((result) => result.ttftMs).filter((item): item is number => item !== undefined).sort((left, right) => left - right)
   const resolutionSLA = gated.length === 0 ? 1 : passed / gated.length
   const p0ResolutionSLA = p0.length === 0 ? 1 : p0Passed / p0.length
+  const strictSLA = strict.length === 0 ? 1 : strictPassed / strict.length
+  const strictP0ResolutionSLA = strictP0.length === 0 ? 1 : strictP0Passed / strictP0.length
   const dimensionSLA = slaByDimension(gated)
   const pricing = defaultCachePricing()
   const effectiveCost = cacheHitTokens * pricing.inputCacheHit + cacheMissTokens * pricing.inputCacheMiss + outputTokens * pricing.output
@@ -26,7 +34,7 @@ export function summarize(options: APIxOptions, results: APIxResult[]) {
   const compressionFailures = compressionCases.filter((result) => !result.passed)
   const instructionCases = results.filter((result) => result.dimension === "system_prompt_adherence")
   const instructionFailures = instructionCases.filter((result) => !result.passed)
-  const qualityGate = resolutionSLA >= 0.95 && p0ResolutionSLA === 1 ? 1 : 0
+  const qualityGate = strict.length > 0 && strictSLA >= 0.95 && strictP0ResolutionSLA === 1 ? 1 : 0
   const compositeScore = qualityGate ? 1 : 0
   const runID = `${new Date().toISOString()}-every-step-${options.provider}`
   const ignoredExpectedFields = ignoredFieldsByTask(results)
@@ -43,11 +51,24 @@ export function summarize(options: APIxOptions, results: APIxResult[]) {
     quality: {
       resolutionSLA,
       p0ResolutionSLA,
+      strictSLA,
+      strictP0ResolutionSLA,
       dimensionSLA,
       gatedPassed: passed,
       gatedTotal: gated.length,
+      strictPassed,
+      strictTotal: strict.length,
       hardGateTotal: gated.length,
       softOracleTotal: softOracle.length,
+      trust: {
+        strictTotal: strict.length,
+        assistedTotal: assisted.length,
+        taintedTotal: tainted.length,
+        taintedCases: tainted.map((result) => ({ taskID: result.id, reasons: result.trust.reasons })),
+        notDeterministicallyValidated: tainted
+          .filter((result) => result.unsupportedExpectedFields.length > 0)
+          .map((result) => ({ taskID: result.id, fields: result.unsupportedExpectedFields })),
+      },
       ignoredExpectedFields,
     },
     benchmarkDefects,
@@ -129,13 +150,14 @@ export function formatReport(report: ReturnType<typeof summarize>) {
   const lines = [
     `APIx eval provider=${report.provider}${report.model ? ` model=${report.model}` : ""} count=${report.count}`,
     `quality gated=${report.quality.gatedPassed}/${report.quality.gatedTotal} resolution_sla=${(report.quality.resolutionSLA * 100).toFixed(1)}%`,
+    `trust strict=${report.quality.trust.strictTotal} assisted=${report.quality.trust.assistedTotal} tainted=${report.quality.trust.taintedTotal} strict_sla=${(report.quality.strictSLA * 100).toFixed(1)}%`,
     `usage input=${report.usage.inputTokens} cached=${report.usage.cacheHitTokens} miss=${report.usage.cacheMissTokens} hit_rate=${(report.usage.cacheHitRatio * 100).toFixed(1)}% output=${report.usage.outputTokens}`,
     `latency p50=${report.latency.p50Ms ?? "-"}ms p95=${report.latency.p95Ms ?? "-"}ms ttft_p50=${report.latency.ttftP50Ms ?? "-"}ms ttft_p95=${report.latency.ttftP95Ms ?? "-"}ms`,
     `failure_causes ${[...failedByCause.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([cause, count]) => `${cause}=${count}`).join(" ") || "none"}`,
-    "case      pass  pri dim                         cause                     in  cache  out  ttft  latency  failures",
+    "case      pass  trust     pri dim                         cause                     in  cache  out  ttft  latency  failures",
   ]
   for (const result of report.results) {
-    lines.push(`${result.id.padEnd(9)} ${result.passed ? "yes " : "no  "} ${result.priority.padEnd(3)} ${result.dimension.padEnd(27)} ${(result.primaryCause ?? "-").padEnd(25)} ${String(result.usage.inputTokens).padStart(4)} ${String(result.usage.cacheHitTokens).padStart(6)} ${String(result.usage.outputTokens).padStart(4)} ${String(result.ttftMs ?? "-").padStart(5)} ${String(result.latencyMs).padStart(8)}  ${result.failures.join("; ")}`)
+    lines.push(`${result.id.padEnd(9)} ${result.passed ? "yes " : "no  "} ${result.trust.level.padEnd(9)} ${result.priority.padEnd(3)} ${result.dimension.padEnd(27)} ${(result.primaryCause ?? "-").padEnd(25)} ${String(result.usage.inputTokens).padStart(4)} ${String(result.usage.cacheHitTokens).padStart(6)} ${String(result.usage.outputTokens).padStart(4)} ${String(result.ttftMs ?? "-").padStart(5)} ${String(result.latencyMs).padStart(8)}  ${result.failures.join("; ")}`)
   }
   return lines.join("\n")
 }

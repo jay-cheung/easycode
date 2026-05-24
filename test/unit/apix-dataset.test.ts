@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { runAPIxEval } from "../../src/evals/apix"
+import { contextLedgerForCase } from "../../src/evals/apix/case"
+import { validateCase } from "../../src/evals/apix/validation"
 
 type APIxCase = {
   id: string
@@ -15,7 +17,7 @@ type APIxCase = {
   metrics: { quality_gate: "must_pass" | "score_only"; track: string[] }
 }
 
-const supportedExpectedFields = new Set(["exact", "json_schema", "must_include", "must_include_any", "must_not_include", "regex", "numeric"])
+const supportedExpectedFields = new Set(["exact", "json_schema", "must_include", "must_include_any", "must_not_include", "aliases", "regex", "numeric"])
 
 describe("APIx golden dataset manifest", () => {
   test("uses the structured task shape expected by the APIx runner", async () => {
@@ -83,7 +85,32 @@ describe("APIx golden dataset manifest", () => {
     expect(report.quality.hardGateTotal).toBeGreaterThan(0)
     expect(report.quality.softOracleTotal).toBeGreaterThanOrEqual(0)
     expect(report.quality.gatedTotal).toBe(report.quality.hardGateTotal)
+    expect(report.quality.strictSLA).toBeGreaterThanOrEqual(0)
+    expect(report.quality.trust.taintedTotal).toBeGreaterThan(0)
+    expect(report.quality.trust.notDeterministicallyValidated.length).toBeGreaterThan(0)
     expect(report.results.every((result) => result.evaluationMode === "hard_gate" || result.scoreOnly)).toBe(true)
+    expect(report.results.filter((result) => result.scoreOnly).every((result) => result.trust.level === "tainted")).toBe(true)
+  })
+
+  test("does not allow case-specific APIx prompt specializations", async () => {
+    const caseSource = await Bun.file(path.resolve(import.meta.dir, "../../src/evals/apix/case.ts")).text()
+    expect(caseSource).not.toMatch(/task\.id\s*={2,3}\s*["']APIX-\d{3}["']/)
+  })
+
+  test("accepts explicit aliases without accepting wrong facts", async () => {
+    const root = path.resolve(import.meta.dir, "../..")
+    const manifest = await Bun.file(path.join(root, "evals/apix/tasks.json")).json() as { cases: APIxCase[] }
+    const golfCase = manifest.cases.find((item) => item.id === "APIX-012")
+    const syntaxCase = manifest.cases.find((item) => item.id === "APIX-034")
+    if (!golfCase || !syntaxCase) throw new Error("missing APIx alias cases")
+
+    const emptyUsage = { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 }
+    const cacheEvaluation = { eligible: true }
+
+    expect(validateCase(golfCase, "2024 高尔夫 R-Line，1万公里，轻微剐蹭，长沙。", emptyUsage, cacheEvaluation)).toEqual([])
+    expect(validateCase(golfCase, "2024 高尔夫 R-Line，2万公里，轻微剐蹭，长沙。", emptyUsage, cacheEvaluation)).toContain('missing "一万公里"')
+    expect(validateCase(syntaxCase, "第127行缺少右括号 )。", emptyUsage, cacheEvaluation)).toEqual([])
+    expect(validateCase(syntaxCase, "第128行缺少右括号 )。", emptyUsage, cacheEvaluation)).toContain('missing "line 127"')
   })
 
   test("warms cache-gated cases before measuring cache hit ratio", async () => {
@@ -128,5 +155,28 @@ describe("APIx golden dataset manifest", () => {
       if (previous === undefined) delete process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS
       else process.env.FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS = previous
     }
+  })
+
+  test("builds code-aware fixture ledger hints without changing the golden dataset", async () => {
+    const root = path.resolve(import.meta.dir, "../..")
+    const manifest = await Bun.file(path.join(root, "evals/apix/tasks.json")).json() as { cases: APIxCase[] }
+    const mutationCase = manifest.cases.find((item) => item.id === "APIX-032")
+    const syntaxCase = manifest.cases.find((item) => item.id === "APIX-034")
+    const apiCase = manifest.cases.find((item) => item.id === "APIX-037")
+    if (!mutationCase || !syntaxCase || !apiCase) throw new Error("missing APIx code cases")
+
+    const mutationFixture = await Bun.file(path.join(root, mutationCase.fixture)).text()
+    const syntaxFixture = await Bun.file(path.join(root, syntaxCase.fixture)).text()
+    const apiFixture = await Bun.file(path.join(root, apiCase.fixture)).text()
+
+    const mutationLedger = contextLedgerForCase(mutationCase, mutationFixture)
+    const syntaxLedger = contextLedgerForCase(syntaxCase, syntaxFixture)
+    const apiLedger = contextLedgerForCase(apiCase, apiFixture)
+
+    const mutationLedgerText = (mutationLedger.current ?? []).map((record) => record.value).join("\n")
+    expect(mutationLedgerText).toContain("code_numeric_state=FINAL_COUNTER has 15 numeric mutations")
+    expect(mutationLedgerText).not.toContain("FINAL_COUNTER=47")
+    expect((syntaxLedger.current ?? []).map((record) => record.value).join("\n")).toContain("code_diagnostics=line 23: line 128: // missing closing parenthesis before this line")
+    expect((apiLedger.current ?? []).map((record) => record.value).join("\n")).toContain("code_constraints=line 1: Framework version: v1.0 only. | line 2: Allowed API: legacyFetch(path, options). | line 3: Forbidden v2 APIs: createClientV2, newClient.")
   })
 })

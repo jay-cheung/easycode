@@ -3,7 +3,7 @@ import { loadEnvFile } from "../../cli"
 import { ContextManager } from "../../context"
 import { createProvider } from "../../provider"
 import { textMessage } from "../../message"
-import { agentForCase, contextLedgerForCase, fixtureBlockForCase, loadFixture, maxOutputTokensForCase, messagesForCase, selectCases, unsupportedExpectedFieldsFor } from "./case"
+import { agentForCase, contextLedgerForCase, fixtureBlockForCase, loadFixture, maxOutputTokensForCase, messagesForCase, selectCases, trustForCase, unsupportedExpectedFieldsFor } from "./case"
 import { cacheEvaluationForCase, emptyUsage, mergeUsage } from "./usage"
 import { summarize } from "./report"
 import { optimizationForCause, primaryCauseFor, validateCase } from "./validation"
@@ -19,6 +19,7 @@ export async function runAPIxEval(options: APIxOptions) {
     const fixture = await loadFixture(options.root, task)
     const unsupportedExpectedFields = unsupportedExpectedFieldsFor(task)
     const ignoredExpectedFields = task.evaluation_mode === "hard_gate" ? [] : unsupportedExpectedFields
+    const trust = trustForCase(task, unsupportedExpectedFields)
     if (fixture.required && fixture.content === undefined) {
       const failures = [`missing required fixture ${task.fixture}`]
       results.push({
@@ -32,6 +33,7 @@ export async function runAPIxEval(options: APIxOptions) {
         failures,
         unsupportedExpectedFields,
         ignoredExpectedFields,
+        trust: { level: "tainted", reasons: [...trust.reasons, "missing_required_fixture"] },
         primaryCause: "resource_failure",
         optimization: optimizationForCause("resource_failure"),
         output: "",
@@ -54,6 +56,7 @@ export async function runAPIxEval(options: APIxOptions) {
         failures,
         unsupportedExpectedFields,
         ignoredExpectedFields,
+        trust,
         primaryCause: "unsupported_validator",
         optimization: optimizationForCause("unsupported_validator"),
         output: "",
@@ -83,9 +86,27 @@ export async function runAPIxEval(options: APIxOptions) {
       ? await runProviderForCase(task, context, provider, providerMessages)
       : undefined
     const measured = await runProviderForCase(task, context, provider, providerMessages)
-    const usage = measured.usage
-    const output = measured.output.trim()
-    const failures = validateCase(task, output, usage, cacheEvaluation)
+    const usage = { ...measured.usage }
+    let output = measured.output.trim()
+    let failures = validateCase(task, output, measured.usage, cacheEvaluation)
+    let repairAttempted = false
+    let repairFailures: string[] | undefined
+    let rawOutput: string | undefined
+    if (shouldAttemptRepair(failures, measured.providerFailures)) {
+      repairAttempted = true
+      rawOutput = output
+      const repair = await runRepairForCase(task, provider, output, failures)
+      repairFailures = repair.providerFailures
+      if (repair.providerFailures.length === 0) {
+        const repairedOutput = repair.output.trim()
+        const repairedFailures = validateCase(task, repairedOutput, measured.usage, cacheEvaluation)
+        addUsage(usage, repair.usage)
+        if (repairedFailures.length < failures.length) {
+          output = repairedOutput
+          failures = repairedFailures
+        }
+      }
+    }
     if (warmup) failures.unshift(...warmup.providerFailures.map((failure) => `warmup provider failure: ${failure}`))
     failures.unshift(...measured.providerFailures.map((failure) => `provider failure: ${failure}`))
     const primaryCause = failures.length ? primaryCauseFor(task, failures, usage) : undefined
@@ -100,8 +121,12 @@ export async function runAPIxEval(options: APIxOptions) {
       failures,
       unsupportedExpectedFields,
       ignoredExpectedFields,
+      trust,
       primaryCause,
       optimization: primaryCause ? optimizationForCause(primaryCause) : undefined,
+      ...(rawOutput !== undefined ? { rawOutput } : {}),
+      ...(repairAttempted ? { repairAttempted } : {}),
+      ...(repairFailures ? { repairFailures } : {}),
       output,
       usage,
       ...(warmup ? { warmupUsage: warmup.usage } : {}),
@@ -161,4 +186,41 @@ async function runProviderForCase(
   }
 
   return { output, usage, providerFailures, latencyMs: Date.now() - startedAt, ttftMs }
+}
+
+async function runRepairForCase(
+  task: APIxCase,
+  provider: ReturnType<typeof createProvider>,
+  output: string,
+  failures: string[],
+) {
+  const prompt = repairPromptForCase(task, output, failures)
+  return runProviderForCase(task, new ContextManager(), provider, [{ role: "user", content: prompt }])
+}
+
+function repairPromptForCase(task: APIxCase, output: string, failures: string[]) {
+  return [
+    "Repair this APIx answer so it satisfies the deterministic validation constraints.",
+    "Return only the repaired final answer. Do not explain the repair.",
+    `Task goal: ${task.goal}`,
+    `Validation failures: ${failures.join("; ")}`,
+    `Expected constraints: ${JSON.stringify(task.expected)}`,
+    "<candidate>",
+    output,
+    "</candidate>",
+  ].join("\n")
+}
+
+function shouldAttemptRepair(failures: string[], providerFailures: string[]) {
+  if (providerFailures.length > 0 || failures.length === 0) return false
+  return failures.every((failure) => !failure.includes("cache hit ratio") && !failure.includes("cache not eligible"))
+}
+
+function addUsage(base: APIxProviderRun["usage"], extra: APIxProviderRun["usage"]) {
+  base.inputTokens += extra.inputTokens
+  base.outputTokens += extra.outputTokens
+  base.cacheHitTokens += extra.cacheHitTokens
+  base.cacheMissTokens += extra.cacheMissTokens
+  base.totalTokens = (base.totalTokens ?? 0) + (extra.totalTokens ?? 0)
+  base.reasoningTokens = (base.reasoningTokens ?? 0) + (extra.reasoningTokens ?? 0)
 }

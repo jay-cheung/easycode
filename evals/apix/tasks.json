@@ -461,7 +461,14 @@
           "一万公里",
           "轻微剐蹭",
           "长沙"
-        ]
+        ],
+        "aliases": {
+          "一万公里": [
+            "1万公里",
+            "10000公里",
+            "10k km"
+          ]
+        }
       },
       "metrics": {
         "quality_gate": "must_pass",
@@ -1282,7 +1289,16 @@
           "line 127",
           "missing",
           ")"
-        ]
+        ],
+        "aliases": {
+          "line 127": [
+            "第127行"
+          ],
+          "missing": [
+            "缺少",
+            "缺失"
+          ]
+        }
       },
       "metrics": {
         "quality_gate": "must_pass",
@@ -1701,7 +1717,18 @@
           "premise A",
           "premise B",
           "conclusion C"
-        ]
+        ],
+        "aliases": {
+          "premise A": [
+            "前提 A"
+          ],
+          "premise B": [
+            "前提 B"
+          ],
+          "conclusion C": [
+            "结论 C"
+          ]
+        }
       },
       "metrics": {
         "quality_gate": "must_pass",
@@ -1732,7 +1759,13 @@
         "must_include": [
           "法语术语",
           "定义"
-        ]
+        ],
+        "aliases": {
+          "法语术语": [
+            "法语专有名词",
+            "French term"
+          ]
+        }
       },
       "metrics": {
         "quality_gate": "must_pass",

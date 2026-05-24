@@ -20,6 +20,7 @@ export type APIxCase = {
     must_include?: string[]
     must_include_any?: string[]
     must_not_include?: string[]
+    aliases?: Record<string, string[]>
     regex?: string[]
     numeric?: Array<{ name: string; expected: number; tolerance: number }>
     structural?: string[]
@@ -77,6 +78,13 @@ export type CacheEvaluation = {
   minPrefixTokens?: number
 }
 
+export type APIxTrustLevel = "strict" | "assisted" | "tainted"
+
+export type APIxTrust = {
+  level: APIxTrustLevel
+  reasons: string[]
+}
+
 export type APIxResult = {
   id: string
   dimension: string
@@ -88,8 +96,12 @@ export type APIxResult = {
   failures: string[]
   unsupportedExpectedFields: string[]
   ignoredExpectedFields: string[]
+  trust: APIxTrust
   primaryCause?: string
   optimization?: string
+  rawOutput?: string
+  repairAttempted?: boolean
+  repairFailures?: string[]
   output: string
   usage: APIxUsage
   warmupUsage?: APIxUsage
@@ -98,4 +110,3 @@ export type APIxResult = {
   latencyMs: number
   ttftMs?: number
 }
-

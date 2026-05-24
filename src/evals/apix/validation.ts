@@ -20,9 +20,9 @@ export function validateCase(task: APIxCase, output: string, usage: APIxUsage, c
     }
   }
   for (const text of task.expected.must_include ?? []) {
-    if (!containsText(output, text)) failures.push(`missing ${JSON.stringify(text)}`)
+    if (!containsExpectedText(output, text, task)) failures.push(`missing ${JSON.stringify(text)}`)
   }
-  if (task.expected.must_include_any?.length && !task.expected.must_include_any.some((text) => containsText(output, text))) {
+  if (task.expected.must_include_any?.length && !task.expected.must_include_any.some((text) => containsExpectedText(output, text, task))) {
     failures.push(`missing any of ${task.expected.must_include_any.map((item) => JSON.stringify(item)).join(", ")}`)
   }
   for (const text of task.expected.must_not_include ?? []) {
@@ -100,7 +100,38 @@ export function optimizationForCause(cause: string) {
 }
 
 function containsText(output: string, expected: string) {
-  return output.toLocaleLowerCase().includes(expected.toLocaleLowerCase())
+  return output.toLocaleLowerCase().includes(expected.toLocaleLowerCase()) || comparableText(output).includes(comparableText(expected))
+}
+
+function containsExpectedText(output: string, expected: string, task: APIxCase) {
+  return expectedVariants(expected, task).some((variant) => containsText(output, variant))
+}
+
+function expectedVariants(expected: string, task: APIxCase) {
+  return [expected, ...(task.expected.aliases?.[expected] ?? [])]
+}
+
+function comparableText(text: string) {
+  return normalizeChineseNumbers(normalizeLineReferences(text.normalize("NFKC").toLocaleLowerCase())).replace(/\s+/g, "")
+}
+
+function normalizeLineReferences(text: string) {
+  return text
+    .replace(/第\s*(\d+)\s*行/g, "line$1")
+    .replace(/\bline\s+(\d+)\b/g, "line$1")
+}
+
+function normalizeChineseNumbers(text: string) {
+  return text
+    .replace(/一万/g, "1万")
+    .replace(/二万/g, "2万")
+    .replace(/三万/g, "3万")
+    .replace(/四万/g, "4万")
+    .replace(/五万/g, "5万")
+    .replace(/六万/g, "6万")
+    .replace(/七万/g, "7万")
+    .replace(/八万/g, "8万")
+    .replace(/九万/g, "9万")
 }
 
 function exactlyMatches(output: string, expected: string) {
@@ -122,4 +153,3 @@ function exactCandidates(output: string) {
 function allNumbers(text: string) {
   return [...text.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0])).filter((number) => Number.isFinite(number))
 }
-
