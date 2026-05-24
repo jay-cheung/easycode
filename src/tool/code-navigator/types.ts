@@ -58,7 +58,7 @@ export type CodeIndexSymbol = {
   signature?: string
 }
 
-export type CodeIndexEdgeKind = "imports" | "exports" | "calls" | "inherits" | "implements"
+export type CodeIndexEdgeKind = "imports" | "exports" | "calls" | "references" | "inherits" | "implements"
 
 export type CodeIndexEdge = {
   kind: CodeIndexEdgeKind

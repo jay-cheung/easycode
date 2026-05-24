@@ -96,7 +96,7 @@ Repeated bash and sandbox-bypass approvals are cached for the current session by
 
 EasyCode includes semantic-navigation tools for large repositories. Agents should prefer `repo_map` or `find_definition`, then `rg_search`, then `read_lines` for a bounded code slice. Full-file `read` is still available, but should be reserved for small files or clear edit targets.
 
-`repo_map` writes derived caches to `<project>/.easycode/cache/repo-map.json` and `<project>/.easycode/cache/code-index/index.json`. The repo map stores file fingerprints and symbol skeletons; the code index stores files, symbols, ranges, imports, exports, calls, inherits, and implements edges. These caches are not source of truth and can be deleted at any time. Projects should ignore `.easycode` so local caches are not committed.
+`repo_map` writes derived caches to `<project>/.easycode/cache/repo-map.json` and `<project>/.easycode/cache/code-index/index.json`. The repo map stores file fingerprints and symbol skeletons; the code index stores files, symbols, ranges, imports, exports, calls, references, inherits, and implements edges. These caches are not source of truth and can be deleted at any time. Projects should ignore `.easycode` so local caches are not committed.
 
 The code index is a tool-private cache, not prompt context. Tools may read it locally to answer bounded queries, but they must never return the full `code-index/index.json` to the model. Model-visible outputs stay limited to repo-map skeletons, search previews, or `read_lines` slices.
 

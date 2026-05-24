@@ -112,7 +112,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "find_definition",
-    description: "Find class/function/interface/type/variable definitions with ast-grep. Fails clearly if ast-grep is unavailable; does not fall back to noisy full-text search.",
+    description: "Find class/function/interface/type/variable definitions with the local code index first, then ast-grep or bounded JavaScript fallback when needed.",
     inputSchema: FindDefinitionInput,
     jsonSchema: objectSchema(
       {
@@ -134,7 +134,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "find_references",
-    description: "Find bounded symbol references with ripgrep word matching. Use language to constrain file types and avoid noisy broad search.",
+    description: "Find bounded symbol references with the local code index first, then ripgrep word matching when needed. Use language to constrain file types and avoid noisy broad search.",
     inputSchema: FindReferencesInput,
     jsonSchema: objectSchema(
       {

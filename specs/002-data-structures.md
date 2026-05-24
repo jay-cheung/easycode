@@ -95,7 +95,7 @@ type CodeIndexResult = {
   dir: string
   files: Array<{ filePath: string; hash: string; mtimeMs: number; size: number; imports: string[]; exports: string[] }>
   symbols: Array<{ id: string; filePath: string; name: string; kind: string; startLine: number; endLine: number; signature?: string }>
-  edges: Array<{ kind: "imports" | "exports" | "calls" | "inherits" | "implements"; from: string; to: string; filePath: string; line: number; preview?: string }>
+  edges: Array<{ kind: "imports" | "exports" | "calls" | "references" | "inherits" | "implements"; from: string; to: string; filePath: string; line: number; preview?: string }>
   cache: { path: ".easycode/cache/code-index/index.json"; hit: boolean; gitIgnored: boolean }
 }
 ```

@@ -15,10 +15,17 @@ const sideEffectImportPattern = /^\s*import\s+["']([^"']+)["']/
 const reExportPattern = /^\s*export\b.*?\bfrom\s+["']([^"']+)["']/
 const exportListPattern = /^\s*export\s+\{([^}]+)\}/
 const callPattern = /\b([A-Za-z_$][\w$]*)\s*\(/g
+const identifierPattern = /\b[A-Za-z_$][\w$]*\b/g
 const classExtendsPattern = /\bclass\s+([A-Za-z_$][\w$]*)\s+extends\s+([A-Za-z_$][\w$]*)/
 const implementsPattern = /\bclass\s+([A-Za-z_$][\w$]*)\b[^{]*\bimplements\s+([A-Za-z_$][\w$]*(?:\s*,\s*[A-Za-z_$][\w$]*)*)/
 const excludedMethods = new Set(["if", "for", "while", "switch", "catch", "function"])
 const excludedCalls = new Set(["if", "for", "while", "switch", "catch", "function", "return", "new", "typeof", "await"])
+const excludedReferences = new Set([
+  "abstract", "as", "async", "await", "break", "case", "catch", "class", "const", "continue", "default", "delete", "do", "else", "enum", "export",
+  "extends", "false", "finally", "for", "from", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new", "null",
+  "of", "override", "private", "protected", "public", "readonly", "return", "static", "super", "switch", "this", "throw", "true", "try", "type",
+  "typeof", "undefined", "var", "void", "while", "with", "yield",
+])
 
 export async function codeIndex(input: {
   sandbox: Sandbox
@@ -45,6 +52,7 @@ export async function codeIndex(input: {
   const indexedFiles: CodeIndexFile[] = []
   const symbols: CodeIndexSymbol[] = []
   const edges: CodeIndexEdge[] = []
+  const sourceFiles: Array<{ file: FileFingerprint; text: string; symbols: CodeIndexSymbol[] }> = []
 
   for (const file of input.files) {
     const text = await Bun.file(input.sandbox.resolve(file.filePath)).text().catch(() => "")
@@ -52,6 +60,12 @@ export async function codeIndex(input: {
     indexedFiles.push(extracted.file)
     symbols.push(...extracted.symbols)
     edges.push(...extracted.edges)
+    sourceFiles.push({ file, text, symbols: extracted.symbols })
+  }
+
+  const symbolNames = new Set(symbols.map((symbol) => symbol.name))
+  for (const sourceFile of sourceFiles) {
+    edges.push(...extractReferenceEdges(sourceFile.text, sourceFile.file, sourceFile.symbols, symbolNames))
   }
 
   const result: CodeIndexResult = {
@@ -121,7 +135,7 @@ export function findDefinitionsInCodeIndex(index: CodeIndexResult, symbol: strin
 
 export function findReferencesInCodeIndex(index: CodeIndexResult, symbol: string, maxResults: number): CodeSearchResult[] {
   return uniqueSortedResults(index.edges
-    .filter((edge) => edge.to === symbol && edge.kind === "calls")
+    .filter((edge) => edge.to === symbol && (edge.kind === "calls" || edge.kind === "references"))
     .map((edge) => ({ filePath: edge.filePath, line: edge.line, preview: edge.preview ?? edge.to })))
     .slice(0, maxResults)
 }
@@ -171,8 +185,9 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   }
 
   const symbols = withEndLines(declarations, lines.length)
-  for (const [index, line] of lines.entries()) {
+  for (const [index, rawLine] of lines.entries()) {
     const lineNumber = index + 1
+    const line = stripInlineCommentsAndStrings(rawLine)
     callPattern.lastIndex = 0
     let match: RegExpExecArray | null
     while ((match = callPattern.exec(line)) !== null) {
@@ -180,7 +195,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       if (excludedCalls.has(name)) continue
       if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
       const owner = symbolAtLine(symbols, lineNumber)
-      edges.push({ kind: "calls", from: owner?.id ?? `file:${file.filePath}`, to: name, filePath: file.filePath, line: lineNumber, preview: line.trimEnd() })
+      edges.push({ kind: "calls", from: owner?.id ?? `file:${file.filePath}`, to: name, filePath: file.filePath, line: lineNumber, preview: rawLine.trimEnd() })
     }
   }
 
@@ -196,6 +211,52 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
     symbols,
     edges,
   }
+}
+
+function extractReferenceEdges(text: string, file: FileFingerprint, symbols: CodeIndexSymbol[], symbolNames: Set<string>) {
+  const edges: CodeIndexEdge[] = []
+  const lines = text.split(/\r?\n/)
+  for (const [index, rawLine] of lines.entries()) {
+    const lineNumber = index + 1
+    if (rawLine.match(importPattern) ?? rawLine.match(sideEffectImportPattern)) continue
+    const line = stripInlineCommentsAndStrings(rawLine)
+    identifierPattern.lastIndex = 0
+    let match: RegExpExecArray | null
+    while ((match = identifierPattern.exec(line)) !== null) {
+      const name = match[0] ?? ""
+      if (!symbolNames.has(name) || excludedReferences.has(name)) continue
+      if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
+      const owner = symbolAtLine(symbols, lineNumber)
+      edges.push({ kind: "references", from: owner?.id ?? `file:${file.filePath}`, to: name, filePath: file.filePath, line: lineNumber, preview: rawLine.trimEnd() })
+    }
+  }
+  return edges
+}
+
+function stripInlineCommentsAndStrings(line: string) {
+  let output = ""
+  let quote: string | undefined
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index] ?? ""
+    const next = line[index + 1] ?? ""
+    if (!quote && char === "/" && next === "/") break
+    if (quote) {
+      if (char === "\\") {
+        index++
+        continue
+      }
+      if (char === quote) quote = undefined
+      output += " "
+      continue
+    }
+    if (char === "\"" || char === "'" || char === "`") {
+      quote = char
+      output += " "
+      continue
+    }
+    output += char
+  }
+  return output
 }
 
 function symbolFor(filePath: string, name: string, kind: string, line: number, source: string): CodeIndexSymbol {

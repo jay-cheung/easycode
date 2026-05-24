@@ -27,7 +27,21 @@ describe("logger", () => {
         type: "provider",
         name: "provider.transcript",
         detail: {
-          input: "cachedmiss",
+          input: [
+            '<message index="0" role="system">',
+            "cached",
+            "</message>",
+            "",
+            '<message index="1" role="user">',
+            "miss",
+            "</message>",
+            "",
+            '<message index="2" role="tool">',
+            '<tool_result name="read" id="call_1" status="succeeded">',
+            "ok",
+            "</tool_result>",
+            "</message>",
+          ].join("\n"),
           cachedInput: "cached",
           uncachedInput: "miss",
           output: "answer",
@@ -39,7 +53,15 @@ describe("logger", () => {
         type: "provider",
         name: "provider.transcript",
         detail: {
-          input: "cachedmiss2",
+          input: [
+            '<message index="0" role="system">',
+            "cached",
+            "</message>",
+            "",
+            '<message index="1" role="user">',
+            "miss2",
+            "</message>",
+          ].join("\n"),
           cachedInput: "cached",
           uncachedInput: "miss2",
           output: "answer2",
@@ -58,9 +80,9 @@ describe("logger", () => {
     expect(lines).toHaveLength(5)
     expect(JSON.parse(lines[2])).toMatchObject({ type: "error", name: "error.event" })
     const transcript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "demo_session.txt")).text()
-    expect(transcript).toContain("-------turn1---------\n-------input---------\n-------cached---------\nprovider reported cached tokens: 4\nexact cached text span: unavailable from provider\nestimated cached prefix:\ncached\n-------cache miss---------\nmiss\n-------output---------\nanswer\n-------hit rate---------\n40.0%, cache hit: yes, input=10, cached=4, miss=6, output=2")
-    expect(transcript).toContain("-------turn2---------")
-    expect(transcript).toContain("common prefix with previous turn: chars=10, estimated_tokens=3")
+    expect(transcript).toContain("Turn 1\n\nInput\n\nSystem\n\ncached\n\nUser\n\nmiss\n\nTool\n\n<tool_result name=\"read\" id=\"call_1\" status=\"succeeded\">\nok\n</tool_result>\n\nOutput\n\nAssistant\n\nanswer\n\nCache\n\n40.0%, cache hit: yes, input=10, cached=4, miss=6, output=2\nprovider reported cached tokens: 4\nexact cached text span: unavailable from provider")
+    expect(transcript).toContain("Turn 2")
+    expect(transcript).toContain("common prefix with previous turn: chars=89, estimated_tokens=27")
     await rm(root, { recursive: true, force: true })
   })
 

@@ -152,6 +152,52 @@ describe("code navigator", () => {
     expect(references).toEqual([{ filePath: "src/auth.ts", line: 4, preview: "    return verifyToken(user)" }])
   })
 
+  test("code index reference lookup covers constructors types and property receivers", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "auth.ts"), [
+      "export class AuthService {",
+      "  login(user: string): string {",
+      "    return user",
+      "  }",
+      "}",
+      "export const tokenStore = {",
+      "  get(user: string) {",
+      "    return user",
+      "  }",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "use-auth.ts"), [
+      "import { AuthService, tokenStore } from './auth'",
+      "export function run(user: string): string {",
+      "  const service: AuthService = new AuthService()",
+      "  return tokenStore.get(service.login(user))",
+      "  // tokenStore.get(user) is only documentation",
+      "  const note = 'AuthService tokenStore.get(user)'",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      },
+    })
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+    const index = await Bun.file(path.join(root, ".easycode", "cache", "code-index", "index.json")).json()
+    const authReferences = await navigator.findReferences({ symbol: "AuthService", language: "typescript" })
+    const storeReferences = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
+
+    expect(index.generatorVersion).toBe("2")
+    expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "AuthService", line: 3 }))
+    expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "tokenStore", line: 4 }))
+    expect(authReferences).toEqual([
+      { filePath: "src/use-auth.ts", line: 3, preview: "  const service: AuthService = new AuthService()" },
+    ])
+    expect(storeReferences).toEqual([
+      { filePath: "src/use-auth.ts", line: 4, preview: "  return tokenStore.get(service.login(user))" },
+    ])
+  })
+
   test("repoMap filters symbols and files based on semantic query", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })

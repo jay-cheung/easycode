@@ -62,22 +62,27 @@ function safeLogSegment(value: string) {
 function formatTranscriptTurn(turn: number, event: LogEvent, previousInput = "") {
   const detail = event.detail ?? {}
   return [
-    transcriptHeader(`turn${turn}`),
-    transcriptHeader("input"),
-    transcriptHeader("cached"),
-    cachedInputText(detail, previousInput),
-    transcriptHeader("cache miss"),
-    cacheMissInputText(detail),
-    transcriptHeader("output"),
-    stringDetail(detail.output),
-    transcriptHeader("hit rate"),
+    `Turn ${turn}`,
+    "",
+    "Input",
+    "",
+    formatProviderInputText(stringDetail(detail.input)),
+    "",
+    "Output",
+    "",
+    "Assistant",
+    "",
+    stringDetail(detail.output) || "(none)",
+    "",
+    "Cache",
+    "",
     hitRateLine(detail),
+    cacheSummaryText(detail, previousInput),
     "",
   ].join("\n")
 }
 
-function cachedInputText(detail: Record<string, unknown>, previousInput: string) {
-  const cachedInput = stringDetail(detail.cachedInput)
+function cacheSummaryText(detail: Record<string, unknown>, previousInput: string) {
   const cacheHitTokens = usageNumber(detail, "cacheHitTokens") ?? 0
   const currentInput = stringDetail(detail.input)
   const commonPrefix = previousInput ? commonPrefixLength(previousInput, currentInput) : 0
@@ -86,15 +91,7 @@ function cachedInputText(detail: Record<string, unknown>, previousInput: string)
     "exact cached text span: unavailable from provider",
   ]
   if (previousInput) lines.push(`common prefix with previous turn: chars=${commonPrefix}, estimated_tokens=${estimateTextTokens(currentInput.slice(0, commonPrefix))}`)
-  lines.push("estimated cached prefix:")
-  lines.push(cachedInput || "(none)")
   return lines.join("\n")
-}
-
-function cacheMissInputText(detail: Record<string, unknown>) {
-  const uncachedInput = stringDetail(detail.uncachedInput)
-  if (uncachedInput) return uncachedInput
-  return stringDetail(detail.input)
 }
 
 function hitRateLine(detail: Record<string, unknown>) {
@@ -124,8 +121,32 @@ function stringDetail(value: unknown) {
   return typeof value === "string" ? value : value === undefined || value === null ? "" : String(value)
 }
 
-function transcriptHeader(label: string) {
-  return `-------${label}---------`
+function formatProviderInputText(input: string) {
+  const messages = parseRenderedProviderInput(input)
+  if (messages.length === 0) return input || "(none)"
+  return messages.map((message) => `${roleTitle(message.role)}\n\n${message.content || "(empty)"}`).join("\n\n")
+}
+
+function parseRenderedProviderInput(input: string) {
+  const messages: Array<{ role: string; content: string }> = []
+  const pattern = /<message index="\d+" role="([^"]+)">\n([\s\S]*?)\n<\/message>(?:\n\n|$)/g
+  let match: RegExpExecArray | null
+  let consumed = 0
+  while ((match = pattern.exec(input))) {
+    if (input.slice(consumed, match.index).trim()) return []
+    messages.push({ role: match[1], content: match[2] })
+    consumed = pattern.lastIndex
+  }
+  if (input.slice(consumed).trim()) return []
+  return messages
+}
+
+function roleTitle(role: string) {
+  if (role === "system") return "System"
+  if (role === "user") return "User"
+  if (role === "assistant") return "Assistant"
+  if (role === "tool") return "Tool"
+  return role ? role[0].toUpperCase() + role.slice(1) : "Message"
 }
 
 function commonPrefixLength(left: string, right: string) {
