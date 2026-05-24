@@ -113,7 +113,7 @@ Skills are discovered from these roots:
 
 Skill files are matched case-insensitively as `skill.md` / `SKILL.md`. Only skill names and descriptions are loaded into context up front; full content is loaded through the `skill` tool.
 
-`/skill use <name>` makes a skill active for the current session without injecting full instructions into the stable system prefix. Active skill names are saved in `.easycode/sessions/`; full instructions are still loaded on demand through the `skill` tool.
+`/skill use <name>` makes a skill active for the current session without injecting full instructions into the stable system prefix. Active skill names are saved in `.easycode/sessions/`; the next task after activation requires the model to load full instructions once through the `skill` tool, then the pending first-use load is cleared.
 
 ## Logger
 

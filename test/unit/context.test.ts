@@ -108,6 +108,17 @@ describe("context", () => {
     expect(messages[1].content).not.toContain("hidden")
   })
 
+  test("compose requires first-use load for pending selected skills", () => {
+    const context = new ContextManager()
+    const demo = { name: "demo", description: "Demo skill", location: "x", content: "hidden" }
+    const messages = context.compose({ agent: createAgent("build"), skills: [demo], selectedSkills: [demo], pendingSkillLoads: [demo], tools: [] })
+
+    expect(messages[1].content).toContain("First-use skill load required")
+    expect(messages[1].content).toContain("MUST call the skill tool")
+    expect(messages[1].content).toContain("demo: Demo skill")
+    expect(messages[1].content).not.toContain("hidden")
+  })
+
   test("compose keeps tool policy without duplicating provider tool definitions in the system prompt", () => {
     const context = new ContextManager()
     const readTool = createBuiltinRegistry().get("read")

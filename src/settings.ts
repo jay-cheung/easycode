@@ -6,6 +6,7 @@ export type SessionSettings = {
   thinking: boolean
   effort: ReasoningEffort
   selectedSkills: string[]
+  pendingSkillLoads: string[]
   maxTokens?: number
   maxSteps?: number
   responseReserveTokens?: number
@@ -14,12 +15,13 @@ export type SessionSettings = {
 export const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "max"]
 
 export function defaultSessionSettings(provider = "fake"): SessionSettings {
-  return { provider, thinking: true, effort: "high", selectedSkills: [], maxTokens: 32_000, maxSteps: 20 }
+  return { provider, thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 32_000, maxSteps: 20 }
 }
 
 export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = "fake"): SessionSettings {
   const fallback = defaultSessionSettings(fallbackProvider)
   const effort = input?.effort && isReasoningEffort(input.effort) ? input.effort : fallback.effort
+  const selectedSkills = uniqueStringList(input?.selectedSkills)
   return {
     provider: typeof input?.provider === "string" && input.provider ? input.provider : fallback.provider,
     model: typeof input?.model === "string" && input.model ? input.model : undefined,
@@ -28,7 +30,8 @@ export function normalizeSessionSettings(input: Partial<SessionSettings> | undef
     maxTokens: positiveInteger(input?.maxTokens) ?? fallback.maxTokens,
     maxSteps: positiveInteger(input?.maxSteps) ?? fallback.maxSteps,
     responseReserveTokens: positiveInteger(input?.responseReserveTokens),
-    selectedSkills: Array.isArray(input?.selectedSkills) ? [...new Set(input.selectedSkills.filter((name): name is string => typeof name === "string" && name.length > 0))] : [],
+    selectedSkills,
+    pendingSkillLoads: Array.isArray(input?.pendingSkillLoads) ? uniqueStringList(input.pendingSkillLoads) : selectedSkills,
   }
 }
 
@@ -39,4 +42,8 @@ export function isReasoningEffort(value: string): value is ReasoningEffort {
 function positiveInteger(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined
   return Math.round(value)
+}
+
+function uniqueStringList(value: unknown) {
+  return Array.isArray(value) ? [...new Set(value.filter((name): name is string => typeof name === "string" && name.length > 0))] : []
 }

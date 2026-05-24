@@ -126,6 +126,7 @@ export type ContextPlanInput = {
   agent: Agent
   skills: SkillInfo[]
   selectedSkills?: SkillInfo[]
+  pendingSkillLoads?: SkillInfo[]
   tools: ToolDef[]
 }
 
@@ -171,7 +172,7 @@ export interface ContextManagerLike {
   /** Compose provider messages and attach budget/cache/ledger stats for the next provider call. */
   planRequest(input: ContextPlanInput): ContextPlan
   /** Build provider input messages; planRequest calls this and then computes stats. */
-  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
+  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; pendingSkillLoads?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[]
   /** Render the currently selected ledger records for the ledger tool. */
   selectedLedgerText(): string
 }

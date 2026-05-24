@@ -152,11 +152,11 @@ export class ContextManager implements ContextManagerLike {
     }
   }
 
-  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
+  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; pendingSkillLoads?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
     const messages: Message[] = []
     if (input) {
       messages.push(textMessage("system", buildSystemPrompt(input.agent)))
-      const skillPrompt = buildSkillPrompt(input.skills, input.selectedSkills ?? [])
+      const skillPrompt = buildSkillPrompt(input.skills, input.selectedSkills ?? [], input.pendingSkillLoads ?? [])
       if (skillPrompt) messages.push(textMessage("system", skillPrompt))
     }
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
@@ -283,12 +283,16 @@ function buildSystemPrompt(agent: Agent) {
   return [agent.systemPrompt, contextExecutionContract, `Mode: ${agent.mode}`, toolPriorityDirective].join("\n\n")
 }
 
-function buildSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[]) {
+function buildSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[], pendingSkillLoads: SkillInfo[]) {
   if (skills.length === 0 && selectedSkills.length === 0) return ""
   const skillList = sortedSkills(skills).map(formatSkillDescription).join("\n") || "(none)"
   const selected = sortedSkills(selectedSkills).map(formatSkillDescription).join("\n") || "(none)"
   const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
-  return [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`].join("\n\n")
+  const pending = sortedSkills(pendingSkillLoads).map(formatSkillDescription).join("\n")
+  const pendingPrompt = pending
+    ? `First-use skill load required. Before answering or taking task-specific action, you MUST call the skill tool for each listed skill, then follow the returned instructions:\n${pending}`
+    : ""
+  return [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, pendingPrompt].filter(Boolean).join("\n\n")
 }
 
 function formatSkillDescription(skill: SkillInfo) {

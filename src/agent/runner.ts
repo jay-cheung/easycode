@@ -89,7 +89,7 @@ export class AgentRunner {
         throw error
       }
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-      const plan = this.context.planRequest({ step, agent, skills, selectedSkills, tools })
+      const plan = this.context.planRequest({ step, agent, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
       const providerMessages = plan.providerMessages
       let text = ""
       let toolCall: ToolCall | undefined
@@ -166,6 +166,7 @@ export class AgentRunner {
       usedTools.push(toolCall.name)
       state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
       const result = await this.runTool(toolCall, effectiveMode, input.signal)
+      if (toolCall.name === "skill" && result.metadata.status === "succeeded") this.markSkillLoaded(toolCall.input)
       this.recordToolOutcome(toolCall, result, prompt)
       this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
       this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
@@ -279,6 +280,19 @@ export class AgentRunner {
     const selected = this.settings.selectedSkills ?? []
     const loaded = await Promise.all(selected.map((name) => this.skills.load(name)))
     return loaded.filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
+  }
+
+  private pendingSelectedSkills(selectedSkills: Awaited<ReturnType<AgentRunner["selectedSkills"]>>) {
+    const pending = new Set(this.settings.pendingSkillLoads ?? [])
+    if (pending.size === 0) return []
+    return selectedSkills.filter((skill) => pending.has(skill.name))
+  }
+
+  private markSkillLoaded(input: unknown) {
+    if (!input || typeof input !== "object") return
+    const name = (input as { name?: unknown }).name
+    if (typeof name !== "string") return
+    this.settings.pendingSkillLoads = (this.settings.pendingSkillLoads ?? []).filter((skill) => skill !== name)
   }
 
   private effectiveMode(prompt: string, mode: AgentMode): AgentMode {

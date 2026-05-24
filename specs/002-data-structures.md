@@ -54,6 +54,7 @@ type SessionSettings = {
   thinking: boolean
   effort: "low" | "medium" | "high" | "max"
   selectedSkills: string[]
+  pendingSkillLoads: string[]
 }
 
 type ContextState = {

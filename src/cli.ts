@@ -353,6 +353,7 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
     }
     if (command.action === "clear") {
       next.selectedSkills = []
+      next.pendingSkillLoads = []
       resetRunner = true
       output.write("Active skills cleared.\n")
     }
@@ -361,6 +362,7 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
       if (!skill) output.write(`Skill not found: ${command.name}\n`)
       else {
         next.selectedSkills = [...new Set([...next.selectedSkills, skill.name])]
+        next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.name])]
         resetRunner = true
         output.write(`Skill active: ${skill.name}\n`)
       }
@@ -379,6 +381,7 @@ function settingsText(settings: SessionSettings, images: ImagePart[]) {
     `maxTokens: ${settings.maxTokens}`,
     `maxSteps: ${settings.maxSteps}`,
     `skills: ${settings.selectedSkills.join(", ") || "(none)"}`,
+    `pendingSkillLoads: ${settings.pendingSkillLoads.join(", ") || "(none)"}`,
     `pending images: ${images.length}`,
   ].join("\n")
 }

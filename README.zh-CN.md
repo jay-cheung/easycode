@@ -104,7 +104,7 @@ Skill 会从以下目录发现：
 
 文件名大小写不敏感，`skill.md` 和 `SKILL.md` 都支持。上下文中默认只放 skill 的名称和描述，完整内容通过 `skill` tool 加载。
 
-`/skill use <name>` 会在当前 session 启用 skill，但不会把完整指令注入稳定 system 前缀。启用的 skill 名称会保存到 `.easycode/sessions/`；完整内容仍通过 `skill` tool 按需加载。
+`/skill use <name>` 会在当前 session 启用 skill，但不会把完整指令注入稳定 system 前缀。启用的 skill 名称会保存到 `.easycode/sessions/`；激活后的下一次任务会要求模型通过 `skill` tool 读取一次完整指令，读取成功后清除这次 first-use load。
 
 ## Logger
 

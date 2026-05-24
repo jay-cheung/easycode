@@ -642,9 +642,39 @@ describe("agent integration", () => {
     const root = await fixture()
     await mkdir(path.join(root, ".easycode", "skills", "demo"), { recursive: true })
     await Bun.write(path.join(root, ".easycode", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Demo\n---\nFull demo skill")
-    const result = await createRunner({ root, provider: "fake", mode: "build" }).run("use skill demo", "build")
+    const result = await createRunner({ root, provider: "fake", mode: "build", settings: { ...defaultSessionSettings("fake"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] } }).run("use skill demo", "build")
     expect(result.usedTools).toContain("skill")
     expect(toolResults(result.messages).some((part) => part.output.includes("Full demo skill"))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("pending selected skills load once", async () => {
+    const root = await fixture()
+    await mkdir(path.join(root, ".easycode", "skills", "demo"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Demo\n---\nFull demo skill")
+    const seenPrompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const prompt = input.providerMessages.map((message) => message.content).join("\n")
+        seenPrompts.push(prompt)
+        if (prompt.includes("First-use skill load required")) {
+          yield { type: "tool_call", call: { id: "call_skill", name: "skill", input: { name: "demo" } } }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+        yield { type: "done" }
+      },
+    }
+    const settings = { ...defaultSessionSettings("test-provider"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] }
+    const result = await new AgentRunner({ root, provider, settings }).run("handle the task", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["skill"])
+    expect(settings.pendingSkillLoads).toEqual([])
+    expect(seenPrompts[0]).toContain("First-use skill load required")
+    expect(seenPrompts.at(-1)).not.toContain("First-use skill load required")
     await rm(root, { recursive: true, force: true })
   })
 
