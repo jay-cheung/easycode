@@ -39,21 +39,36 @@ export class InstructionService implements InstructionServiceLike {
 
   async system() {
     const files = [
-      ...projectInstructionFiles.map((file) => ({ source: "project" as const, filePath: path.join(this.root, file), displayPath: file })),
-      ...this.globalFiles.map((filePath) => ({ source: "global" as const, filePath, displayPath: displayGlobalPath(filePath) })),
-    ]
-    const seen = new Set<string>()
+      await firstExisting(projectInstructionFiles.map((file) => ({ source: "project" as const, filePath: path.join(this.root, file), displayPath: file }))),
+      await firstExisting(this.globalFiles.map((filePath) => ({ source: "global" as const, filePath, displayPath: displayGlobalPath(filePath) }))),
+    ].filter((file): file is InstructionFile => Boolean(file))
     const instructions: InstructionInfo[] = []
     for (const file of files) {
       const normalized = path.resolve(file.filePath)
-      if (seen.has(normalized)) continue
-      seen.add(normalized)
       const content = await readInstruction(normalized)
       if (!content) continue
       instructions.push({ source: file.source, path: file.displayPath, content })
     }
     return instructions
   }
+}
+
+type InstructionFile = {
+  source: InstructionSource
+  filePath: string
+  displayPath: string
+}
+
+async function firstExisting(files: InstructionFile[]) {
+  const seen = new Set<string>()
+  for (const file of files) {
+    const normalized = path.resolve(file.filePath)
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    const candidate = Bun.file(normalized)
+    if (await candidate.exists()) return file
+  }
+  return undefined
 }
 
 async function readInstruction(filePath: string) {

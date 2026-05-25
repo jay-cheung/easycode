@@ -104,7 +104,7 @@ The code index is a tool-private cache, not prompt context. Tools may read it lo
 
 ## Instructions
 
-EasyCode automatically loads durable instruction files into provider context before dynamic conversation history. Project files are read from the root as `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`; global files are read from `~/.easycode/AGENTS.md`, `~/.agent/AGENTS.md`, and `~/.claude/CLAUDE.md` when present.
+EasyCode automatically loads durable instruction files into provider context before dynamic conversation history. It reads the first existing project file from `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`, then the first existing global file from `~/.easycode/AGENTS.md`, `~/.agent/AGENTS.md`, and `~/.claude/CLAUDE.md`.
 
 Instruction files are part of the stable prompt prefix. Put repository and user workflow rules there, and keep turn-specific facts in the conversation so prompt-cache reuse stays predictable.
 
