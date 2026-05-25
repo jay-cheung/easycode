@@ -22,6 +22,8 @@ export type RepoMapEntry = {
   hash: string
   mtimeMs: number
   size: number
+  imports?: string[]
+  exports?: string[]
   symbols: RepoMapSymbol[]
 }
 

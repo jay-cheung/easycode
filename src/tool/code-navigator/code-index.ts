@@ -117,6 +117,8 @@ export function repoMapEntriesFromCodeIndex(index: CodeIndexResult): RepoMapEntr
     hash: file.hash,
     mtimeMs: file.mtimeMs,
     size: file.size,
+    imports: file.imports,
+    exports: file.exports,
     symbols: (symbolsByFile.get(file.filePath) ?? []).map((symbol) => ({
       name: symbol.name,
       kind: symbol.kind,

@@ -85,6 +85,7 @@ export function scoreAndFilterRepoMap(map: RepoMapResult, query: string): RepoMa
     let symbolScore = 0
     const matchingSymbols = entry.symbols.filter(symbol => {
       const nameLower = symbol.name.toLowerCase()
+      const signatureLower = (symbol.signature ?? "").toLowerCase()
       let matched = false
       for (const term of terms) {
         if (nameLower.includes(term)) {
@@ -94,11 +95,21 @@ export function scoreAndFilterRepoMap(map: RepoMapResult, query: string): RepoMa
             symbolScore += 10
           }
         }
+        if (signatureLower.includes(term)) {
+          matched = true
+          symbolScore += 2
+        }
       }
       return matched
     })
 
-    const totalScore = pathScore + symbolScore
+    let metadataScore = 0
+    const metadata = [...(entry.imports ?? []), ...(entry.exports ?? [])].join(" ").toLowerCase()
+    for (const term of terms) {
+      if (metadata.includes(term)) metadataScore += 3
+    }
+
+    const totalScore = pathScore + symbolScore + metadataScore
     if (totalScore > 0) {
       const symbolsToKeep = matchingSymbols.length > 0 ? matchingSymbols : entry.symbols
       scoredEntries.push({

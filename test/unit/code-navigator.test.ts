@@ -214,6 +214,26 @@ describe("code navigator", () => {
     expect(map.entries[0]?.symbols.some(s => s.name === "AuthService")).toBe(false)
   })
 
+  test("repoMap query matches symbol signatures and file imports", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "handlers.ts"), [
+      "import { createAuditSink } from '@internal/audit-sdk'",
+      "export function buildSink(event: AuditEvent): AuditSink {",
+      "  return createAuditSink(event)",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "math.ts"), "export function add(a: number, b: number): number {\n  return a + b\n}\n")
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    const signatureMatch = await navigator.repoMap({ dir: "src", language: "typescript", query: "AuditEvent" })
+    const importMatch = await navigator.repoMap({ dir: "src", language: "typescript", query: "audit-sdk" })
+
+    expect(signatureMatch.entries.map((entry) => entry.filePath)).toEqual(["src/handlers.ts"])
+    expect(signatureMatch.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "buildSink" }))
+    expect(importMatch.entries.map((entry) => entry.filePath)).toEqual(["src/handlers.ts"])
+  })
+
   test("pure JS rgSearch fallback scans files and matches query regex", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })
