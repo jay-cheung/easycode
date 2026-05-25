@@ -288,21 +288,27 @@ export class AgentRunner {
 
   private async selectedSkills() {
     const selected = this.settings.selectedSkills ?? []
-    const loaded = await Promise.all(selected.map((name) => this.skills.load(name)))
-    return loaded.filter((skill): skill is NonNullable<typeof skill> => Boolean(skill))
+    if (selected.length === 0) return []
+    const skills = await this.skills.available()
+    const nameSet = new Set(selected)
+    const idSet = new Set(selected)
+    // Match by id first, then by name (backward compat with old name-based settings)
+    const matched = skills.filter((s) => idSet.has(s.id) || nameSet.has(s.name))
+    // Load full content for matched skills
+    return (await Promise.all(matched.map((s) => this.skills.load(s.id)))).filter((s): s is NonNullable<typeof s> => Boolean(s))
   }
 
   private pendingSelectedSkills(selectedSkills: Awaited<ReturnType<AgentRunner["selectedSkills"]>>) {
     const pending = new Set(this.settings.pendingSkillLoads ?? [])
     if (pending.size === 0) return []
-    return selectedSkills.filter((skill) => pending.has(skill.name))
+    return selectedSkills.filter((skill) => pending.has(skill.id) || pending.has(skill.name))
   }
 
   private markSkillLoaded(input: unknown) {
     if (!input || typeof input !== "object") return
     const name = (input as { name?: unknown }).name
     if (typeof name !== "string") return
-    this.settings.pendingSkillLoads = (this.settings.pendingSkillLoads ?? []).filter((skill) => skill !== name)
+    this.settings.pendingSkillLoads = (this.settings.pendingSkillLoads ?? []).filter((s) => s !== name)
   }
 
   private effectiveMode(prompt: string, mode: AgentMode): AgentMode {

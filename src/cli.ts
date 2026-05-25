@@ -349,7 +349,10 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
   if (command.type === "skill") {
     if (command.action === "list") {
       const skills = await input.skills.available()
-      output.write(`${skills.map((skill) => `${skill.name}: ${skill.description}`).join("\n") || "No skills found."}\n`)
+      for (const skill of skills) {
+        output.write(`${skill.id}\n  name: ${skill.name} — ${skill.description}\n`)
+      }
+      if (skills.length === 0) output.write("No skills found.\n")
     }
     if (command.action === "clear") {
       next.selectedSkills = []
@@ -361,10 +364,21 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
       const skill = await input.skills.load(command.name)
       if (!skill) output.write(`Skill not found: ${command.name}\n`)
       else {
-        next.selectedSkills = [...new Set([...next.selectedSkills, skill.name])]
-        next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.name])]
+        next.selectedSkills = [...new Set([...next.selectedSkills, skill.id])]
+        next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.id])]
         resetRunner = true
-        output.write(`Skill active: ${skill.name}\n`)
+        output.write(`Skill active: ${skill.id}\n`)
+      }
+    }
+    if (command.action === "remove") {
+      const removed = next.selectedSkills.filter((id) => id === command.name || id.endsWith(`/${command.name}`) || id.endsWith(`:${command.name}`))
+      if (removed.length === 0) {
+        output.write(`No active skill found: ${command.name}\n`)
+      } else {
+        next.selectedSkills = next.selectedSkills.filter((id) => !removed.includes(id))
+        next.pendingSkillLoads = (next.pendingSkillLoads ?? []).filter((id) => !removed.includes(id))
+        resetRunner = true
+        output.write(`Skill removed: ${removed.join(", ")}\n`)
       }
     }
   }

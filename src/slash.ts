@@ -6,6 +6,7 @@ export type SlashCommand =
   | { type: "image"; action: "clear" }
   | { type: "skill"; action: "list" }
   | { type: "skill"; action: "use"; name: string }
+  | { type: "skill"; action: "remove"; name: string }
   | { type: "skill"; action: "clear" }
   | { type: "model"; provider: string; model?: string }
   | { type: "effort"; value: string }
@@ -31,6 +32,10 @@ export function parseSlashCommand(input: string): SlashCommand {
     const action = args[0]?.toLowerCase()
     if (!action || action === "list") return { type: "skill", action: "list" }
     if (action === "clear") return { type: "skill", action: "clear" }
+    if (action === "remove") {
+      const skillName = args.slice(1).join(" ")
+      return skillName ? { type: "skill", action: "remove", name: skillName } : { type: "error", message: "/skill remove requires a skill name" }
+    }
     if (action === "use") {
       const skillName = args.slice(1).join(" ")
       return skillName ? { type: "skill", action: "use", name: skillName } : { type: "error", message: "/skill use requires a skill name" }
