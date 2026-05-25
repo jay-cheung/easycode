@@ -96,18 +96,20 @@ export class AgentRunner {
       const plan = this.context.planRequest({ step, agent, instructions, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
       const providerMessages = plan.providerMessages
       let text = ""
+      let reasoningText = ""
       const toolCalls: ToolCall[] = []
       let failureText: string | undefined
+      const currentReasoningTranscript = () => appendOutput(reasoningTranscript, reasoningText)
       state = this.aspect.transition("streaming", { step: step + 1 })
       const stopProviderProgress = this.startProviderProgressTimer()
       const metricCall = startProviderMetricCall(providerMetrics)
       try {
         for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools, signal: input.signal })) {
           observeProviderMetricEvent(providerMetrics, metricCall, event)
-          if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
+          if (input.signal?.aborted) return this.cancelledResult(currentReasoningTranscript(), usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
           if (event.type === "reasoning_delta") {
             stopProviderProgress()
-            reasoningTranscript = appendOutput(reasoningTranscript, event.text)
+            reasoningText += event.text
             this.onEvent?.({ type: "reasoning_delta", text: event.text })
             this.onTextDelta?.(event.text)
           }
@@ -134,11 +136,12 @@ export class AgentRunner {
         }
       } catch (error) {
         stopProviderProgress()
-        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
+        if (input.signal?.aborted) return this.cancelledResult(currentReasoningTranscript(), usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
         if (error instanceof ProviderError) {
           const failureText = runFailureText(providerFailureText(error), "provider_error")
           this.onEvent?.({ type: "failure", text: failureText })
           const output = appendOutput(text, failureText)
+          reasoningTranscript = currentReasoningTranscript()
           this.context.add(assistantMessage(reasoningTranscript, output))
           state = this.aspect.runFailed("provider_error", usedTools)
           this.emitRunDone("failed", providerMetrics)
@@ -149,6 +152,7 @@ export class AgentRunner {
         finishProviderMetricCall(providerMetrics, metricCall)
         stopProviderProgress()
       }
+      reasoningTranscript = currentReasoningTranscript()
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
       if (failureText) {
         const output = appendOutput(text, failureText)

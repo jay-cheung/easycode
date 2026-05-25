@@ -271,6 +271,25 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("keeps streamed reasoning chunks contiguous within a provider turn", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "reasoning_delta", text: "The" }
+        yield { type: "reasoning_delta", text: " user" }
+        yield { type: "reasoning_delta", text: " is" }
+        yield { type: "reasoning_delta", text: " asking" }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+    const result = await new AgentRunner({ root, provider }).run("Fix", "build")
+    expect(result.status).toBe("completed")
+    expect(result.reasoning).toBe("The user is asking")
+    expect(result.messages.at(-1)?.parts[0]).toMatchObject({ type: "reasoning", text: "The user is asking" })
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("accumulates reasoning across provider turns", async () => {
     const root = await fixture()
     let calls = 0

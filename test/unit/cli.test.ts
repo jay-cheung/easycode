@@ -177,8 +177,6 @@ describe("cli args", () => {
     })
     child.stdin.write("slow command\n")
     await new Promise((resolve) => setTimeout(resolve, 120))
-    child.stdin.write("y\n")
-    await new Promise((resolve) => setTimeout(resolve, 120))
     child.stdin.write("/cancel\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
