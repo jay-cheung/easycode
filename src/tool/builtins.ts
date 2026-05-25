@@ -32,7 +32,7 @@ export function createBuiltinRegistry() {
       if (lineCount > maxFullReadLines) {
         return {
           title: params.filePath,
-          output: `Full-file read blocked for ${params.filePath}: ${lineCount} lines exceeds the ${maxFullReadLines}-line limit. Use repo_map first, then find_definition or rg_search to locate the symbol, then read_lines for the smallest relevant range.`,
+          output: `Full-file read blocked for ${params.filePath}: ${lineCount} lines exceeds the ${maxFullReadLines}-line limit. Use repo_map first, then find_definition or rg_search to locate the symbol, then call_graph to see the function calls, then read_lines for the smallest relevant range.`,
           metadata: { status: "failed", error: "large_file_read_forbidden", lineCount, maxLines: maxFullReadLines },
         }
       }
