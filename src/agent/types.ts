@@ -3,6 +3,7 @@ import type { PermissionService } from "../permission"
 import type { Provider, ProviderName } from "../provider"
 import type { Sandbox } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
+import type { InstructionServiceLike } from "../instruction"
 import type { ToolRegistryLike } from "../tool"
 import type { ContextManagerLike } from "../context"
 import type { Logger } from "../logger"
@@ -35,6 +36,7 @@ export type AgentRunnerOptions = {
   permission?: PermissionService
   context?: ContextManagerLike
   skills?: SkillServiceLike
+  instructions?: InstructionServiceLike
   sandbox?: Sandbox
   maxSteps?: number
   logger?: Logger
@@ -45,4 +47,3 @@ export type AgentRunnerOptions = {
   providerProgressIntervalMs?: number
   settings?: SessionSettings
 }
-

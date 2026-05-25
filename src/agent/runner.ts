@@ -4,6 +4,7 @@ import { defaultPermissionRules, PermissionService } from "../permission"
 import { createProvider, ProviderError, type Provider, type ProviderName } from "../provider"
 import { Sandbox } from "../sandbox"
 import { SkillService, type SkillServiceLike } from "../skill"
+import { InstructionService, type InstructionServiceLike } from "../instruction"
 import { createBuiltinRegistry, type ToolRegistryLike } from "../tool"
 import { CliCodeNavigator } from "../tool/code-navigator"
 import { createRunAspect, type RunAspect } from "../instrumentation"
@@ -28,6 +29,7 @@ export class AgentRunner {
   readonly permission: PermissionService
   readonly context: ContextManagerLike
   readonly skills: SkillServiceLike
+  readonly instructions: InstructionServiceLike
   readonly sandbox: Sandbox
   readonly aspect: RunAspect
   readonly onTextDelta?: (text: string) => void
@@ -44,6 +46,7 @@ export class AgentRunner {
     this.permission = options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))
     this.context = this.aspect.instrumentContext(options.context ?? new ContextManager())
     this.skills = this.aspect.instrumentSkills(options.skills ?? new SkillService(options.root))
+    this.instructions = options.instructions ?? new InstructionService(options.root)
     this.sandbox = options.sandbox ?? new Sandbox(options.root)
     this.onTextDelta = options.onTextDelta
     this.onEvent = options.onEvent
@@ -77,6 +80,7 @@ export class AgentRunner {
     await this.refreshRepoMap(input.signal, prompt)
     if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
     const tools = this.registry.list(effectiveMode)
+    const instructions = await this.instructions.system()
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
     for (let step = 0; step < this.maxSteps; step += 1) {
@@ -89,10 +93,10 @@ export class AgentRunner {
         throw error
       }
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-      const plan = this.context.planRequest({ step, agent, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
+      const plan = this.context.planRequest({ step, agent, instructions, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
       const providerMessages = plan.providerMessages
       let text = ""
-      let toolCall: ToolCall | undefined
+      const toolCalls: ToolCall[] = []
       let failureText: string | undefined
       state = this.aspect.transition("streaming", { step: step + 1 })
       const stopProviderProgress = this.startProviderProgressTimer()
@@ -121,7 +125,7 @@ export class AgentRunner {
           }
           if (event.type === "tool_call") {
             stopProviderProgress()
-            toolCall = event.call
+            toolCalls.push(event.call)
             this.onEvent?.({ type: "tool_call", call: event.call })
           }
           if (event.type === "usage") {
@@ -154,31 +158,33 @@ export class AgentRunner {
         return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
       if (text) latestAssistantText = text
-      if (!toolCall) {
+      if (toolCalls.length === 0) {
         const output = text
         this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.transition("completed", { usedTools })
         this.emitRunDone("completed", providerMetrics)
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
-      state = this.aspect.transition("tool_pending", { tool: toolCall.name, callID: toolCall.id })
-      this.context.add(toolCallMessage(toolCall))
-      usedTools.push(toolCall.name)
-      state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
-      const result = await this.runTool(toolCall, effectiveMode, input.signal)
-      if (toolCall.name === "skill" && result.metadata.status === "succeeded") this.markSkillLoaded(toolCall.input)
-      this.recordToolOutcome(toolCall, result, prompt)
-      this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
-      this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
-      if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-      if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
-        const output = result.output
-        this.onEvent?.({ type: "text_delta", text: result.output })
-        this.onTextDelta?.(result.output)
-        this.context.add(assistantMessage(reasoningTranscript, output))
-        state = this.aspect.transition("completed", { usedTools })
-        this.emitRunDone("completed", providerMetrics)
-        return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+      state = this.aspect.transition("tool_pending", { tools: toolCalls.map((call) => call.name), callIDs: toolCalls.map((call) => call.id) })
+      this.context.add(toolCallMessage(toolCalls))
+      for (const toolCall of toolCalls) {
+        usedTools.push(toolCall.name)
+        state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
+        const result = await this.runTool(toolCall, effectiveMode, input.signal)
+        if (toolCall.name === "skill" && result.metadata.status === "succeeded") this.markSkillLoaded(toolCall.input)
+        this.recordToolOutcome(toolCall, result, prompt)
+        this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
+        this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
+        if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
+        if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
+          const output = result.output
+          this.onEvent?.({ type: "text_delta", text: result.output })
+          this.onTextDelta?.(result.output)
+          this.context.add(assistantMessage(reasoningTranscript, output))
+          state = this.aspect.transition("completed", { usedTools })
+          this.emitRunDone("completed", providerMetrics)
+          return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+        }
       }
       state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }

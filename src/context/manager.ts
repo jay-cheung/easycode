@@ -1,4 +1,5 @@
 import { defaultCachePricing, type CachePricing } from "../cache-policy"
+import type { InstructionInfo } from "../instruction"
 import { createMessage, messagesToProviderInput, redactProtectedMessages, summaryPart, textMessage, type Message, type ProviderInputMessage } from "../message"
 import type { Agent } from "../agent"
 import type { SkillInfo } from "../skill"
@@ -140,7 +141,7 @@ export class ContextManager implements ContextManagerLike {
   planRequest(input: ContextPlanInput): ContextPlan {
     const providerMessages = this.compose(input)
     const ledgerStats = this.ledgerStats()
-    const staticPrefixTokens = estimateStaticPrefixTokens(providerMessages)
+    const staticPrefixTokens = estimateStaticPrefixTokens(providerMessages, staticPrefixMessageCount(input))
     this.lastStaticPrefixTokens = staticPrefixTokens
     this.maxStaticPrefixTokens = Math.max(this.maxStaticPrefixTokens, staticPrefixTokens)
     return {
@@ -152,10 +153,12 @@ export class ContextManager implements ContextManagerLike {
     }
   }
 
-  compose(input?: { agent: Agent; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; pendingSkillLoads?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
+  compose(input?: { agent: Agent; instructions?: InstructionInfo[]; skills: SkillInfo[]; selectedSkills?: SkillInfo[]; pendingSkillLoads?: SkillInfo[]; tools: ToolDef[] }): ProviderInputMessage[] {
     const messages: Message[] = []
     if (input) {
       messages.push(textMessage("system", buildSystemPrompt(input.agent)))
+      const instructionPrompt = buildInstructionPrompt(input.instructions ?? [])
+      if (instructionPrompt) messages.push(textMessage("system", instructionPrompt))
       const skillPrompt = buildSkillPrompt(input.skills, input.selectedSkills ?? [], input.pendingSkillLoads ?? [])
       if (skillPrompt) messages.push(textMessage("system", skillPrompt))
     }
@@ -283,6 +286,18 @@ function buildSystemPrompt(agent: Agent) {
   return [agent.systemPrompt, contextExecutionContract, `Mode: ${agent.mode}`, toolPriorityDirective].join("\n\n")
 }
 
+function buildInstructionPrompt(instructions: InstructionInfo[]) {
+  if (instructions.length === 0) return ""
+  return [
+    "Repository and user instruction files. Follow these durable instructions unless they conflict with higher-priority system/developer instructions or the latest user request.",
+    ...instructions.map(formatInstruction),
+  ].join("\n\n")
+}
+
+function formatInstruction(instruction: InstructionInfo) {
+  return `<instruction source="${instruction.source}" path="${instruction.path}">\n${instruction.content}\n</instruction>`
+}
+
 function buildSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[], pendingSkillLoads: SkillInfo[]) {
   if (skills.length === 0 && selectedSkills.length === 0) return ""
   const skillList = sortedSkills(skills).map(formatSkillDescription).join("\n") || "(none)"
@@ -336,9 +351,16 @@ function sortedTools(tools: ToolDef[]) {
 }
 
 
-function estimateStaticPrefixTokens(messages: ProviderInputMessage[]) {
-  const first = messages[0]
-  return first?.role === "system" ? estimateTextTokens(first.content) : 0
+function staticPrefixMessageCount(input: ContextPlanInput) {
+  return 1 + ((input.instructions?.length ?? 0) > 0 ? 1 : 0) + (hasSkillPrompt(input.skills, input.selectedSkills ?? []) ? 1 : 0)
+}
+
+function hasSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[]) {
+  return skills.length > 0 || selectedSkills.length > 0
+}
+
+function estimateStaticPrefixTokens(messages: ProviderInputMessage[], count: number) {
+  return estimateTextTokens(messages.slice(0, count).map((message) => message.content).join("\n"))
 }
 
 function emptyWindowStats(): WindowStats {

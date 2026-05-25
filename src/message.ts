@@ -100,8 +100,9 @@ export function userMessage(text: string, images: ImagePart[] = [], id?: string)
   return createMessage("user", parts, id)
 }
 
-export function toolCallMessage(call: ToolCall): Message {
-  return createMessage("assistant", [toolCallPart(call, "pending")])
+export function toolCallMessage(call: ToolCall | ToolCall[]): Message {
+  const calls = Array.isArray(call) ? call : [call]
+  return createMessage("assistant", calls.map((item) => toolCallPart(item, "pending")))
 }
 
 export function toolResultMessage(input: {

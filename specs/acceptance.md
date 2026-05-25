@@ -12,6 +12,7 @@
 - `--logger` sessions keep structured logs and do not render the timeline.
 - `/image` attaches an image to the next prompt only when the active provider supports images.
 - `/thinking` and `/effort` update provider reasoning options for the session.
+- Project/global instruction files are loaded before dynamic conversation history.
 - `/skill use <name>` persists active skill selection and requires one first-use `skill` tool load.
 - Skills expose title/description before full content is requested.
 - Context compaction preserves summary plus the most recent two user turns.

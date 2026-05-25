@@ -102,6 +102,12 @@ The code index is a tool-private cache, not prompt context. Tools may read it lo
 
 `find_definition` and `find_references` read the code index first, then fall back to `ast-grep` or bounded `rg` when needed. If those CLIs are unavailable, EasyCode keeps a pure JavaScript fallback for bounded local navigation instead of unbounded full-file reads.
 
+## Instructions
+
+EasyCode automatically loads durable instruction files into provider context before dynamic conversation history. Project files are read from the root as `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`; global files are read from `~/.easycode/AGENTS.md`, `~/.agent/AGENTS.md`, and `~/.claude/CLAUDE.md` when present.
+
+Instruction files are part of the stable prompt prefix. Put repository and user workflow rules there, and keep turn-specific facts in the conversation so prompt-cache reuse stays predictable.
+
 ## Skills
 
 Skills are discovered from these roots:

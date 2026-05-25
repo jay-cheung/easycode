@@ -108,6 +108,16 @@ describe("context", () => {
     expect(messages[1].content).not.toContain("hidden")
   })
 
+  test("compose includes durable instructions before dynamic history", () => {
+    const context = new ContextManager()
+    context.add(textMessage("user", "hello"))
+    const messages = context.compose({ agent: createAgent("build"), instructions: [{ source: "project", path: "AGENTS.md", content: "Prefer repo-local rules." }], skills: [], tools: [] })
+
+    expect(messages[1].content).toContain('<instruction source="project" path="AGENTS.md">')
+    expect(messages[1].content).toContain("Prefer repo-local rules.")
+    expect(messages[2]).toMatchObject({ role: "user", content: "hello" })
+  })
+
   test("compose requires first-use load for pending selected skills", () => {
     const context = new ContextManager()
     const demo = { name: "demo", description: "Demo skill", location: "x", content: "hidden" }

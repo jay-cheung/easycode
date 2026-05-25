@@ -294,6 +294,81 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("executes multiple tool calls from one provider turn in order", async () => {
+    const root = await fixture()
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
+          yield { type: "tool_call", call: { id: "call_list", name: "list", input: { dirPath: "src" } } }
+          return
+        }
+        expect(input.messages.some((message) => message.role === "tool" && message.parts.some((part) => part.type === "tool_result" && part.callID === "call_read"))).toBe(true)
+        expect(input.messages.some((message) => message.role === "tool" && message.parts.some((part) => part.type === "tool_result" && part.callID === "call_list"))).toBe(true)
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Inspect files", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read", "list"])
+    const assistantToolMessage = result.messages.find((message) => message.role === "assistant" && message.parts.some((part) => part.type === "tool_call" && part.call.id === "call_read"))
+    expect(assistantToolMessage?.parts.filter((part) => part.type === "tool_call").map((part) => part.call.id)).toEqual(["call_read", "call_list"])
+    expect(toolResults(result.messages).map((part) => part.callID)).toContain("call_read")
+    expect(toolResults(result.messages).map((part) => part.callID)).toContain("call_list")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("continues later tool calls after an earlier tool failure in the same turn", async () => {
+    const root = await fixture()
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield { type: "tool_call", call: { id: "call_bad_read", name: "read", input: {} } }
+          yield { type: "tool_call", call: { id: "call_list", name: "list", input: { dirPath: "src" } } }
+          return
+        }
+        yield { type: "text_delta", text: "Recovered." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Inspect files", "build")
+    const results = toolResults(result.messages)
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read", "list"])
+    expect(results.find((part) => part.callID === "call_bad_read")).toMatchObject({ status: "failed" })
+    expect(results.find((part) => part.callID === "call_list")).toMatchObject({ status: "succeeded" })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("loads project instruction files into provider context by default", async () => {
+    const root = await fixture()
+    await Bun.write(path.join(root, "AGENTS.md"), "Use the local project rule.")
+    const prompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        prompts.push(input.providerMessages.map((message) => message.content).join("\n\n"))
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Check instructions", "build")
+
+    expect(result.status).toBe("completed")
+    expect(prompts[0]).toContain('<instruction source="project" path="AGENTS.md">')
+    expect(prompts[0]).toContain("Use the local project rule.")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("sends static composed context on every provider turn", async () => {
     const root = await fixture()
     const providerMessageContents: string[][] = []
