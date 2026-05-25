@@ -320,7 +320,7 @@ const toolPriorityDirective = [
   "Tool usage priority (MUST follow this order for code exploration):",
   "1. repo_map — always use query, never full load (structural overview first, never skip).",
   "2. find_definition / find_references / rg_search — locate symbols, find references, and search code.",
-  "3. call_graph — inspect bounded callers/callees for a located symbol.",
+  "3. call_graph — inspect bounded callers/callees for a symbol from the local code index",
   "4. read_lines — read only the confirmed line range (max 200 lines).",
   "5. list — list directory contents for structural navigation.",
   "6. git_diff — inspect git changes in stat/summary/file mode.",

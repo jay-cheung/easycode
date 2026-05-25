@@ -156,7 +156,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "call_graph",
-    description: "Inspect bounded callers/callees for a symbol from the local code index.",
+    description: "Inspect bounded callers/callees for a symbol from the local code index, use this for debugging call relationships and code exploration.",
     inputSchema: CallGraphInput,
     jsonSchema: objectSchema(
       {
