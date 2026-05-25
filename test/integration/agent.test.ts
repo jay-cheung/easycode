@@ -788,6 +788,35 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("context compaction still summarizes when the active window leaves no compacted messages", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    let summaryCalls = 0
+    let summaryPrompt = ""
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          summaryCalls += 1
+          summaryPrompt = input.providerMessages[0]?.content ?? ""
+          yield { type: "text_delta", text: "<summary>\nCurrent-window summary.\n</summary>" }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const runner = new AgentRunner({ root, provider, context })
+    const result = await runner.run(`Current-only request ${"long ".repeat(100)}`, "build")
+    await runner.waitForSummarySubagent()
+
+    expect(result.status).toBe("completed")
+    expect(summaryCalls).toBe(1)
+    expect(summaryPrompt).toContain("Conversation to summarize:")
+    expect(context.state.summary).toBe("Current-window summary.")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("compacted context saves summary and pruned history to session json", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 80, compactAt: 0.5, preserveRecentUserTurns: 2 })
