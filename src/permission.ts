@@ -7,6 +7,7 @@ export type PermissionRule = {
 }
 
 export type PermissionReply = "once" | "always" | "reject"
+export type PermissionAutoReviewer = (request: PermissionRequest) => PermissionReply | undefined | Promise<PermissionReply | undefined>
 
 export type PermissionRequest = {
   id: string
@@ -70,10 +71,12 @@ export class PermissionService {
   readonly pending = new Map<string, PermissionRequest>()
   private readonly waiters = new Map<string, PendingPermission>()
   private readonly askHandler?: (request: PermissionRequest) => PermissionReply | Promise<PermissionReply>
+  private readonly autoReviewer?: PermissionAutoReviewer
 
-  constructor(rules: PermissionRule[], askHandler?: (request: PermissionRequest) => PermissionReply | Promise<PermissionReply>) {
+  constructor(rules: PermissionRule[], askHandler?: (request: PermissionRequest) => PermissionReply | Promise<PermissionReply>, autoReviewer?: PermissionAutoReviewer) {
     this.rules = rules
     this.askHandler = askHandler
+    this.autoReviewer = autoReviewer
   }
 
   static autoApprove(rules: PermissionRule[]) {
@@ -81,7 +84,7 @@ export class PermissionService {
   }
 
   withRules(rules: PermissionRule[]) {
-    const service = new PermissionService(rules, this.askHandler)
+    const service = new PermissionService(rules, this.askHandler, this.autoReviewer)
     service.approved.push(...this.approved)
     return service
   }
@@ -104,6 +107,13 @@ export class PermissionService {
     if (decisions.every((decision) => decision.action === "allow")) return
 
     const request: PermissionRequest = { id: nextPermissionID(), ...input }
+    if (this.autoReviewer) {
+      const reviewed = await this.autoReviewer(request)
+      if (reviewed) {
+        this.applyReply(request, reviewed)
+        return
+      }
+    }
     if (this.askHandler) {
       this.applyReply(request, await this.askHandler(request))
       return
@@ -151,6 +161,28 @@ export class PermissionService {
 function metadataStringList(value: unknown) {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return undefined
   return value
+}
+
+export function defaultPermissionAutoReviewer(request: PermissionRequest): PermissionReply | undefined {
+  if (request.permission === "skill" && request.patterns.every(isSafeSkillName)) return "once"
+  if (request.permission !== "bash") return undefined
+  if (request.metadata.rememberOnApprove !== true) return undefined
+  if (typeof request.metadata.command === "string" && containsSensitivePath(request.metadata.command)) return undefined
+  if (!request.patterns.every(isAutoApprovedReadonlyBashPattern)) return undefined
+  return "once"
+}
+
+function isSafeSkillName(value: string) {
+  return Boolean(value) && !value.includes("..") && !value.includes("\\") && !value.startsWith("/")
+}
+
+function isAutoApprovedReadonlyBashPattern(pattern: string) {
+  return /^bash:readonly:(git:(?:status|diff|log)|pwd|ls|find|wc):/.test(pattern)
+}
+
+function containsSensitivePath(value: string) {
+  const normalized = value.replaceAll("\\", "/").toLowerCase()
+  return /(^|[/\s"'=])\.env(?:[.\s"'=/]|$)/.test(normalized) || /(^|[/\s"'=])secrets?(?:[/\s"'=]|$)/.test(normalized)
 }
 
 export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[] {

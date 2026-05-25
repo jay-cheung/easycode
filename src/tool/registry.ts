@@ -87,7 +87,8 @@ export class ToolRegistry implements ToolRegistryLike {
       if (ctx.signal?.aborted) return toolCancelledResult(name)
       ctx.onExecuteStart?.(name)
       const result = await tool.execute(parsed.data, ctx)
-      return { ...result, metadata: { ...result.metadata, permission: tool.permission, permissionAction, patterns: request.patterns } }
+      const finalPermissionAction = permissionAction === "ask" ? permissionActionFor(request.patterns.map((pattern) => ctx.permission.evaluate(tool.permission, pattern))) : permissionAction
+      return { ...result, metadata: { ...result.metadata, permission: tool.permission, permissionAction: finalPermissionAction, patterns: request.patterns } }
     } catch (error) {
       return toolErrorResult(name, error)
     }
@@ -135,4 +136,3 @@ function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContex
   }
   return { permission: tool.permission, patterns, always: patterns, metadata: { tool: tool.name } }
 }
-

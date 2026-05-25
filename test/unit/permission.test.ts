@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { defaultPermissionRules, evaluatePermission, PermissionService, type PermissionRule } from "../../src/permission"
+import { defaultPermissionAutoReviewer, defaultPermissionRules, evaluatePermission, PermissionService, type PermissionRule } from "../../src/permission"
 
 describe("permission", () => {
   test("deny beats ask and allow", () => {
@@ -64,5 +64,44 @@ describe("permission", () => {
   test("asks before bypassing the native sandbox", () => {
     expect(evaluatePermission("sandbox_bypass", "git log", defaultPermissionRules("build"))).toBe("ask")
     expect(evaluatePermission("sandbox_bypass", "git log", defaultPermissionRules("plan"))).toBe("ask")
+  })
+
+  test("auto reviewer approves repeat-safe readonly bash scopes", async () => {
+    const service = new PermissionService(defaultPermissionRules("build"), () => {
+      throw new Error("manual prompt should not be reached")
+    }, defaultPermissionAutoReviewer)
+
+    await service.authorize({
+      permission: "bash",
+      patterns: ["bash:readonly:git:status:project"],
+      always: ["bash:readonly:git:status:project"],
+      metadata: { command: "git status --short", rememberOnApprove: true, rememberPatterns: ["bash:readonly:git:status:project"] },
+    })
+
+    expect(service.evaluate("bash", "bash:readonly:git:status:project")).toBe("allow")
+  })
+
+  test("auto reviewer leaves sensitive and mutating requests for manual review", async () => {
+    const requested: string[] = []
+    const service = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(`${request.permission}:${request.patterns.join(",")}`)
+      return "reject"
+    }, defaultPermissionAutoReviewer)
+
+    await expect(service.authorize({
+      permission: "bash",
+      patterns: ["bash:readonly:cat:/repo/.env"],
+      always: ["bash:readonly:cat:/repo/.env"],
+      metadata: { command: "cat .env", rememberOnApprove: true, rememberPatterns: ["bash:readonly:cat:/repo/.env"] },
+    })).rejects.toThrow("Permission rejected")
+
+    await expect(service.authorize({
+      permission: "edit",
+      patterns: ["src/a.ts"],
+      always: ["src/a.ts"],
+      metadata: { tool: "edit" },
+    })).rejects.toThrow("Permission rejected")
+
+    expect(requested).toEqual(["bash:bash:readonly:cat:/repo/.env", "edit:src/a.ts"])
   })
 })

@@ -6,7 +6,7 @@ import { createRunner } from "./agent"
 import { imageLabel, imagePartFromInput } from "./image"
 import { createLogger, emitLog } from "./logger"
 import type { AgentMode, ImagePart } from "./message"
-import { defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
+import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders, type ProviderName } from "./provider"
 import { SessionStore } from "./session"
 import { defaultSessionSettings, isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
@@ -173,33 +173,67 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
 if (import.meta.main) {
   let args = parseArgs(process.argv.slice(2))
   const loadedEnvVars = await loadEnvFile(args.root)
-  if (loadedEnvVars === 0 && input.isTTY) {
-    const envPath = path.join(args.root, ".env")
-    if (!(await Bun.file(envPath).exists())) {
-      const preselectedProvider = args.providerExplicit && hasProvider(args.provider) ? args.provider : undefined
-      await setupInteractiveEnv(args.root, preselectedProvider)
-    }
-  }
   // Use EASYCODE_PROVIDER from .env if --provider was not explicit
   if (!args.providerExplicit && process.env.EASYCODE_PROVIDER && hasProvider(process.env.EASYCODE_PROVIDER)) {
     args = { ...args, provider: process.env.EASYCODE_PROVIDER }
+  }
+  if (input.isTTY) {
+    const preselectedProvider = args.providerExplicit && hasProvider(args.provider) ? args.provider : args.provider === "fake" ? undefined : args.provider
+    const selectedProvider = await setupInteractiveEnv(args.root, process.env, preselectedProvider)
+    if (!args.providerExplicit && selectedProvider && hasProvider(selectedProvider)) {
+      args = { ...args, provider: selectedProvider }
+    }
   }
   const status = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
   process.exit(status === "completed" ? 0 : 1)
 }
 
-async function setupInteractiveEnv(root: string, preselectedProvider?: string): Promise<void> {
+export function requiredEnvForProvider(provider: string) {
+  if (provider === "deepseek") return ["DEEPSEEK_API_KEY"]
+  if (provider === "openai") return ["OPENAI_API_KEY"]
+  return []
+}
+
+export function missingProviderEnv(provider: string, env: EnvTarget = process.env) {
+  return requiredEnvForProvider(provider).filter((key) => !env[key])
+}
+
+export function needsEnvSetup(provider: string | undefined, env: EnvTarget = process.env) {
+  if (!provider) return true
+  if (provider === "fake") return false
+  return missingProviderEnv(provider, env).length > 0
+}
+
+export function mergeEnvText(existing: string, entries: Record<string, string>) {
+  const lines = existing ? existing.replace(/\s*$/, "\n").split(/\n/) : []
+  const present = new Set(parseEnvFile(existing).keys())
+  for (const [key, value] of Object.entries(entries)) {
+    if (present.has(key) || !value) continue
+    lines.push(`${key}=${quoteEnvValue(value)}`)
+  }
+  return lines.join("\n").replace(/\n*$/, "\n")
+}
+
+function quoteEnvValue(value: string) {
+  if (/^[A-Za-z0-9_./:@-]+$/.test(value)) return value
+  return JSON.stringify(value)
+}
+
+async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, preselectedProvider?: string): Promise<string | undefined> {
+  const initialProvider = preselectedProvider ?? (env.EASYCODE_PROVIDER && hasProvider(env.EASYCODE_PROVIDER) ? env.EASYCODE_PROVIDER : undefined)
+  if (!needsEnvSetup(initialProvider, env)) return initialProvider
+
   const rl = createInterface({ input, output })
   try {
-    output.write("\n⚠️  No .env configuration found.\n")
-    output.write("   easycode needs environment variables to work with LLM providers.\n\n")
+    output.write("\n⚠️  Provider environment is not configured for this project.\n")
+    output.write("   easycode can write the missing values to .env. Existing shell variables and .env entries are preserved.\n\n")
 
     const answer = await new Promise<string>((resolve) => {
       rl.question("Would you like to set up environment variables now? (Y/n): ", resolve)
     })
-    if (answer.trim().toLowerCase() === "n") return
+    if (answer.trim().toLowerCase() === "n") return initialProvider
 
-    const selectedProvider = preselectedProvider ?? await (async () => {
+    const selectedProvider = initialProvider ?? await (async () => {
       const realProviders = listProviders().filter((p) => p !== "fake" && p !== "openai-like")
       output.write("\nAvailable providers:\n")
       for (const p of realProviders) {
@@ -216,45 +250,46 @@ async function setupInteractiveEnv(root: string, preselectedProvider?: string): 
       }
       return p
     })()
-    if (!hasProvider(selectedProvider)) return
+    if (!hasProvider(selectedProvider)) return initialProvider
 
-    const lines: string[] = ["# easycode configuration"]
-    lines.push(`EASYCODE_PROVIDER=${selectedProvider}`)
+    const entries: Record<string, string> = { EASYCODE_PROVIDER: selectedProvider }
 
     if (selectedProvider === "deepseek") {
-      const apiKey = await new Promise<string>((resolve) => {
-        rl.question("DeepSeek API key (sk): ", resolve)
-      })
-      if (apiKey.trim()) {
-        lines.push(`DEEPSEEK_API_KEY=${apiKey.trim()}`)
+      if (!env.DEEPSEEK_API_KEY) {
+        const apiKey = await new Promise<string>((resolve) => {
+          rl.question("DeepSeek API key (sk): ", resolve)
+        })
+        if (apiKey.trim()) entries.DEEPSEEK_API_KEY = apiKey.trim()
       }
-      const model = await new Promise<string>((resolve) => {
-        rl.question("DeepSeek model [deepseek-v4-pro]: ", resolve)
-      })
-      if (model.trim()) {
-        lines.push(`DEEPSEEK_MODEL=${model.trim()}`)
+      if (!env.DEEPSEEK_MODEL && !env.EASYCODE_MODEL) {
+        const model = await new Promise<string>((resolve) => {
+          rl.question("DeepSeek model [deepseek-v4-pro]: ", resolve)
+        })
+        if (model.trim()) entries.DEEPSEEK_MODEL = model.trim()
       }
     } else if (selectedProvider === "openai") {
-      const apiKey = await new Promise<string>((resolve) => {
-        rl.question("OpenAI API key (sk-): ", resolve)
-      })
-      if (apiKey.trim()) {
-        lines.push(`OPENAI_API_KEY=${apiKey.trim()}`)
+      if (!env.OPENAI_API_KEY) {
+        const apiKey = await new Promise<string>((resolve) => {
+          rl.question("OpenAI API key (sk-): ", resolve)
+        })
+        if (apiKey.trim()) entries.OPENAI_API_KEY = apiKey.trim()
       }
-      const model = await new Promise<string>((resolve) => {
-        rl.question("OpenAI model [gpt-5-mini]: ", resolve)
-      })
-      if (model.trim()) {
-        lines.push(`EASYCODE_MODEL=${model.trim()}`)
+      if (!env.EASYCODE_MODEL) {
+        const model = await new Promise<string>((resolve) => {
+          rl.question("OpenAI model [gpt-5-mini]: ", resolve)
+        })
+        if (model.trim()) entries.EASYCODE_MODEL = model.trim()
       }
     }
 
     const envPath = path.join(root, ".env")
-    await Bun.write(envPath, lines.join("\n") + "\n")
+    const existing = await Bun.file(envPath).text().catch(() => "# easycode configuration\n")
+    await Bun.write(envPath, mergeEnvText(existing, entries))
     output.write(`\n✅ Configuration saved to ${envPath}\n`)
 
     // Reload env vars so they're available immediately
-    await loadEnvFile(root)
+    await loadEnvFile(root, env)
+    return selectedProvider
   } finally {
     rl.close()
   }
@@ -530,7 +565,7 @@ function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () =
     if (answer === "a" || answer === "always") return "always"
     if (answer === "" || answer === "y" || answer === "yes" || answer === "once") return "once"
     return "reject"
-  })
+  }, defaultPermissionAutoReviewer)
 }
 
 async function questionWithPrompt(reader: LineReader, prompt: string) {

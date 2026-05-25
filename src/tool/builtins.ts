@@ -318,7 +318,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "plan_exit",
-    description: "Return the final proposed plan in plan mode.",
+    description: "Finish plan mode with the final recommended markdown plan after read-only investigation. Use this instead of ending with ordinary prose when the plan is ready for user approval.",
     inputSchema: PlanExitInput,
     jsonSchema: objectSchema({ markdown: { type: "string" } }),
     permission: "plan_exit",

@@ -3,7 +3,7 @@ import { z } from "zod"
 import { createBuiltinRegistry, ToolRegistry } from "../../src/tool"
 import { ContextManager } from "../../src/context"
 import { type BashResult, Sandbox } from "../../src/sandbox"
-import { PermissionService, defaultPermissionRules } from "../../src/permission"
+import { PermissionService, defaultPermissionAutoReviewer, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
@@ -276,6 +276,20 @@ describe("tool", () => {
     expect(second.metadata.status).toBe("succeeded")
     expect(third.metadata.status).toBe("succeeded")
     expect(asks).toBe(2)
+  })
+
+  test("auto-reviewed bash results are marked as allowed after review", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await git(root, ["init"])
+    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+      throw new Error("manual prompt should not be reached")
+    }, defaultPermissionAutoReviewer)
+
+    const result = await registry.run("bash", { command: "git status --short" }, { agentMode: "build", sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] })
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.permissionAction).toBe("allow")
   })
 
   test("bash does not retry sandbox bypass when rejected", async () => {

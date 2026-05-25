@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { loadEnvFile, parseArgs, parseEnvFile } from "../../src/cli"
+import { loadEnvFile, mergeEnvText, missingProviderEnv, needsEnvSetup, parseArgs, parseEnvFile } from "../../src/cli"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-cli-"))
@@ -31,6 +31,26 @@ describe("cli env loading", () => {
     expect(env.OPENAI_API_KEY).toBe("from-file")
     expect(env.EXISTING).toBe("from-process")
     await rm(root, { recursive: true, force: true })
+  })
+
+  test("detects missing provider environment", () => {
+    expect(needsEnvSetup(undefined, {})).toBe(true)
+    expect(needsEnvSetup("fake", {})).toBe(false)
+    expect(missingProviderEnv("deepseek", {})).toEqual(["DEEPSEEK_API_KEY"])
+    expect(missingProviderEnv("openai", { OPENAI_API_KEY: "sk-test" })).toEqual([])
+  })
+
+  test("merges missing env values without replacing existing entries", () => {
+    const merged = mergeEnvText("EASYCODE_PROVIDER=openai\nOPENAI_API_KEY=from-file\n", {
+      EASYCODE_PROVIDER: "deepseek",
+      DEEPSEEK_API_KEY: "sk test",
+      DEEPSEEK_MODEL: "deepseek-v4-pro",
+    })
+
+    expect(merged).toContain("EASYCODE_PROVIDER=openai")
+    expect(merged).toContain("OPENAI_API_KEY=from-file")
+    expect(merged).toContain('DEEPSEEK_API_KEY="sk test"')
+    expect(merged).toContain("DEEPSEEK_MODEL=deepseek-v4-pro")
   })
 })
 
