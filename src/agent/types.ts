@@ -1,6 +1,6 @@
-import type { AgentMode, ImagePart, Message } from "../message"
+import type { AgentMode, Message } from "../message"
 import type { PermissionService } from "../permission"
-import type { Provider, ProviderName } from "../provider"
+import type { Provider } from "../provider"
 import type { Sandbox } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
 import type { InstructionServiceLike } from "../instruction"

@@ -436,7 +436,7 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider, maxSteps: 1, onEvent: (event) => events.push(event) }).run("Fix", "build")
     expect(result.status).toBe("failed")
     expect(result.text).toContain("I inspected the issue and need one more command.")
-    expect(result.text).toContain("Stopped after maxSteps (8).")
+    expect(result.text).toContain("Stopped after maxSteps (1).")
     expect(result.text).toContain("Continue with another message to keep going.")
     expect(events.some((event) => event.type === "failure" && event.text.includes("Continue with another message"))).toBe(true)
     expect(result.messages.at(-1)?.role).toBe("assistant")

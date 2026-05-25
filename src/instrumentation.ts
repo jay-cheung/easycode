@@ -1,9 +1,9 @@
 import type { AgentRunState } from "./agent"
-import type { Message, ProviderInputMessage, ToolCall } from "./message"
+import type { Message, ProviderInputMessage } from "./message"
 import { ProviderError, type Provider, type ProviderEvent } from "./provider"
 import type { SkillServiceLike } from "./skill"
 import { estimateTextTokens, type ContextLedger, type ContextManagerLike } from "./context"
-import type { ToolRegistryLike, ToolResult } from "./tool"
+import type { ToolRegistryLike } from "./tool"
 import { emitLog, type Logger } from "./logger"
 
 type ContextSnapshot = {
@@ -107,7 +107,7 @@ export class LoggingRunAspect implements RunAspect {
         try {
           for await (const event of provider.stream(input)) {
             if (event.type === "usage") usage = providerUsageLog(event)
-            logProviderEvent(logger, event, totalLength, inputText)
+            logProviderEvent(logger, event, inputText)
             if (event.type === "reasoning_delta") {
               reasoningContent += event.text
             }
@@ -227,7 +227,7 @@ function providerUsageLog(event: Extract<ProviderEvent, { type: "usage" }>): Pro
   }
 }
 
-function logProviderEvent(logger: Logger, event: ProviderEvent, totalLengthBefore: number, inputText = "") {
+function logProviderEvent(logger: Logger, event: ProviderEvent, inputText = "") {
   if (event.type === "response" && !event.response.ok) emitLog(logger, { type: "provider", name: "provider.response", detail: { body: event.response.body ?? "" } })
   if (event.type === "response_raw" && rawProviderResponseHasError(event.response)) emitLog(logger, { type: "provider", name: "provider.response.raw", detail: { response: event.response } })
   if (event.type === "failure") {

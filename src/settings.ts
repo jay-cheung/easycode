@@ -15,7 +15,7 @@ export type SessionSettings = {
 export const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "max"]
 
 export function defaultSessionSettings(provider = "fake"): SessionSettings {
-  return { provider, thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 32_000, maxSteps: 20 }
+  return { provider, thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 32_000, maxSteps: 66 }
 }
 
 export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = "fake"): SessionSettings {

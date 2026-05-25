@@ -67,7 +67,6 @@ export type ContextOptions = {
 }
 
 export type ContextStrategyState = {
-  staticContextStrategy: "every-step"
   maxTokens: number
   compactAt: number
   activeWindowUserTurns: number

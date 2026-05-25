@@ -1,7 +1,6 @@
 import path from "node:path"
 import { createHash } from "node:crypto"
 import type { RepoMapEntry, RepoMapResult, RepoMapSymbol } from "./types"
-import { codeExtensions } from "./constants"
 
 export function extractSymbols(text: string) {
   const symbols: RepoMapSymbol[] = []

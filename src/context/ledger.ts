@@ -367,18 +367,6 @@ function compactLedgerText(text: string) {
   return text.replace(/\s+/g, " ").trim()
 }
 
-function uniqueNonEmpty(items: string[] | undefined) {
-  const seen = new Set<string>()
-  const result: string[] = []
-  for (const item of items ?? []) {
-    const trimmed = item.replace(/\s+/g, " ").trim()
-    if (!trimmed || seen.has(trimmed)) continue
-    seen.add(trimmed)
-    result.push(trimmed)
-  }
-  return result
-}
-
 function uniqueStrings(items: string[]) {
   return [...new Set(items.map((item) => item.trim()).filter(Boolean))]
 }

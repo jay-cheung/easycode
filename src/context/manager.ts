@@ -18,10 +18,8 @@ type WindowStats = {
 }
 
 const defaultMaxTokens = 32_000
-const defaultMaxSteps = 20
+const defaultMaxSteps = 66
 const minMaxTokens = 16_000
-const minMaxSteps = 8
-const maxMaxSteps = 30
 const defaultSafetyMultiplier = 1.6
 const minSafetyMultiplier = 1
 const maxSafetyMultiplier = 4
@@ -47,13 +45,12 @@ export class ContextManager implements ContextManagerLike {
     this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
     this.safetyMultiplier = clampNumber(options.tokenEstimateSafetyMultiplier ?? defaultSafetyMultiplier, minSafetyMultiplier, maxSafetyMultiplier)
     this._strategyState = {
-      staticContextStrategy: "every-step",
       maxTokens,
       compactAt: clampNumber(options.compactAt ?? 0.75, 0.6, 0.9),
       activeWindowUserTurns: clampInt(options.activeWindowUserTurns ?? options.preserveRecentUserTurns ?? 3, 1, 10),
       toolResultTokenBudget: clampInt(options.toolResultTokenBudget ?? 1_200, 300, 4_000),
       dynamicSummaryTokenBudget: clampInt(options.dynamicSummaryTokenBudget ?? 3_000, 800, 8_000),
-      maxSteps: clampInt(options.maxSteps ?? defaultMaxSteps, minMaxSteps, maxMaxSteps),
+      maxSteps: options.maxSteps ?? defaultMaxSteps,
     }
     this.state = { messages: [], tokenEstimate: 0, maxTokens }
   }
@@ -254,13 +251,12 @@ export class ContextManager implements ContextManagerLike {
   private applyStrategy(input: ContextStrategyState) {
     const maxTokens = clampInt(input.maxTokens, this.minTokenFloor, this.contextWindowTokens)
     this._strategyState = {
-      staticContextStrategy: "every-step",
       maxTokens,
       compactAt: clampNumber(input.compactAt, 0.6, 0.9),
       activeWindowUserTurns: clampInt(input.activeWindowUserTurns, 1, 10),
       toolResultTokenBudget: clampInt(input.toolResultTokenBudget, 300, 4_000),
       dynamicSummaryTokenBudget: clampInt(input.dynamicSummaryTokenBudget, 800, 8_000),
-      maxSteps: clampInt(input.maxSteps, minMaxSteps, maxMaxSteps),
+      maxSteps: input.maxSteps,
     }
     this.state.maxTokens = maxTokens
   }
@@ -332,27 +328,6 @@ const toolPriorityDirective = [
   "VIOLATION: using read before repo_map + call_graph/find_definition/find_references/rg_search + read_lines is explicitly forbidden for files.",
   "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
 ].join("\n")
-
-const toolPriority = new Map([
-  ["repo_map", 0],
-  ["find_definition", 1],
-  ["find_references", 2],
-  ["rg_search", 3],
-  ["call_graph", 4],
-  ["read_lines", 5],
-  ["list", 6],
-  ["git_diff", 7],
-  ["read", 8],
-  ["grep", 9],
-  ["edit", 10],
-  ["write", 11],
-  ["bash", 20],
-])
-
-function sortedTools(tools: ToolDef[]) {
-  return [...tools].sort((left, right) => (toolPriority.get(left.name) ?? 100) - (toolPriority.get(right.name) ?? 100) || left.name.localeCompare(right.name))
-}
-
 
 function staticPrefixMessageCount(input: ContextPlanInput) {
   return 1 + ((input.instructions?.length ?? 0) > 0 ? 1 : 0) + (hasSkillPrompt(input.skills, input.selectedSkills ?? []) ? 1 : 0)

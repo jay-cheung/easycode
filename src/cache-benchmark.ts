@@ -449,7 +449,7 @@ function formatReport(report: Awaited<ReturnType<typeof runCacheBenchmark>>) {
 
 function strategyLabel(strategy: ContextStrategyState | undefined) {
   if (!strategy) return "-"
-  return `${strategy.staticContextStrategy},maxTok=${strategy.maxTokens},tool=${strategy.toolResultTokenBudget},steps=${strategy.maxSteps}`
+  return `maxTok=${strategy.maxTokens},tool=${strategy.toolResultTokenBudget},steps=${strategy.maxSteps}`
 }
 
 function benchmarkLogger(): BenchmarkLogger {

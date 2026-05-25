@@ -16,7 +16,6 @@ export type BashApproval = {
 }
 
 const exactBashApprovalPrefix = "bash:exact:"
-const maxFullReadLines = 100
 
 export function bashApprovalForCommand(command: string, cwd = process.cwd()): BashApproval {
   const trimmed = command.trim()
@@ -223,4 +222,3 @@ function sandboxFailureSummary(result: BashResult) {
 function appendLine(text: string, line: string) {
   return text ? `${text}\n${line}` : line
 }
-

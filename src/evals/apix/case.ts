@@ -1,5 +1,5 @@
 import path from "node:path"
-import { createAgent, type Agent } from "../../agent"
+import type { Agent } from "../../agent"
 import { type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "../../context"
 import { textMessage, type Message } from "../../message"
 import type { APIxCase, APIxOptions, APIxTrust } from "./types"

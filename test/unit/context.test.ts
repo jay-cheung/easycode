@@ -8,8 +8,7 @@ describe("context", () => {
   test("uses larger default context and execution budgets", () => {
     const context = new ContextManager()
     expect(context.state.maxTokens).toBe(32_000)
-    expect(context.strategyState.maxSteps).toBe(20)
-    expect(context.strategyState.staticContextStrategy).toBe("every-step")
+    expect(context.strategyState.maxSteps).toBe(66)
   })
 
   test("estimates mixed-language text tokens", () => {
@@ -102,7 +101,7 @@ describe("context", () => {
 
   test("compose includes only skill descriptions", () => {
     const context = new ContextManager()
-    const messages = context.compose({ agent: createAgent("plan"), skills: [{ name: "demo", description: "Demo skill", location: "x", content: "hidden" }], tools: [] })
+    const messages = context.compose({ agent: createAgent("plan"), skills: [{ id: "demo", name: "demo", description: "Demo skill", location: "x", content: "hidden" }], tools: [] })
     expect(messages[0].content).not.toContain("demo: Demo skill")
     expect(messages[1].content).toContain("demo: Demo skill")
     expect(messages[1].content).not.toContain("hidden")
@@ -120,7 +119,7 @@ describe("context", () => {
 
   test("compose requires first-use load for pending selected skills", () => {
     const context = new ContextManager()
-    const demo = { name: "demo", description: "Demo skill", location: "x", content: "hidden" }
+    const demo = { id: "demo", name: "demo", description: "Demo skill", location: "x", content: "hidden" }
     const messages = context.compose({ agent: createAgent("build"), skills: [demo], selectedSkills: [demo], pendingSkillLoads: [demo], tools: [] })
 
     expect(messages[1].content).toContain("First-use skill load required")
@@ -157,13 +156,13 @@ describe("context", () => {
     expect(second.staticPrefixTokens).toBe(second.currentStaticPrefixTokens)
   })
 
-  test("configureStrategy clamps boundary values", () => {
+  test("configureStrategy clamps context budgets without changing maxSteps", () => {
     const context = new ContextManager()
 
     context.configureStrategy({ compactAt: 0, maxSteps: 1, toolResultTokenBudget: 1, dynamicSummaryTokenBudget: 1 })
     expect(context.strategyState).toMatchObject({
       compactAt: 0.6,
-      maxSteps: 8,
+      maxSteps: 1,
       toolResultTokenBudget: 300,
       dynamicSummaryTokenBudget: 800,
     })
@@ -171,7 +170,7 @@ describe("context", () => {
     context.configureStrategy({ compactAt: 1, maxSteps: 100, toolResultTokenBudget: 10_000, dynamicSummaryTokenBudget: 20_000 })
     expect(context.strategyState).toMatchObject({
       compactAt: 0.9,
-      maxSteps: 30,
+      maxSteps: 100,
       toolResultTokenBudget: 4_000,
       dynamicSummaryTokenBudget: 8_000,
     })
