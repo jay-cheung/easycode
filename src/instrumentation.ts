@@ -441,10 +441,23 @@ class LoggingContextDecorator implements ContextManagerLike {
     return input
   }
 
+  compactionSnapshot() {
+    const snapshot = this.inner.compactionSnapshot()
+    emitLog(this.logger, { type: "context", name: "context.compaction_snapshot", detail: { providerMessageCount: snapshot?.providerMessages.length ?? 0, compactedMessageCount: snapshot?.compactedMessageCount ?? 0 } })
+    return snapshot
+  }
+
   compact(summary: string) {
     const before = snapshotContext(this.inner)
     const compacted = this.inner.compact(summary)
     emitLog(this.logger, { type: "context", name: "context.compact", detail: { compacted, before, after: snapshotContext(this.inner) } })
+    return compacted
+  }
+
+  compactSnapshot(summary: string, snapshot: Parameters<ContextManagerLike["compactSnapshot"]>[1]) {
+    const before = snapshotContext(this.inner)
+    const compacted = this.inner.compactSnapshot(summary, snapshot)
+    emitLog(this.logger, { type: "context", name: "context.compact_snapshot", detail: { compacted, before, after: snapshotContext(this.inner), compactedMessageCount: snapshot.compactedMessageCount } })
     return compacted
   }
 

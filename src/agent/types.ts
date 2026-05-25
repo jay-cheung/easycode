@@ -43,6 +43,7 @@ export type AgentRunnerOptions = {
   aspect?: RunAspect
   onTextDelta?: (text: string) => void
   onEvent?: (event: RunUiEvent) => void
+  onBackgroundContextUpdate?: () => void | Promise<void>
   toolProgressIntervalMs?: number
   providerProgressIntervalMs?: number
   settings?: SessionSettings

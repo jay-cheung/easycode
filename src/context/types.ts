@@ -138,6 +138,13 @@ export type ContextUsageObservation = {
   cacheMissTokens?: number
 }
 
+export type ContextCompactionSnapshot = {
+  providerMessages: ProviderInputMessage[]
+  compactedMessageCount: number
+  messageCount: number
+  previousSummary?: string
+}
+
 export interface ContextManagerLike {
   /**
    * Live manager state. This exposes the owned state object for persistence and
@@ -168,8 +175,12 @@ export interface ContextManagerLike {
   needsCompaction(): boolean
   /** Build the provider-safe messages used to ask the model for a compaction summary. */
   compactionInput(): ProviderInputMessage[]
+  /** Snapshot the exact prefix that a background summary worker should compact. */
+  compactionSnapshot(): ContextCompactionSnapshot | undefined
   /** Compact history with the supplied summary; false means the threshold was not reached. */
   compact(summary: string): boolean
+  /** Apply a background summary snapshot without losing messages appended after the snapshot. */
+  compactSnapshot(summary: string, snapshot: ContextCompactionSnapshot): boolean
   /** Compose provider messages and attach budget/cache/ledger stats for the next provider call. */
   planRequest(input: ContextPlanInput): ContextPlan
   /** Build provider input messages; planRequest calls this and then computes stats. */

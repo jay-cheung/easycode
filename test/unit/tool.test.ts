@@ -156,7 +156,7 @@ describe("tool", () => {
 
     expect(result.metadata.status).toBe("failed")
     expect(result.metadata.error).toBe("large_file_read_forbidden")
-    expect(result.output).toContain("Use repo_map first")
+    expect(result.output).toContain("Use repo_map")
     expect(result.output).toContain("read_lines")
   })
 

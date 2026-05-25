@@ -55,6 +55,38 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("semantic navigation can inspect call graph before reading focused lines", async () => {
+    const root = await fixture()
+    await Bun.write(path.join(root, "src", "leaf.ts"), "export function leaf() {\n  return 1\n}\n")
+    await Bun.write(path.join(root, "src", "parent.ts"), "import { leaf } from './leaf'\nexport function parent() {\n  return leaf()\n}\n")
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => part.toolName)
+        if (!results.includes("repo_map")) {
+          yield { type: "tool_call", call: { id: "call_map", name: "repo_map", input: { dir: "src", language: "typescript", query: "leaf parent" } } }
+          return
+        }
+        if (!results.includes("call_graph")) {
+          yield { type: "tool_call", call: { id: "call_graph", name: "call_graph", input: { symbol: "leaf", direction: "callers", depth: 1, language: "typescript" } } }
+          return
+        }
+        if (!results.includes("read_lines")) {
+          yield { type: "tool_call", call: { id: "call_lines", name: "read_lines", input: { filePath: "src/parent.ts", startLine: 1, endLine: 4 } } }
+          return
+        }
+        yield { type: "text_delta", text: "Call graph inspected." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Trace leaf callers", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["repo_map", "call_graph", "read_lines"])
+    expect(toolResults(result.messages).find((part) => part.toolName === "call_graph")?.output).toContain("src/parent.ts#parent -> src/leaf.ts#leaf")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("prewarms repo map before the provider turn", async () => {
     const root = await fixture()
     let cacheExistedAtProvider = false
@@ -404,8 +436,8 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
     expect(result.status).toBe("completed")
-    expect(providerMessageContents[0].some((content) => content.includes("Tool usage priority"))).toBe(true)
-    expect(providerMessageContents[1].some((content) => content.includes("Tool usage priority"))).toBe(true)
+    expect(providerMessageContents[0].some((content) => content.includes("Code exploration order"))).toBe(true)
+    expect(providerMessageContents[1].some((content) => content.includes("Code exploration order"))).toBe(true)
     expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(false)
     expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(false)
     expect(providerMessageContents[1].some((content) => content.includes("Fix"))).toBe(true)
@@ -673,8 +705,13 @@ describe("agent integration", () => {
   test("context-compaction", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
     const runner = new AgentRunner({ root, provider: new FakeProvider(), context })
-    await runner.run("Fix the failing test with a very long instruction ".repeat(20), "build")
+    await runner.run("Fix the failing test", "build")
+    await runner.waitForSummarySubagent()
     expect(context.state.summary).toBeDefined()
     await rm(root, { recursive: true, force: true })
   })
@@ -682,6 +719,10 @@ describe("agent integration", () => {
   test("context compaction asks provider for a summary", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
     const events: RunUiEvent[] = []
     let summaryPrompt = ""
     const provider: Provider = {
@@ -695,13 +736,55 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) }).run("Fix the failing test with a very long instruction ".repeat(20), "build")
+    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) })
+    const result = await runner.run("Fix the failing test", "build")
+    await runner.waitForSummarySubagent()
     expect(result.status).toBe("completed")
     expect(summaryPrompt).toContain("Your task is to create a detailed summary")
     expect(summaryPrompt).toContain("Conversation to summarize:")
     expect(context.state.summary).toBe("Model generated summary.")
     expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "started" }))
     expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "completed", summaryChars: "Model generated summary.".length }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("context compaction summary subagent does not block the main provider turn", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
+    let releaseSummary = () => {}
+    let markSummaryStarted = () => {}
+    const summaryStarted = new Promise<void>((resolve) => {
+      markSummaryStarted = resolve
+    })
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          markSummaryStarted()
+          await new Promise<void>((resolve) => {
+            releaseSummary = resolve
+          })
+          yield { type: "text_delta", text: "<summary>\nBackground summary.\n</summary>" }
+          return
+        }
+        yield { type: "text_delta", text: "Done without waiting." }
+      },
+    }
+    const runner = new AgentRunner({ root, provider, context })
+    const resultPromise = runner.run("Fix the failing test", "build")
+    await summaryStarted
+    const result = await resultPromise
+    expect(result.status).toBe("completed")
+    expect(result.text).toBe("Done without waiting.")
+    expect(context.state.summary).toBeUndefined()
+
+    releaseSummary()
+    await runner.waitForSummarySubagent()
+    expect(context.state.summary).toBe("Background summary.")
     await rm(root, { recursive: true, force: true })
   })
 
@@ -745,6 +828,10 @@ describe("agent integration", () => {
   test("logger records summary request and output", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
     const events: LogEvent[] = []
     const provider: Provider = {
       name: "test-provider",
@@ -756,7 +843,9 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const result = await new AgentRunner({ root, provider, context, logger: (event) => events.push(event) }).run("Fix the failing test with a very long instruction ".repeat(20), "build")
+    const runner = new AgentRunner({ root, provider, context, logger: (event) => events.push(event) })
+    const result = await runner.run("Fix the failing test", "build")
+    await runner.waitForSummarySubagent()
     expect(result.status).toBe("completed")
     expect(events.some((event) => event.type === "provider" && event.name === "provider.summary_request" && String(event.detail?.content).includes("Conversation to summarize:"))).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.summary_output" && event.detail?.summary === "<summary>\nLogged summary.\n</summary>")).toBe(true)

@@ -3,6 +3,7 @@ import { ContextManager, estimateSummaryTokens, estimateTextTokens, recentProvid
 import { toolCallMessage, toolResultMessage, textMessage } from "../../src/message"
 import { createAgent } from "../../src/agent"
 import { createBuiltinRegistry } from "../../src/tool"
+import { providerMessageToResponseInput } from "../../src/provider"
 
 describe("context", () => {
   test("uses larger default context and execution budgets", () => {
@@ -98,6 +99,22 @@ describe("context", () => {
     expect(suffix).toEqual([])
   })
 
+  test("compose after summary emits only paired Responses tool history", () => {
+    const context = new ContextManager()
+    context.state.summary = "model summary"
+    context.add(toolCallMessage([
+      { id: "call_read", name: "read", input: { filePath: "a.ts" } },
+      { id: "call_list", name: "list", input: { dirPath: "." } },
+    ]))
+    context.add(toolResultMessage({ callID: "call_read", toolName: "read", status: "succeeded", output: "ok" }))
+
+    const responseInput = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).flatMap(providerMessageToResponseInput)
+    const calls = responseInput.filter((item) => item.type === "function_call").map((item) => item.call_id)
+    const outputs = responseInput.filter((item) => item.type === "function_call_output").map((item) => item.call_id)
+
+    expect(calls).toEqual(outputs)
+  })
+
 
   test("compose includes only skill descriptions", () => {
     const context = new ContextManager()
@@ -135,7 +152,7 @@ describe("context", () => {
 
     const messages = context.compose({ agent: createAgent("build"), skills: [], tools: [readTool] })
 
-    expect(messages[0].content).toContain("Tool usage priority")
+    expect(messages[0].content).toContain("Code exploration order")
     expect(messages[0].content).not.toContain("Available tools:")
     expect(messages[0].content).not.toContain("- read:")
     expect(messages[0].content).not.toContain("input_schema")

@@ -1,13 +1,13 @@
 import { defaultCachePricing, type CachePricing } from "../cache-policy"
 import type { InstructionInfo } from "../instruction"
-import { createMessage, messagesToProviderInput, redactProtectedMessages, summaryPart, textMessage, type Message, type ProviderInputMessage } from "../message"
+import { createMessage, messagesToProviderInput, redactProtectedMessages, summaryPart, textMessage, validProviderMessageSuffix, type Message, type ProviderInputMessage } from "../message"
 import type { Agent } from "../agent"
 import type { SkillInfo } from "../skill"
 import type { ToolDef } from "../tool"
 import { clampInt, clampNumber } from "../utils/math"
 import { mergeLedger, normalizedLedger, renderContextLedger, selectContextLedger, summaryLedgerConflicts, validateLedger } from "./ledger"
 import { estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, splitRecentUserTurns } from "./tokens"
-import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
+import type { ContextBudgetStats, ContextCacheStats, ContextCompactionSnapshot, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
 
 type WindowStats = {
   calls: number
@@ -112,20 +112,43 @@ export class ContextManager implements ContextManagerLike {
   }
 
   compactionInput() {
-    if (!this.needsCompaction()) return []
+    return this.compactionSnapshot()?.providerMessages ?? []
+  }
+
+  compactionSnapshot(): ContextCompactionSnapshot | undefined {
+    if (!this.needsCompaction()) return undefined
     const { compacted } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
     const messages: Message[] = []
     const ledger = renderContextLedger(this.state.ledger)
     if (ledger) messages.push(textMessage("system", ledger))
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(`Previous summary:\n${this.state.summary}`)]))
     messages.push(...redactProtectedMessages(compacted))
-    return messagesToProviderInput(messages, { redactProtectedToolResults: true })
+    return {
+      providerMessages: messagesToProviderInput(messages, { redactProtectedToolResults: true }),
+      compactedMessageCount: compacted.length,
+      messageCount: this.state.messages.length,
+      previousSummary: this.state.summary,
+    }
   }
 
   compact(summary: string) {
     if (!this.needsCompaction()) return false
     const { recent } = splitRecentUserTurns(this.state.messages, this.preserveRecentUserTurns)
     const preserved = recentProviderMessageSuffix(recent, this.compactPreserveTokens)
+    const nextSummary = truncateToTokenBudget(summary, this._strategyState.dynamicSummaryTokenBudget)
+    const conflicts = summaryLedgerConflicts(nextSummary, this.state.ledger, this.state.messages.length)
+    if (conflicts.length) this.state.ledger = mergeLedger(this.state.ledger, { current: conflicts })
+    this.state.summary = nextSummary
+    this.state.messages = preserved
+    this.recalculateTokenEstimate()
+    return true
+  }
+
+  compactSnapshot(summary: string, snapshot: ContextCompactionSnapshot) {
+    if (snapshot.compactedMessageCount < 0) return false
+    if (this.state.messages.length < snapshot.messageCount) return false
+    if (this.state.summary !== snapshot.previousSummary) return false
+    const preserved = recentProviderMessageSuffix(this.state.messages.slice(snapshot.compactedMessageCount), this.compactPreserveTokens)
     const nextSummary = truncateToTokenBudget(summary, this._strategyState.dynamicSummaryTokenBudget)
     const conflicts = summaryLedgerConflicts(nextSummary, this.state.ledger, this.state.messages.length)
     if (conflicts.length) this.state.ledger = mergeLedger(this.state.ledger, { current: conflicts })
@@ -160,7 +183,8 @@ export class ContextManager implements ContextManagerLike {
       if (skillPrompt) messages.push(textMessage("system", skillPrompt))
     }
     if (this.state.summary) messages.push(createMessage("system", [summaryPart(this.state.summary)]))
-    messages.push(...this.state.messages)
+    const dynamicMessages = this.state.summary ? validProviderMessageSuffix(this.state.messages) : this.state.messages
+    messages.push(...dynamicMessages)
     return messagesToProviderInput(messages, { largeOutputLimit: this.largeOutputLimit() })
   }
 
@@ -313,20 +337,13 @@ function formatSkillDescription(skill: SkillInfo) {
 // Keep exploration policy in the stable system prefix so every provider turn
 // gets the same tool-ordering contract without duplicating schemas.
 const toolPriorityDirective = [
-  "Tool usage priority (MUST follow this order for code exploration):",
-  "1. repo_map — always use query, never full load (structural overview first, never skip).",
-  "2. find_definition / find_references / rg_search — locate symbols, find references, and search code.",
-  "3. call_graph — inspect bounded callers/callees for a symbol from the local code index",
-  "4. read_lines — read only the confirmed line range (max 200 lines).",
-  "5. list — list directory contents for structural navigation.",
-  "6. git_diff — inspect git changes in stat/summary/file mode.",
-  "7. read — full-file read ONLY when the file is small (<100 lines) or you have a confirmed edit target.",
-  "8. grep — fallback text search, use only when semantic tools are unavailable.",
-  "9. edit / write — only after reading the relevant lines.",
-  "10. bash — last resort for commands.",
-  "MUST: locate symbols + check call relationships + only read the specific lines needed to confirm the next action, to minimize information overload and maximize cache reuse.", 
-  "VIOLATION: using read before repo_map + call_graph/find_definition/find_references/rg_search + read_lines is explicitly forbidden for files.",
-  "INTERNAL CACHE RULE: .easycode/cache/code-index/index.json is tool-private; never request, read, paste, or expose the full index in model context.",
+  "Code exploration order:",
+  "1. repo_map with query.",
+  "2. find_definition / find_references / rg_search.",
+  "3. call_graph for bounded callers/callees.",
+  "4. read_lines for exact ranges.",
+  "5. list / git_diff / read / grep / edit|write / bash.",
+  "Do not full-read files over 100 lines. Never read or expose .easycode/cache/code-index/index.json.",
 ].join("\n")
 
 function staticPrefixMessageCount(input: ContextPlanInput) {

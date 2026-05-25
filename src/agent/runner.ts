@@ -1,4 +1,4 @@
-import { ContextManager, type ContextManagerLike, type LedgerRecord } from "../context"
+import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "../message"
 import { defaultPermissionRules, PermissionService } from "../permission"
 import { createProvider, ProviderError, type Provider, type ProviderName } from "../provider"
@@ -21,6 +21,13 @@ import { ledgerRecord, toolScopeFiles } from "./ledger"
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
 
+type SummarySubagentTask = {
+  id: number
+  startedAt: number
+  snapshot: ContextCompactionSnapshot
+  promise: Promise<void>
+}
+
 
 export class AgentRunner {
   readonly root: string
@@ -37,6 +44,9 @@ export class AgentRunner {
   readonly toolProgressIntervalMs: number
   readonly providerProgressIntervalMs: number
   readonly settings: SessionSettings
+  readonly onBackgroundContextUpdate?: () => void | Promise<void>
+  private summarySubagent: SummarySubagentTask | undefined
+  private nextSummarySubagentID = 1
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -53,6 +63,7 @@ export class AgentRunner {
     this.toolProgressIntervalMs = options.toolProgressIntervalMs ?? defaultToolProgressIntervalMs
     this.providerProgressIntervalMs = options.providerProgressIntervalMs ?? defaultProviderProgressIntervalMs
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
+    this.onBackgroundContextUpdate = options.onBackgroundContextUpdate
     const providerContextWindow = this.provider.capabilities?.contextWindowTokens
     this.context.configureStrategy({
       contextWindowTokens: providerContextWindow ?? Math.max(this.context.strategyState.maxTokens, options.settings?.maxTokens ?? 0),
@@ -87,7 +98,7 @@ export class AgentRunner {
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       this.aspect.step(step + 1, this.maxSteps)
       try {
-        await this.compactContext(effectiveMode, input.signal, providerMetrics)
+        await this.compactContext(effectiveMode, providerMetrics)
       } catch (error) {
         if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
         throw error
@@ -257,30 +268,52 @@ export class AgentRunner {
     return { status: "cancelled" as const, failureReason: "cancelled" as const, text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
   }
 
-  private async compactContext(mode: AgentMode, signal?: AbortSignal, providerMetrics?: ProviderMetricsAccumulator) {
-    if (!this.context.needsCompaction()) return
-    const startedAt = Date.now()
-    const compactionInput = this.context.compactionInput()
-    this.onEvent?.({ type: "context_compaction", status: "started", inputMessages: compactionInput.length })
-    const providerMessages = [{ role: "user" as const, content: compactPrompt(compactionInput) }]
+  private async compactContext(mode: AgentMode, providerMetrics?: ProviderMetricsAccumulator) {
+    if (this.summarySubagent || !this.context.needsCompaction()) return
+    const snapshot = this.context.compactionSnapshot()
+    if (!snapshot) return
+    this.startSummarySubagent(mode, snapshot, providerMetrics)
+  }
+
+  async waitForSummarySubagent() {
+    await this.summarySubagent?.promise
+  }
+
+  private startSummarySubagent(mode: AgentMode, snapshot: ContextCompactionSnapshot, providerMetrics?: ProviderMetricsAccumulator) {
+    const task: SummarySubagentTask = {
+      id: this.nextSummarySubagentID++,
+      startedAt: Date.now(),
+      snapshot,
+      promise: Promise.resolve(),
+    }
+    this.summarySubagent = task
+    this.onEvent?.({ type: "context_compaction", status: "started", inputMessages: snapshot.providerMessages.length })
+    task.promise = this.runSummarySubagent(task, mode, providerMetrics)
+    void task.promise
+  }
+
+  private async runSummarySubagent(task: SummarySubagentTask, mode: AgentMode, providerMetrics?: ProviderMetricsAccumulator) {
+    const providerMessages = [{ role: "user" as const, content: compactPrompt(task.snapshot.providerMessages) }]
     let summary = ""
     const metricCall = startProviderMetricCall(providerMetrics)
     try {
-      for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [], signal })) {
+      for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [] })) {
         observeProviderMetricEvent(providerMetrics, metricCall, event)
         if (event.type === "text_delta") summary += event.text
-        if (event.type === "usage") this.context.recordUsage(event.inputTokens)
         if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
       }
+      const extracted = extractSummary(summary)
+      const compacted = this.context.compactSnapshot(extracted, task.snapshot)
+      if (compacted) {
+        await this.onBackgroundContextUpdate?.()
+        this.onEvent?.({ type: "context_compaction", status: "completed", elapsedMs: Date.now() - task.startedAt, summaryChars: extracted.length })
+      }
     } catch (error) {
-      this.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) })
-      throw error
+      this.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: error instanceof Error ? error.message : String(error) })
     } finally {
       finishProviderMetricCall(providerMetrics, metricCall)
+      if (this.summarySubagent?.id === task.id) this.summarySubagent = undefined
     }
-    const extracted = extractSummary(summary)
-    this.context.compact(extracted)
-    this.onEvent?.({ type: "context_compaction", status: "completed", elapsedMs: Date.now() - startedAt, summaryChars: extracted.length })
   }
 
   private emitRunDone(status: string, providerMetrics: ProviderMetricsAccumulator | undefined) {
@@ -517,7 +550,7 @@ function contextHasProposedPlan(messages: Message[]) {
   return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; toolProgressIntervalMs?: number; settings?: SessionSettings }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, toolProgressIntervalMs: input.toolProgressIntervalMs, settings })
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings })
 }

@@ -19,7 +19,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "read",
-    description: "Read a small file inside the project root. For code exploration, large files are blocked; use repo_map, find_definition or rg_search, then read_lines.",
+    description: "Read a small project file; large files are blocked.",
     inputSchema: ReadInput,
     jsonSchema: objectSchema({ filePath: { type: "string", description: "File path to read" } }),
     permission: "read",
@@ -32,7 +32,7 @@ export function createBuiltinRegistry() {
       if (lineCount > maxFullReadLines) {
         return {
           title: params.filePath,
-          output: `Full-file read blocked for ${params.filePath}: ${lineCount} lines exceeds the ${maxFullReadLines}-line limit. Use repo_map first, then find_definition or rg_search to locate the symbol, then call_graph to see the function calls, then read_lines for the smallest relevant range.`,
+          output: `Full-file read blocked for ${params.filePath}: ${lineCount} lines exceeds ${maxFullReadLines}. Use repo_map, search/call_graph, then read_lines.`,
           metadata: { status: "failed", error: "large_file_read_forbidden", lineCount, maxLines: maxFullReadLines },
         }
       }
@@ -56,7 +56,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "grep",
-    description: "Fallback plain text search. For code exploration, use repo_map, find_definition, rg_search, and read_lines first; use grep only when semantic navigation or rg_search is unavailable.",
+    description: "Fallback plain text search.",
     inputSchema: GrepInput,
     jsonSchema: objectSchema({ query: { type: "string" }, dir: { type: "string" } }, ["query"]),
     permission: "grep",
@@ -70,14 +70,14 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "rg_search",
-    description: "Fast bounded code search with ripgrep. Prefer this over grep; provide dir or fileType when possible and keep maxResults small.",
+    description: "Fast bounded ripgrep search.",
     inputSchema: RgSearchInput,
     jsonSchema: objectSchema(
       {
-        query: { type: "string", description: "Ripgrep query. Use precise symbols or escaped regex." },
-        dir: { type: "string", description: "Optional project-relative directory to search." },
-        fileType: { type: "string", description: "Optional file extension/type such as ts, tsx, js, py, or go." },
-        maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50 and is capped at 200." },
+        query: { type: "string", description: "Regex or text query." },
+        dir: { type: "string", description: "Project-relative dir." },
+        fileType: { type: "string", description: "Extension/type." },
+        maxResults: { type: "number", description: "Max matches." },
       },
       ["query"],
     ),
@@ -93,12 +93,12 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "read_lines",
-    description: "Read a bounded 1-based line range from one project file. Use this after search/definition tools instead of reading whole large files.",
+    description: "Read a bounded 1-based line range.",
     inputSchema: ReadLinesInput,
     jsonSchema: objectSchema({
-      filePath: { type: "string", description: "Project-relative file path." },
-      startLine: { type: "number", description: "1-based start line." },
-      endLine: { type: "number", description: "1-based inclusive end line. At most 200 lines may be read." },
+      filePath: { type: "string", description: "Project-relative path." },
+      startLine: { type: "number", description: "Start line." },
+      endLine: { type: "number", description: "End line, max 200 lines." },
     }),
     permission: "read",
     modes: ["build", "plan"],
@@ -112,13 +112,13 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "find_definition",
-    description: "Find class/function/interface/type/variable definitions with the local code index first, then ast-grep or bounded JavaScript fallback when needed.",
+    description: "Find symbol definitions via code index, then fallback.",
     inputSchema: FindDefinitionInput,
     jsonSchema: objectSchema(
       {
-        symbol: { type: "string", description: "Identifier to locate." },
-        language: { type: "string", description: "ast-grep language, defaults to typescript." },
-        maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50 and is capped at 200." },
+        symbol: { type: "string", description: "Identifier." },
+        language: { type: "string", description: "Language hint." },
+        maxResults: { type: "number", description: "Max matches." },
       },
       ["symbol"],
     ),
@@ -134,13 +134,13 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "find_references",
-    description: "Find bounded symbol references with the local code index first, then ripgrep word matching when needed. Use language to constrain file types and avoid noisy broad search.",
+    description: "Find bounded symbol references.",
     inputSchema: FindReferencesInput,
     jsonSchema: objectSchema(
       {
-        symbol: { type: "string", description: "Identifier to search as a whole word." },
-        language: { type: "string", description: "Optional language hint such as typescript or javascript." },
-        maxResults: { type: "number", description: "Maximum matches to return. Defaults to 50 and is capped at 200." },
+        symbol: { type: "string", description: "Identifier." },
+        language: { type: "string", description: "Language hint." },
+        maxResults: { type: "number", description: "Max matches." },
       },
       ["symbol"],
     ),
@@ -156,12 +156,12 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "call_graph",
-    description: "Inspect bounded callers/callees for a symbol from the local code index, use this for debugging call relationships and code exploration.",
+    description: "Inspect bounded callers/callees.",
     inputSchema: CallGraphInput,
     jsonSchema: objectSchema(
       {
-        symbol: { type: "string", description: "Symbol name, qualified name, or id." },
-        direction: { type: ["string", "null"], enum: ["callers", "callees", "both", null], description: "callers, callees, or both." },
+        symbol: { type: "string", description: "Name, qualified name, or id." },
+        direction: { type: ["string", "null"], enum: ["callers", "callees", "both", null], description: "callers/callees/both." },
         depth: { type: "number", description: "Depth, default 2, max 4." },
         language: { type: "string", description: "Optional language hint." },
         maxResults: { type: "number", description: "Max call edges." },
@@ -180,15 +180,15 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "repo_map",
-    description: "First-choice codebase orientation tool. Generate or read a cached lightweight code skeleton under .easycode/cache/repo-map.json. The backing code-index cache is tool-private and must never be returned wholesale to model context. Use before grep/read when exploring code. Returns paths and symbols only, not function bodies. Supports optional query parameter to dynamically filter and slice symbols by relevance.",
+    description: "First-choice codebase map. Returns paths/symbols only; use query.",
     inputSchema: RepoMapInput,
     jsonSchema: objectSchema(
       {
-        dir: { type: "string", description: "Optional project-relative directory to map." },
-        language: { type: "string", description: "Optional language filter such as typescript or javascript." },
-        maxFiles: { type: "number", description: "Maximum source files to map. Defaults to 200." },
-        useCache: { type: "boolean", description: "When false, force a rebuild of the derived cache." },
-        query: { type: "string", description: "Optional semantic keyword query to filter symbols and files (e.g. 'payment', 'retry')." },
+        dir: { type: "string", description: "Project-relative dir." },
+        language: { type: "string", description: "Language filter." },
+        maxFiles: { type: "number", description: "Max source files." },
+        useCache: { type: "boolean", description: "False forces rebuild." },
+        query: { type: "string", description: "Filter query." },
       },
       [],
     ),

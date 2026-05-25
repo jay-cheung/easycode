@@ -3,6 +3,7 @@ import path from "node:path"
 import { createInterface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner } from "./agent"
+import type { ContextManagerLike } from "./context"
 import { imageLabel, imagePartFromInput } from "./image"
 import { createLogger, emitLog } from "./logger"
 import type { AgentMode, ImagePart } from "./message"
@@ -337,18 +338,23 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let activeAbort: AbortController | undefined
     const timeline = new TimelineRenderer(output)
     const onEvent = timelineEventHandler(timeline)
+    let saveChain = Promise.resolve()
+    const saveSession = (contextToSave: ContextManagerLike) => {
+      saveChain = saveChain.then(() => store.save(session, contextToSave, activeSettings))
+      return saveChain
+    }
     const getRunner = () => {
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onEvent })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context) })
       return runner
     }
     while (true) {
       const prompt = (queuedPrompts.shift() ?? await question(reader)).trim()
       if (prompt === eofPrompt) {
-        await store.save(session, runner?.context ?? context, activeSettings)
+        await saveSession(runner?.context ?? context)
         return "completed"
       }
       if (["exit", ":exit", "quit", ":quit"].includes(prompt.toLowerCase())) {
-        await store.save(session, runner?.context ?? context, activeSettings)
+        await saveSession(runner?.context ?? context)
         return "completed"
       }
       if (!prompt) continue
@@ -358,7 +364,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
         if (changed.resetRunner) runner = undefined
-        await store.save(session, runner?.context ?? context, activeSettings)
+        await saveSession(runner?.context ?? context)
         continue
       }
       const activeRunner = getRunner()
@@ -370,7 +376,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runInput.stop()
       activeAbort = undefined
       timeline.finish()
-      await store.save(session, activeRunner.context, activeSettings)
+      await saveSession(activeRunner.context)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
         activeMode = "build"
         runner = undefined
