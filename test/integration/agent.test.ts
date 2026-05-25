@@ -422,6 +422,37 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("asks for exploration direction after the summary checkpoint", async () => {
+    const root = await fixture()
+    const toolCounts: number[] = []
+    const checkpointPrompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        toolCounts.push(input.tools.length)
+        const checkpoint = input.providerMessages.map((message) => message.content).find((content) => content.includes("Exploration checkpoint reached"))
+        if (checkpoint) {
+          checkpointPrompts.push(checkpoint)
+          yield { type: "text_delta", text: "I need one more area to be certain. Continue exploring, or summarize with the current evidence?" }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "tool_call", call: { id: `call_${toolCounts.length}`, name: "read_lines", input: { filePath: "src/add.ts", startLine: 1, endLine: 3 } } }
+        yield { type: "done" }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, maxSteps: 10 }).run("梳理当前代码结构", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toHaveLength(7)
+    expect(toolCounts.slice(0, 7).every((count) => count > 0)).toBe(true)
+    expect(toolCounts[7]).toBe(0)
+    expect(checkpointPrompts[0]).toContain("Ask the user whether to continue exploring or summarize with the current evidence.")
+    expect(result.text).toContain("Continue exploring")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("returns latest assistant text when max steps is reached", async () => {
     const root = await fixture()
     const events: RunUiEvent[] = []

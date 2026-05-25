@@ -94,7 +94,9 @@ export class AgentRunner {
       }
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       const plan = this.context.planRequest({ step, agent, instructions, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
-      const providerMessages = plan.providerMessages
+      const shouldCheckSummaryReadiness = usedTools.length > 0 && step >= explorationSummaryStep(this.maxSteps)
+      const providerMessages = shouldCheckSummaryReadiness ? [...plan.providerMessages, explorationSummaryReadinessMessage(step + 1, this.maxSteps)] : plan.providerMessages
+      const availableTools = shouldCheckSummaryReadiness ? [] : tools
       let text = ""
       let reasoningText = ""
       const toolCalls: ToolCall[] = []
@@ -104,7 +106,7 @@ export class AgentRunner {
       const stopProviderProgress = this.startProviderProgressTimer()
       const metricCall = startProviderMetricCall(providerMetrics)
       try {
-        for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools, signal: input.signal })) {
+        for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools: availableTools, signal: input.signal })) {
           observeProviderMetricEvent(providerMetrics, metricCall, event)
           if (input.signal?.aborted) return this.cancelledResult(currentReasoningTranscript(), usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
           if (event.type === "reasoning_delta") {
@@ -427,6 +429,22 @@ function samePermissionRules(left: PermissionRule[], right: PermissionRule[]) {
 
 function providerFailureText(error: ProviderError) {
   return error.output?.trim() || error.message
+}
+
+function explorationSummaryStep(maxSteps: number) {
+  return Math.max(1, Math.ceil(maxSteps * 0.7))
+}
+
+function explorationSummaryReadinessMessage(step: number, maxSteps: number) {
+  return {
+    role: "system" as const,
+    content: [
+      `Exploration checkpoint reached at step ${step}/${maxSteps}.`,
+      "Before calling another tool, decide whether the information already gathered is enough to answer the user's request.",
+      "If it is enough, stop exploring and provide the summary now.",
+      "If it is not enough, do not call tools. Ask the user whether to continue exploring or summarize with the current evidence.",
+    ].join("\n"),
+  }
 }
 
 function runFailureText(text: string, reason: "provider_error" | "max_steps") {
