@@ -13,6 +13,7 @@ export const RgSearchInput = z.object({ query: z.string(), dir: OptionalString, 
 export const ReadLinesInput = z.object({ filePath: z.string(), startLine: z.number(), endLine: z.number() })
 export const FindDefinitionInput = z.object({ symbol: z.string(), language: OptionalString, maxResults: OptionalNumber })
 export const FindReferencesInput = z.object({ symbol: z.string(), language: OptionalString, maxResults: OptionalNumber })
+export const CallGraphInput = z.object({ symbol: z.string(), direction: z.enum(["callers", "callees", "both"]).nullish().transform((value) => value ?? undefined), depth: OptionalNumber, language: OptionalString, maxResults: OptionalNumber })
 export const RepoMapInput = z.object({ dir: OptionalString, language: OptionalString, maxFiles: OptionalNumber, useCache: OptionalBoolean, query: OptionalString })
 export const WriteInput = z.object({ filePath: z.string(), content: z.string() })
 export const EditInput = z.object({ filePath: z.string(), oldString: z.string(), newString: z.string(), replaceAll: OptionalBoolean })
@@ -42,10 +43,20 @@ export function formatRepoMap(map: { cache: { path: string; hit: boolean; gitIgn
   return lines.join("\n")
 }
 
+export function formatCallGraph(graph: { symbol: string; direction: string; depth: number; nodes: Array<{ id: string; name: string; filePath: string; line: number; signature?: string }>; edges: Array<{ from: string; to: string; filePath: string; line: number; preview?: string }> }) {
+  if (graph.nodes.length === 0) return `No call graph nodes found for ${graph.symbol}.`
+  const lines = [`call_graph symbol=${graph.symbol} direction=${graph.direction} depth=${graph.depth}`]
+  lines.push("Nodes:")
+  for (const node of graph.nodes) lines.push(`  ${node.id} @ ${node.filePath}:${node.line}${node.signature ? ` :: ${node.signature}` : ""}`)
+  lines.push("Edges:")
+  if (graph.edges.length === 0) lines.push("  (no resolved call edges)")
+  for (const edge of graph.edges) lines.push(`  ${edge.from} -> ${edge.to} @ ${edge.filePath}:${edge.line}${edge.preview ? ` :: ${edge.preview}` : ""}`)
+  return lines.join("\n")
+}
+
 
 export function countLines(text: string) {
   if (!text) return 0
   return text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length
 }
-
 

@@ -4,7 +4,7 @@ import type { Sandbox } from "../../sandbox"
 import { codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
 import { uniqueSortedResults } from "./parsing"
-import type { CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
+import type { CallGraphDirection, CallGraphResult, CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
 
 type FileFingerprint = { filePath: string; mtimeMs: number; size: number }
 
@@ -14,6 +14,15 @@ const importPattern = /^\s*import\b.*?\bfrom\s+["']([^"']+)["']/
 const sideEffectImportPattern = /^\s*import\s+["']([^"']+)["']/
 const reExportPattern = /^\s*export\b.*?\bfrom\s+["']([^"']+)["']/
 const exportListPattern = /^\s*export\s+\{([^}]+)\}/
+const pythonDeclarationPattern = /^\s*(class|def|async\s+def)\s+([A-Za-z_][\w]*)\b/
+const pythonImportPattern = /^\s*(?:from\s+([\w.]+)\s+import\s+(.+)|import\s+(.+))/
+const goDeclarationPattern = /^\s*(func|type|var|const)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\b/
+const rustDeclarationPattern = /^\s*(?:pub\s+)?(?:async\s+)?(fn|struct|enum|trait|type|const|static)\s+([A-Za-z_]\w*)\b/
+const javaLikeDeclarationPattern = /^\s*(?:(?:public|private|protected|static|final|abstract|open|override|internal|class|data|sealed)\s+)*(class|interface|enum|record|fun|void|[A-Z][\w<>]*)\s+([A-Za-z_]\w*)\s*(?:[({:=]|$)/
+const cLikeDeclarationPattern = /^\s*(?:[A-Za-z_][\w:*<>,\s]+\s+)+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{?\s*$/
+const goImportPattern = /^\s*import\s+(?:\(\s*)?["']([^"']+)["']/
+const rustUsePattern = /^\s*use\s+(.+);/
+const javaImportPattern = /^\s*import\s+(?:static\s+)?([\w.]+);/
 const callPattern = /\b([A-Za-z_$][\w$]*)\s*\(/g
 const identifierPattern = /\b[A-Za-z_$][\w$]*\b/g
 const classExtendsPattern = /\bclass\s+([A-Za-z_$][\w$]*)\s+extends\s+([A-Za-z_$][\w$]*)/
@@ -36,8 +45,8 @@ export async function codeIndex(input: {
   gitIgnored: boolean
 }) {
   const cachePath = input.sandbox.resolve(codeIndexCachePath)
+  const cached = input.useCache === false ? undefined : await readCachedCodeIndex(cachePath)
   if (input.useCache !== false) {
-    const cached = await readCachedCodeIndex(cachePath)
     if (cached && codeIndexCacheValid(cached, {
       root: input.sandbox.root,
       dir: input.dir,
@@ -49,25 +58,28 @@ export async function codeIndex(input: {
     }
   }
 
-  const indexedFiles: CodeIndexFile[] = []
-  const symbols: CodeIndexSymbol[] = []
-  const edges: CodeIndexEdge[] = []
-  const sourceFiles: Array<{ file: FileFingerprint; text: string; symbols: CodeIndexSymbol[] }> = []
+  const canIncremental = cached && codeIndexCacheCompatible(cached, {
+    root: input.sandbox.root,
+    dir: input.dir,
+    generatorVersion: codeIndexGeneratorVersion,
+    toolVersions: input.toolVersions,
+  })
+  const changedFiles = canIncremental ? changedFingerprints(cached, input.files) : input.files
+  const changedPaths = new Set(changedFiles.map((file) => file.filePath))
+  const currentPaths = new Set(input.files.map((file) => file.filePath))
+  const indexedFiles: CodeIndexFile[] = canIncremental ? cached.files.filter((file) => currentPaths.has(file.filePath) && !changedPaths.has(file.filePath)) : []
+  const symbols: CodeIndexSymbol[] = canIncremental ? cached.symbols.filter((symbol) => currentPaths.has(symbol.filePath) && !changedPaths.has(symbol.filePath)) : []
+  const edges: CodeIndexEdge[] = canIncremental ? cached.edges.filter((edge) => currentPaths.has(edge.filePath) && !changedPaths.has(edge.filePath)) : []
 
-  for (const file of input.files) {
+  for (const file of changedFiles) {
     const text = await Bun.file(input.sandbox.resolve(file.filePath)).text().catch(() => "")
     const extracted = extractCodeIndex(text, file)
     indexedFiles.push(extracted.file)
     symbols.push(...extracted.symbols)
     edges.push(...extracted.edges)
-    sourceFiles.push({ file, text, symbols: extracted.symbols })
   }
 
-  const symbolNames = new Set(symbols.map((symbol) => symbol.name))
-  for (const sourceFile of sourceFiles) {
-    edges.push(...extractReferenceEdges(sourceFile.text, sourceFile.file, sourceFile.symbols, symbolNames))
-  }
-
+  const resolvedEdges = resolveEdges(symbols, indexedFiles, edges)
   const result: CodeIndexResult = {
     root: input.sandbox.root,
     dir: input.dir,
@@ -76,8 +88,8 @@ export async function codeIndex(input: {
     toolVersions: input.toolVersions,
     files: indexedFiles,
     symbols,
-    edges,
-    cache: { path: codeIndexCachePath, hit: false, gitIgnored: input.gitIgnored },
+    edges: resolvedEdges,
+    cache: { path: codeIndexCachePath, hit: false, gitIgnored: input.gitIgnored, rebuiltFiles: changedFiles.length },
   }
   await mkdir(path.dirname(cachePath), { recursive: true })
   await Bun.write(cachePath, JSON.stringify(result, null, 2))
@@ -95,13 +107,25 @@ export async function readCachedCodeIndex(cachePath: string) {
 }
 
 export function codeIndexCacheValid(cached: CodeIndexResult, expected: { root: string; dir: string; generatorVersion: string; toolVersions: Record<string, string>; files: FileFingerprint[] }) {
-  if (cached.root !== expected.root || cached.dir !== expected.dir || cached.generatorVersion !== expected.generatorVersion) return false
-  if (JSON.stringify(cached.toolVersions) !== JSON.stringify(expected.toolVersions)) return false
+  if (!codeIndexCacheCompatible(cached, expected)) return false
   if (cached.files.length !== expected.files.length) return false
   const files = new Map(cached.files.map((file) => [file.filePath, file]))
   return expected.files.every((file) => {
     const cachedFile = files.get(file.filePath)
     return cachedFile && cachedFile.mtimeMs === file.mtimeMs && cachedFile.size === file.size
+  })
+}
+
+function codeIndexCacheCompatible(cached: CodeIndexResult, expected: { root: string; dir: string; generatorVersion: string; toolVersions: Record<string, string> }) {
+  if (cached.root !== expected.root || cached.dir !== expected.dir || cached.generatorVersion !== expected.generatorVersion) return false
+  return JSON.stringify(cached.toolVersions) === JSON.stringify(expected.toolVersions)
+}
+
+function changedFingerprints(cached: CodeIndexResult, files: FileFingerprint[]) {
+  const previous = new Map(cached.files.map((file) => [file.filePath, file]))
+  return files.filter((file) => {
+    const cachedFile = previous.get(file.filePath)
+    return !cachedFile || cachedFile.mtimeMs !== file.mtimeMs || cachedFile.size !== file.size
   })
 }
 
@@ -137,9 +161,111 @@ export function findDefinitionsInCodeIndex(index: CodeIndexResult, symbol: strin
 
 export function findReferencesInCodeIndex(index: CodeIndexResult, symbol: string, maxResults: number): CodeSearchResult[] {
   return uniqueSortedResults(index.edges
-    .filter((edge) => edge.to === symbol && (edge.kind === "calls" || edge.kind === "references"))
+    .filter((edge) => (edge.to === symbol || edge.toName === symbol || symbolFromID(edge.toID)?.name === symbol) && (edge.kind === "calls" || edge.kind === "references"))
     .map((edge) => ({ filePath: edge.filePath, line: edge.line, preview: edge.preview ?? edge.to })))
     .slice(0, maxResults)
+}
+
+export function callGraphInCodeIndex(index: CodeIndexResult, input: { symbol: string; direction: CallGraphDirection; depth: number; maxResults: number }): CallGraphResult {
+  const starts = index.symbols.filter((symbol) => symbol.name === input.symbol || symbol.qualifiedName === input.symbol || symbol.id === input.symbol)
+  const symbolByID = new Map(index.symbols.map((symbol) => [symbol.id, symbol]))
+  const callEdges = index.edges.filter((edge) => edge.kind === "calls" && edge.resolved && symbolByID.has(edge.from) && edge.toID && symbolByID.has(edge.toID))
+  const forward = new Map<string, CodeIndexEdge[]>()
+  const backward = new Map<string, CodeIndexEdge[]>()
+  for (const edge of callEdges) {
+    const to = edge.toID
+    if (!to) continue
+    forward.set(edge.from, [...(forward.get(edge.from) ?? []), edge])
+    backward.set(to, [...(backward.get(to) ?? []), edge])
+  }
+  const nodeIDs = new Set(starts.map((symbol) => symbol.id))
+  const resultEdges: CodeIndexEdge[] = []
+  const queue = starts.map((symbol) => ({ id: symbol.id, depth: 0 }))
+  const seen = new Set(queue.map((item) => `${item.id}:0`))
+  while (queue.length > 0 && resultEdges.length < input.maxResults) {
+    const current = queue.shift()
+    if (!current || current.depth >= input.depth) continue
+    const nextEdges = [
+      ...(input.direction === "callees" || input.direction === "both" ? forward.get(current.id) ?? [] : []),
+      ...(input.direction === "callers" || input.direction === "both" ? backward.get(current.id) ?? [] : []),
+    ]
+    for (const edge of nextEdges) {
+      const nextID = edge.from === current.id ? edge.toID : edge.from
+      if (!nextID) continue
+      nodeIDs.add(edge.from)
+      if (edge.toID) nodeIDs.add(edge.toID)
+      resultEdges.push(edge)
+      const key = `${nextID}:${current.depth + 1}`
+      if (!seen.has(key)) {
+        seen.add(key)
+        queue.push({ id: nextID, depth: current.depth + 1 })
+      }
+      if (resultEdges.length >= input.maxResults) break
+    }
+  }
+  return {
+    symbol: input.symbol,
+    direction: input.direction,
+    depth: input.depth,
+    nodes: [...nodeIDs].flatMap((id) => {
+      const symbol = symbolByID.get(id)
+      return symbol ? [{ id, name: symbol.name, filePath: symbol.filePath, line: symbol.startLine, signature: symbol.signature }] : []
+    }).sort((left, right) => left.filePath.localeCompare(right.filePath) || left.line - right.line || left.name.localeCompare(right.name)),
+    edges: resultEdges.map((edge) => ({ from: edge.from, to: edge.toID ?? edge.to, filePath: edge.filePath, line: edge.line, preview: edge.preview })),
+  }
+}
+
+function resolveEdges(symbols: CodeIndexSymbol[], files: CodeIndexFile[], edges: CodeIndexEdge[]) {
+  const byID = new Map(symbols.map((symbol) => [symbol.id, symbol]))
+  const byName = new Map<string, CodeIndexSymbol[]>()
+  const byFile = new Map<string, CodeIndexSymbol[]>()
+  const filesByPath = new Map(files.map((file) => [file.filePath, file]))
+  for (const symbol of symbols) {
+    byName.set(symbol.name, [...(byName.get(symbol.name) ?? []), symbol])
+    byFile.set(symbol.filePath, [...(byFile.get(symbol.filePath) ?? []), symbol])
+  }
+  return edges.map((edge) => {
+    const name = edge.toName ?? edge.to
+    const local = (byFile.get(edge.filePath) ?? []).find((symbol) => symbol.name === name)
+    const imported = resolveImportedSymbol(name, edge.filePath, filesByPath, byFile)
+    const global = byName.get(name)?.length === 1 ? byName.get(name)?.[0] : undefined
+    const target = imported ?? local ?? global
+    const fromSymbol = byID.get(edge.from)
+    return {
+      ...edge,
+      fromName: fromSymbol?.name,
+      toID: target?.id,
+      resolved: Boolean(target),
+    }
+  }).filter((edge) => edge.kind !== "references" || edge.resolved)
+}
+
+function resolveImportedSymbol(name: string, filePath: string, filesByPath: Map<string, CodeIndexFile>, byFile: Map<string, CodeIndexSymbol[]>) {
+  const file = filesByPath.get(filePath)
+  const binding = file?.importBindings?.find((item) => item.local === name)
+  if (!binding) return undefined
+  const targetFile = resolveImportSource(filePath, binding.source, filesByPath)
+  if (!targetFile) return undefined
+  const importedName = binding.imported === "default" || binding.imported === "*" ? name : binding.imported
+  return (byFile.get(targetFile.filePath) ?? []).find((symbol) => symbol.name === importedName || (binding.imported === "default" && symbol.exported))
+}
+
+function resolveImportSource(fromFile: string, source: string, filesByPath: Map<string, CodeIndexFile>) {
+  if (!source.startsWith(".")) return undefined
+  const base = path.posix.normalize(path.posix.join(path.posix.dirname(fromFile), source))
+  const candidates = [base, ...[...filesByPath.keys()].filter((filePath) => filePath.replace(/\.[^.]+$/, "") === base || filePath === `${base}/index.ts` || filePath === `${base}/index.js`)]
+  for (const candidate of candidates) {
+    const match = filesByPath.get(candidate)
+    if (match) return match
+  }
+  return undefined
+}
+
+function symbolFromID(id: string | undefined) {
+  if (!id) return undefined
+  const hash = id.lastIndexOf("#")
+  if (hash === -1) return undefined
+  return { filePath: id.slice(0, hash), name: id.slice(hash + 1) }
 }
 
 function extractCodeIndex(text: string, file: FileFingerprint) {
@@ -147,22 +273,21 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   const declarations: CodeIndexSymbol[] = []
   const imports = new Set<string>()
   const exports = new Set<string>()
+  const importBindings: CodeIndexFile["importBindings"] = []
   const edges: CodeIndexEdge[] = []
 
   for (const [index, line] of lines.entries()) {
     const lineNumber = index + 1
-    const declaration = line.match(declarationPattern)
+    const declaration = matchDeclaration(line, file.filePath)
     if (declaration) {
-      const name = declaration[2] ?? ""
-      const kind = normalizeSymbolKind(declaration[1] ?? "")
-      declarations.push(symbolFor(file.filePath, name, kind, lineNumber, line))
-      if (/^\s*export\b/.test(line)) exports.add(name)
+      declarations.push(symbolFor(file.filePath, declaration.name, declaration.kind, lineNumber, line, { exported: declaration.exported }))
+      if (declaration.exported) exports.add(declaration.name)
       const extendsMatch = line.match(classExtendsPattern)
-      if (extendsMatch) edges.push({ kind: "inherits", from: symbolID(file.filePath, extendsMatch[1] ?? ""), to: extendsMatch[2] ?? "", filePath: file.filePath, line: lineNumber, preview: line.trimEnd() })
+      if (extendsMatch) edges.push(rawEdge("inherits", symbolID(file.filePath, extendsMatch[1] ?? ""), extendsMatch[2] ?? "", file.filePath, lineNumber, line))
       const implementsMatch = line.match(implementsPattern)
       if (implementsMatch) {
         for (const implemented of (implementsMatch[2] ?? "").split(",").map((item) => item.trim()).filter(Boolean)) {
-          edges.push({ kind: "implements", from: symbolID(file.filePath, implementsMatch[1] ?? ""), to: implemented, filePath: file.filePath, line: lineNumber, preview: line.trimEnd() })
+          edges.push(rawEdge("implements", symbolID(file.filePath, implementsMatch[1] ?? ""), implemented, file.filePath, lineNumber, line))
         }
       }
       continue
@@ -173,13 +298,15 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       declarations.push(symbolFor(file.filePath, method[1] ?? "", "method", lineNumber, line))
     }
 
-    const importMatch = line.match(importPattern) ?? line.match(sideEffectImportPattern)
-    if (importMatch?.[1]) {
-      imports.add(importMatch[1])
-      edges.push({ kind: "imports", from: `file:${file.filePath}`, to: importMatch[1], filePath: file.filePath, line: lineNumber, preview: line.trimEnd() })
+    const parsedImport = parseImportLine(line)
+    if (parsedImport) {
+      imports.add(parsedImport.source)
+      importBindings.push(...parsedImport.bindings)
+      edges.push(rawEdge("imports", `file:${file.filePath}`, parsedImport.source, file.filePath, lineNumber, line))
+      continue
     }
     const reExportMatch = line.match(reExportPattern)
-    if (reExportMatch?.[1]) edges.push({ kind: "exports", from: `file:${file.filePath}`, to: reExportMatch[1], filePath: file.filePath, line: lineNumber, preview: line.trimEnd() })
+    if (reExportMatch?.[1]) edges.push(rawEdge("exports", `file:${file.filePath}`, reExportMatch[1], file.filePath, lineNumber, line))
     const exportList = line.match(exportListPattern)
     if (exportList?.[1]) {
       for (const item of exportList[1].split(",").map((part) => part.trim().split(/\s+as\s+/i)[0]?.trim()).filter(Boolean)) exports.add(item)
@@ -189,6 +316,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   const symbols = withEndLines(declarations, lines.length)
   for (const [index, rawLine] of lines.entries()) {
     const lineNumber = index + 1
+    if (parseImportLine(rawLine)) continue
     const line = stripInlineCommentsAndStrings(rawLine)
     callPattern.lastIndex = 0
     let match: RegExpExecArray | null
@@ -197,7 +325,16 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       if (excludedCalls.has(name)) continue
       if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
       const owner = symbolAtLine(symbols, lineNumber)
-      edges.push({ kind: "calls", from: owner?.id ?? `file:${file.filePath}`, to: name, filePath: file.filePath, line: lineNumber, preview: rawLine.trimEnd() })
+      edges.push(rawEdge("calls", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine))
+    }
+    identifierPattern.lastIndex = 0
+    while ((match = identifierPattern.exec(line)) !== null) {
+      const name = match[0] ?? ""
+      if (excludedReferences.has(name)) continue
+      if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
+      if (isPropertyAccess(line, match.index)) continue
+      const owner = symbolAtLine(symbols, lineNumber)
+      edges.push(rawEdge("references", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine))
     }
   }
 
@@ -209,30 +346,85 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       size: file.size,
       imports: [...imports].sort(),
       exports: [...exports].sort(),
+      importBindings,
     },
     symbols,
     edges,
   }
 }
 
-function extractReferenceEdges(text: string, file: FileFingerprint, symbols: CodeIndexSymbol[], symbolNames: Set<string>) {
-  const edges: CodeIndexEdge[] = []
-  const lines = text.split(/\r?\n/)
-  for (const [index, rawLine] of lines.entries()) {
-    const lineNumber = index + 1
-    if (rawLine.match(importPattern) ?? rawLine.match(sideEffectImportPattern)) continue
-    const line = stripInlineCommentsAndStrings(rawLine)
-    identifierPattern.lastIndex = 0
-    let match: RegExpExecArray | null
-    while ((match = identifierPattern.exec(line)) !== null) {
-      const name = match[0] ?? ""
-      if (!symbolNames.has(name) || excludedReferences.has(name)) continue
-      if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
-      const owner = symbolAtLine(symbols, lineNumber)
-      edges.push({ kind: "references", from: owner?.id ?? `file:${file.filePath}`, to: name, filePath: file.filePath, line: lineNumber, preview: rawLine.trimEnd() })
+function matchDeclaration(line: string, filePath: string) {
+  const extension = path.extname(filePath)
+  const ts = line.match(declarationPattern)
+  if (ts) return { kind: normalizeSymbolKind(ts[1] ?? ""), name: ts[2] ?? "", exported: /^\s*export\b/.test(line) }
+  if (extension === ".py") {
+    const py = line.match(pythonDeclarationPattern)
+    if (py) return { kind: normalizeSymbolKind(py[1] ?? ""), name: py[2] ?? "", exported: true }
+  }
+  if (extension === ".go") {
+    const go = line.match(goDeclarationPattern)
+    if (go) return { kind: normalizeSymbolKind(go[1] ?? ""), name: go[2] ?? "", exported: /^[A-Z]/.test(go[2] ?? "") }
+  }
+  if (extension === ".rs") {
+    const rust = line.match(rustDeclarationPattern)
+    if (rust) return { kind: normalizeSymbolKind(rust[1] ?? ""), name: rust[2] ?? "", exported: /^\s*pub\b/.test(line) }
+  }
+  if ([".java", ".kt", ".kts", ".swift", ".cs"].includes(extension)) {
+    const javaLike = line.match(javaLikeDeclarationPattern)
+    if (javaLike) return { kind: normalizeSymbolKind(javaLike[1] ?? ""), name: javaLike[2] ?? "", exported: /\b(public|open)\b/.test(line) }
+  }
+  if ([".c", ".h", ".cpp", ".cc", ".hpp", ".php", ".rb"].includes(extension)) {
+    const cLike = line.match(cLikeDeclarationPattern)
+    if (cLike) return { kind: "function", name: cLike[1] ?? "", exported: true }
+  }
+  return undefined
+}
+
+function parseImportLine(line: string): { source: string; bindings: NonNullable<CodeIndexFile["importBindings"]> } | undefined {
+  const ts = line.match(importPattern) ?? line.match(sideEffectImportPattern)
+  if (ts?.[1]) return { source: ts[1], bindings: parseTypeScriptImportBindings(line, ts[1]) }
+  const py = line.match(pythonImportPattern)
+  if (py) {
+    const source = py[1] ?? py[3]?.split(",")[0]?.trim().split(/\s+as\s+/i)[0] ?? ""
+    const bindings = (py[2] ?? py[3] ?? "").split(",").map((item) => {
+      const [imported, local] = item.trim().split(/\s+as\s+/i)
+      return imported ? { local: local ?? imported.split(".").at(-1) ?? imported, imported: imported.split(".").at(-1) ?? imported, source } : undefined
+    }).filter((item): item is { local: string; imported: string; source: string } => Boolean(item))
+    return source ? { source, bindings } : undefined
+  }
+  const go = line.match(goImportPattern)
+  if (go?.[1]) return { source: go[1], bindings: [] }
+  const rust = line.match(rustUsePattern)
+  if (rust?.[1]) return { source: rust[1], bindings: [] }
+  const java = line.match(javaImportPattern)
+  if (java?.[1]) return { source: java[1], bindings: [{ local: java[1].split(".").at(-1) ?? java[1], imported: java[1].split(".").at(-1) ?? java[1], source: java[1] }] }
+  return undefined
+}
+
+function parseTypeScriptImportBindings(line: string, source: string): NonNullable<CodeIndexFile["importBindings"]> {
+  const bindings: NonNullable<CodeIndexFile["importBindings"]> = []
+  const named = line.match(/\{([^}]+)\}/)
+  if (named?.[1]) {
+    for (const item of named[1].split(",")) {
+      const [imported, local] = item.trim().split(/\s+as\s+/i)
+      if (imported) bindings.push({ local: local ?? imported, imported, source })
     }
   }
-  return edges
+  const defaultImport = line.match(/^\s*import\s+([A-Za-z_$][\w$]*)\s*(?:,|\bfrom\b)/)
+  if (defaultImport?.[1]) bindings.push({ local: defaultImport[1], imported: "default", source })
+  const namespace = line.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/)
+  if (namespace?.[1]) bindings.push({ local: namespace[1], imported: "*", source })
+  return bindings
+}
+
+function rawEdge(kind: CodeIndexEdge["kind"], from: string, to: string, filePath: string, line: number, source: string): CodeIndexEdge {
+  return { kind, from, to, toName: to, filePath, line, preview: source.trimEnd(), resolved: false }
+}
+
+function isPropertyAccess(line: string, index: number) {
+  let cursor = index - 1
+  while (cursor >= 0 && /\s/.test(line[cursor] ?? "")) cursor -= 1
+  return line[cursor] === "."
 }
 
 function stripInlineCommentsAndStrings(line: string) {
@@ -261,15 +453,18 @@ function stripInlineCommentsAndStrings(line: string) {
   return output
 }
 
-function symbolFor(filePath: string, name: string, kind: string, line: number, source: string): CodeIndexSymbol {
+function symbolFor(filePath: string, name: string, kind: string, line: number, source: string, options: { exported?: boolean; ownerID?: string } = {}): CodeIndexSymbol {
   return {
     id: symbolID(filePath, name),
+    qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${name}`,
     filePath,
     name,
     kind,
     startLine: line,
     endLine: line,
     signature: cleanSignature(source),
+    exported: options.exported,
+    ownerID: options.ownerID,
   }
 }
 

@@ -38,6 +38,7 @@ export type RepoMapResult = {
     path: string
     hit: boolean
     gitIgnored: boolean
+    rebuiltFiles?: number
   }
 }
 
@@ -48,16 +49,20 @@ export type CodeIndexFile = {
   size: number
   imports: string[]
   exports: string[]
+  importBindings?: Array<{ local: string; imported: string; source: string }>
 }
 
 export type CodeIndexSymbol = {
   id: string
+  qualifiedName: string
   filePath: string
   name: string
   kind: string
   startLine: number
   endLine: number
   signature?: string
+  exported?: boolean
+  ownerID?: string
 }
 
 export type CodeIndexEdgeKind = "imports" | "exports" | "calls" | "references" | "inherits" | "implements"
@@ -66,9 +71,23 @@ export type CodeIndexEdge = {
   kind: CodeIndexEdgeKind
   from: string
   to: string
+  fromName?: string
+  toID?: string
+  toName?: string
+  resolved?: boolean
   filePath: string
   line: number
   preview?: string
+}
+
+export type CallGraphDirection = "callers" | "callees" | "both"
+
+export type CallGraphResult = {
+  symbol: string
+  direction: CallGraphDirection
+  depth: number
+  nodes: Array<{ id: string; name: string; filePath: string; line: number; signature?: string }>
+  edges: Array<{ from: string; to: string; filePath: string; line: number; preview?: string }>
 }
 
 export type CodeIndexResult = {
@@ -84,6 +103,7 @@ export type CodeIndexResult = {
     path: string
     hit: boolean
     gitIgnored: boolean
+    rebuiltFiles?: number
   }
 }
 
@@ -92,6 +112,7 @@ export interface CodeNavigator {
   readLines(input: { filePath: string; startLine: number; endLine: number }): Promise<CodeRange & { content: string }>
   findDefinition(input: { symbol: string; language?: string; maxResults?: number }): Promise<CodeSearchResult[]>
   findReferences(input: { symbol: string; language?: string; maxResults?: number }): Promise<CodeSearchResult[]>
+  callGraph(input: { symbol: string; direction?: CallGraphDirection; depth?: number; language?: string; maxResults?: number }): Promise<CallGraphResult>
   repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean; query?: string }): Promise<RepoMapResult>
 }
 

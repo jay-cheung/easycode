@@ -2,7 +2,7 @@ import { z } from "zod"
 import { CliCodeNavigator } from "./code-navigator"
 import { ToolRegistry } from "./registry"
 import { BashInput, bashApprovalForCommand, bashCwd, bashResultToToolResult, executeBashWithSandboxRecovery, scopedBashApproval } from "./bash"
-import { EditInput, FindDefinitionInput, FindReferencesInput, GrepInput, ListInput, ReadInput, ReadLinesInput, RepoMapInput, RgSearchInput, WriteInput, countLines, formatRepoMap, formatSearchResults, maxFullReadLines, relativePattern } from "./fs"
+import { CallGraphInput, EditInput, FindDefinitionInput, FindReferencesInput, GrepInput, ListInput, ReadInput, ReadLinesInput, RepoMapInput, RgSearchInput, WriteInput, countLines, formatCallGraph, formatRepoMap, formatSearchResults, maxFullReadLines, relativePattern } from "./fs"
 import { GitDiffInput, gitDiffToolResult } from "./git"
 import type { JsonSchema } from "./registry"
 
@@ -151,6 +151,30 @@ export function createBuiltinRegistry() {
       const params = FindReferencesInput.parse(input)
       const results = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).findReferences(params)
       return { title: params.symbol, output: formatSearchResults(results), metadata: { status: "succeeded", count: results.length } }
+    },
+  })
+
+  registry.register({
+    name: "call_graph",
+    description: "Inspect bounded callers/callees for a symbol from the local code index.",
+    inputSchema: CallGraphInput,
+    jsonSchema: objectSchema(
+      {
+        symbol: { type: "string", description: "Symbol name, qualified name, or id." },
+        direction: { type: ["string", "null"], enum: ["callers", "callees", "both", null], description: "callers, callees, or both." },
+        depth: { type: "number", description: "Depth, default 2, max 4." },
+        language: { type: "string", description: "Optional language hint." },
+        maxResults: { type: "number", description: "Max call edges." },
+      },
+      ["symbol", "direction", "depth", "language", "maxResults"],
+    ),
+    permission: "grep",
+    modes: ["build", "plan"],
+    patterns: () => ["."],
+    execute: async (input, ctx) => {
+      const params = CallGraphInput.parse(input)
+      const graph = await new CliCodeNavigator(ctx.sandbox, { signal: ctx.signal }).callGraph(params)
+      return { title: params.symbol, output: formatCallGraph(graph), metadata: { status: "succeeded", nodes: graph.nodes.length, edges: graph.edges.length } }
     },
   })
 

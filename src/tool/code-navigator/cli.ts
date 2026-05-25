@@ -6,9 +6,9 @@ import { defaultReadLineLimit, ignoredDirs, repoMapCachePath, repoMapGeneratorVe
 import { defaultRunner, firstLine, getRgPath } from "./commands"
 import { definitionPatterns, escapeRegExp, extensionsForLanguage, fileTypeArgs, languageToFileType, normalizeMaxResults } from "./language"
 import { parseAstGrepJson, parseRgJson, uniqueSortedResults } from "./parsing"
-import { codeIndex, findDefinitionsInCodeIndex, findReferencesInCodeIndex, repoMapEntriesFromCodeIndex } from "./code-index"
+import { callGraphInCodeIndex, codeIndex, findDefinitionsInCodeIndex, findReferencesInCodeIndex, repoMapEntriesFromCodeIndex } from "./code-index"
 import { projectIgnoresEasyCode, readCachedRepoMap, repoMapCacheValid, scoreAndFilterRepoMap } from "./repo-map"
-import type { CodeIndexResult, CodeNavigator, CodeSearchResult, CommandRunner, RepoMapEntry, RepoMapResult } from "./types"
+import type { CallGraphDirection, CodeIndexResult, CodeNavigator, CodeSearchResult, CommandRunner, RepoMapEntry, RepoMapResult } from "./types"
 
 export class CliCodeNavigator implements CodeNavigator {
   constructor(
@@ -94,6 +94,14 @@ export class CliCodeNavigator implements CodeNavigator {
     const query = `\\b${escapeRegExp(input.symbol)}\\b`
     const fileType = languageToFileType(input.language)
     return this.rgSearch({ query, fileType, maxResults: input.maxResults })
+  }
+
+  async callGraph(input: { symbol: string; direction?: CallGraphDirection; depth?: number; language?: string; maxResults?: number }) {
+    const maxResults = normalizeMaxResults(input.maxResults)
+    const direction = input.direction ?? "both"
+    const depth = clampInt(input.depth ?? 2, 1, 4)
+    const index = await this.codeIndex({ language: input.language })
+    return callGraphInCodeIndex(index, { symbol: input.symbol, direction, depth, maxResults })
   }
 
   async repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean; query?: string }) {

@@ -129,7 +129,7 @@ describe("tool", () => {
 
   test("registers semantic navigation and diff tools in plan and build mode", () => {
     const registry = createBuiltinRegistry()
-    for (const name of ["rg_search", "read_lines", "find_definition", "find_references", "repo_map", "git_diff"]) {
+    for (const name of ["rg_search", "read_lines", "find_definition", "find_references", "call_graph", "repo_map", "git_diff"]) {
       expect(registry.list("plan").some((tool) => tool.name === name)).toBe(true)
       expect(registry.list("build").some((tool) => tool.name === name)).toBe(true)
     }

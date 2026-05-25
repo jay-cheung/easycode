@@ -94,17 +94,17 @@ Repeated bash and sandbox-bypass approvals are cached for the current session by
 
 ## Code Navigation
 
-EasyCode includes semantic-navigation tools for large repositories. Agents should prefer `repo_map` or `find_definition`, then `rg_search`, then `read_lines` for a bounded code slice. Full-file `read` is still available, but should be reserved for small files or clear edit targets.
+EasyCode includes semantic-navigation tools for large repositories. Agents should prefer `repo_map` or `find_definition`, then `call_graph` / `find_references` / `rg_search`, then `read_lines` for a bounded code slice. Full-file `read` is still available, but should be reserved for small files or clear edit targets.
 
 `repo_map` writes derived caches to `<project>/.easycode/cache/repo-map.json` and `<project>/.easycode/cache/code-index/index.json`. The repo map stores file fingerprints and symbol skeletons; the code index stores files, symbols, ranges, imports, exports, calls, references, inherits, and implements edges. These caches are not source of truth and can be deleted at any time. Projects should ignore `.easycode` so local caches are not committed.
 
 The code index is a tool-private cache, not prompt context. Tools may read it locally to answer bounded queries, but they must never return the full `code-index/index.json` to the model. Model-visible outputs stay limited to repo-map skeletons, search previews, or `read_lines` slices.
 
-`find_definition` and `find_references` read the code index first, then fall back to `ast-grep` or bounded `rg` when needed. If those CLIs are unavailable, EasyCode keeps a pure JavaScript fallback for bounded local navigation instead of unbounded full-file reads.
+`find_definition`, `find_references`, and `call_graph` read the code index first. The index rebuilds incrementally from file fingerprints, keeps resolved symbol ids for calls/references when possible, and supports lightweight parsing across TypeScript, JavaScript, Python, Go, Rust, Java-family, C/C++, C#, PHP, and Ruby files. TypeScript and JavaScript have the richest import-alias resolution; other languages use conservative declaration/import/call extraction and fall back to bounded text search when needed. If `ast-grep` or `rg` are unavailable, EasyCode keeps pure JavaScript fallbacks for bounded local navigation instead of unbounded full-file reads.
 
 ## Instructions
 
-EasyCode automatically loads durable instruction files into provider context before dynamic conversation history. It reads the first existing project file from `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`, then the first existing global file from `~/.easycode/AGENTS.md`, `~/.agent/AGENTS.md`, and `~/.claude/CLAUDE.md`.
+EasyCode automatically loads durable instruction files into provider context before dynamic conversation history. It reads the first existing project file from `easycode.md`, `EASYCODE.md`, `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`, then the first existing global file from `~/.easycode/easycode.md`, `~/.easycode/EASYCODE.md`, `~/.easycode/AGENTS.md`, `~/.agent/AGENTS.md`, and `~/.claude/CLAUDE.md`.
 
 Instruction files are part of the stable prompt prefix. Put repository and user workflow rules there, and keep turn-specific facts in the conversation so prompt-cache reuse stays predictable.
 

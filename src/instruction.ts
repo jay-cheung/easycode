@@ -17,11 +17,14 @@ export type InstructionServiceOptions = {
   globalFiles?: string[]
 }
 
-const projectInstructionFiles = ["AGENTS.md", "CLAUDE.md", "CONTEXT.md"]
+const easycodeInstructionFiles = ["easycode.md", "EASYCODE.md"]
+const projectInstructionFiles = [...easycodeInstructionFiles, "AGENTS.md", "CLAUDE.md", "CONTEXT.md"]
 
 function defaultGlobalFiles() {
   const home = os.homedir()
   return [
+    path.join(home, ".easycode", "easycode.md"),
+    path.join(home, ".easycode", "EASYCODE.md"),
     path.join(home, ".easycode", "AGENTS.md"),
     path.join(home, ".agent", "AGENTS.md"),
     path.join(home, ".claude", "CLAUDE.md"),

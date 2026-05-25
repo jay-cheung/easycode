@@ -44,6 +44,16 @@ export function languageToFileType(language: string | undefined) {
 export function extensionsForLanguage(language: string | undefined) {
   if (language === "typescript") return new Set([".ts", ".tsx"])
   if (language === "javascript") return new Set([".js", ".jsx", ".mjs", ".cjs"])
+  if (language === "python") return new Set([".py"])
+  if (language === "go") return new Set([".go"])
+  if (language === "rust") return new Set([".rs"])
+  if (language === "java") return new Set([".java"])
+  if (language === "kotlin") return new Set([".kt", ".kts"])
+  if (language === "swift") return new Set([".swift"])
+  if (language === "c" || language === "cpp") return new Set([".c", ".h", ".cpp", ".cc", ".hpp"])
+  if (language === "csharp") return new Set([".cs"])
+  if (language === "php") return new Set([".php"])
+  if (language === "ruby") return new Set([".rb"])
   return codeExtensions
 }
 

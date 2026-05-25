@@ -187,7 +187,7 @@ describe("code navigator", () => {
     const authReferences = await navigator.findReferences({ symbol: "AuthService", language: "typescript" })
     const storeReferences = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
 
-    expect(index.generatorVersion).toBe("2")
+    expect(index.generatorVersion).toBe("3")
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "AuthService", line: 3 }))
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "tokenStore", line: 4 }))
     expect(authReferences).toEqual([
@@ -232,6 +232,67 @@ describe("code navigator", () => {
     expect(signatureMatch.entries.map((entry) => entry.filePath)).toEqual(["src/handlers.ts"])
     expect(signatureMatch.entries[0]?.symbols).toContainEqual(expect.objectContaining({ name: "buildSink" }))
     expect(importMatch.entries.map((entry) => entry.filePath)).toEqual(["src/handlers.ts"])
+  })
+
+  test("code index incrementally rebuilds changed files only", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "a.ts"), "export function alpha() {\n  return 1\n}\n")
+    await Bun.write(path.join(root, "src", "b.ts"), "export function beta() {\n  return 2\n}\n")
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+    await Bun.sleep(5)
+    await Bun.write(path.join(root, "src", "b.ts"), "export function beta() {\n  return 3\n}\n")
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+    const index = await Bun.file(path.join(root, ".easycode", "cache", "code-index", "index.json")).json()
+
+    expect(index.cache.rebuiltFiles).toBe(1)
+    expect(index.symbols.map((symbol: { name: string }) => symbol.name).sort()).toEqual(["alpha", "beta"])
+  })
+
+  test("callGraph follows resolved cross-file import aliases", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "leaf.ts"), "export function leaf() {\n  return 1\n}\n")
+    await Bun.write(path.join(root, "src", "parent.ts"), [
+      "import { leaf as makeLeaf } from './leaf'",
+      "export function parent() {",
+      "  return makeLeaf()",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "main.ts"), [
+      "import { parent } from './parent'",
+      "export function main() {",
+      "  return parent()",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    const graph = await navigator.callGraph({ symbol: "leaf", direction: "callers", depth: 2, language: "typescript" })
+
+    expect(graph.nodes.map((node) => node.name).sort()).toEqual(["leaf", "main", "parent"])
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/parent.ts#parent", to: "src/leaf.ts#leaf", line: 3 }))
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/main.ts#main", to: "src/parent.ts#parent", line: 3 }))
+  })
+
+  test("code index extracts symbols and call graph for non-TypeScript files", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "pkg"), { recursive: true })
+    await Bun.write(path.join(root, "pkg", "service.py"), [
+      "def leaf():",
+      "    return 1",
+      "",
+      "def parent():",
+      "    return leaf()",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    const definitions = await navigator.findDefinition({ symbol: "parent", language: "python" })
+    const graph = await navigator.callGraph({ symbol: "leaf", direction: "callers", depth: 1, language: "python" })
+
+    expect(definitions).toEqual([{ filePath: "pkg/service.py", line: 4, preview: "def parent():" }])
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "pkg/service.py#parent", to: "pkg/service.py#leaf", line: 5 }))
   })
 
   test("pure JS rgSearch fallback scans files and matches query regex", async () => {
