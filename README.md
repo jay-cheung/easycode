@@ -137,11 +137,14 @@ Logger behavior:
 ## Checks
 
 ```bash
+bun run verify:v1
 bun test
 bun run eval --provider fake
 bun run cache:bench
 bun run typecheck
 ```
+
+`verify:v1` runs the default v1 release gate: typecheck, full offline tests, fake-provider evals, and the simulated real-suite cache benchmark with quiet progress logs.
 
 Cache benchmark measures the fixed every-step prompt strategy. By default it runs the `real` suite:
 

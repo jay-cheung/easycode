@@ -17,7 +17,8 @@
     "apix:eval": "bun run src/evals/apix.ts",
     "apix:fixtures": "bun run evals/apix/generate-fixtures.ts",
     "cache:bench": "bun run src/cache-benchmark.ts",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "verify:v1": "bun run typecheck && bun test && bun run eval --provider fake && bun run cache:bench -- --provider simulated --suite real --quiet"
   },
   "dependencies": {
     "zod": "^4.1.8"

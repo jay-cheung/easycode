@@ -1,6 +1,7 @@
 # Acceptance Criteria
 
 ## Functional
+- `bun run verify:v1` passes.
 - `bun test` passes.
 - `bun run eval --provider fake` passes all local eval tasks.
 - `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
