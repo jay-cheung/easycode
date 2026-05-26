@@ -131,8 +131,12 @@ describe("tool", () => {
 
   test("registers semantic navigation and diff tools in plan and build mode", () => {
     const registry = createBuiltinRegistry()
-    for (const name of ["rg_search", "read_lines", "find_definition", "find_references", "call_graph", "repo_map", "git_diff"]) {
+    for (const name of ["rg_search", "read_lines", "find_definition", "find_references", "call_graph", "repo_map", "git_diff", "git_status", "git_branch", "git_log"]) {
       expect(registry.list("plan").some((tool) => tool.name === name)).toBe(true)
+      expect(registry.list("build").some((tool) => tool.name === name)).toBe(true)
+    }
+    for (const name of ["patch", "git_stage", "git_commit", "git_restore_guarded", "memory_add", "connector_call"]) {
+      expect(registry.list("plan").some((tool) => tool.name === name)).toBe(false)
       expect(registry.list("build").some((tool) => tool.name === name)).toBe(true)
     }
   })
@@ -181,6 +185,8 @@ describe("tool", () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     await git(root, ["init"])
+    await git(root, ["config", "user.email", "easycode@example.test"])
+    await git(root, ["config", "user.name", "EasyCode Test"])
     await Bun.write(path.join(root, "sample.ts"), "export const value = 1\n")
     await git(root, ["add", "sample.ts"])
     await Bun.write(path.join(root, "sample.ts"), "export const value = 2\n")
@@ -205,6 +211,80 @@ describe("tool", () => {
 
     await registry.run("edit", { filePath: "sample.txt", oldString: "one", newString: "two", replaceAll: true }, ctx)
     expect(await Bun.file(path.join(root, "sample.txt")).text()).toBe("two two two")
+  })
+
+  test("patch applies multiple explicit file operations", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "sample.txt"), "alpha beta beta")
+    const ctx = toolContext(root)
+
+    const result = await registry.run(
+      "patch",
+      {
+        operations: [
+          { type: "replace", filePath: "src/sample.txt", oldString: "beta", newString: "gamma", replaceAll: true },
+          { type: "create", filePath: "src/new.txt", content: "new file\n" },
+          { type: "move", fromPath: "src/new.txt", toPath: "src/moved.txt" },
+        ],
+      },
+      ctx,
+    )
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(await Bun.file(path.join(root, "src", "sample.txt")).text()).toBe("alpha gamma gamma")
+    expect(await Bun.file(path.join(root, "src", "moved.txt")).text()).toBe("new file\n")
+  })
+
+  test("memory tools store sanitized short project records", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const ctx = toolContext(root)
+
+    const added = await registry.run("memory_add", { text: "OPENAI_API_KEY=sk-secret123456 for task", tags: ["task"] }, ctx)
+    const queried = await registry.run("memory_query", { query: "task" }, ctx)
+
+    expect(added.metadata.status).toBe("succeeded")
+    expect(queried.output).toContain("task")
+    expect(queried.output).toContain("[redacted]")
+    expect(queried.output).not.toContain("sk-secret123456")
+  })
+
+  test("connector tools list and call static configured commands", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "connectors.json"), JSON.stringify({ tools: [{ name: "docs", description: "local docs", command: "printf connector-ok" }] }))
+    const ctx = toolContext(root)
+
+    const listed = await registry.run("connector_list", {}, ctx)
+    const called = await registry.run("connector_call", { name: "docs" }, ctx)
+
+    expect(listed.output).toContain("docs: local docs")
+    expect(called.output).toBe("connector-ok")
+    expect(called.metadata.connector).toBe("docs")
+  })
+
+  test("git workflow tools stage explicit files and reject unrelated staged commits", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await git(root, ["init"])
+    await Bun.write(path.join(root, "a.txt"), "a1\n")
+    await Bun.write(path.join(root, "b.txt"), "b1\n")
+    await git(root, ["add", "a.txt", "b.txt"])
+    await git(root, ["commit", "-m", "initial"])
+    await Bun.write(path.join(root, "a.txt"), "a2\n")
+    await Bun.write(path.join(root, "b.txt"), "b2\n")
+    await git(root, ["add", "b.txt"])
+    const ctx = toolContext(root)
+
+    const status = await registry.run("git_status", {}, ctx)
+    const commit = await registry.run("git_commit", { message: "update a", files: ["a.txt"] }, ctx)
+
+    expect(status.output).toContain("b.txt")
+    expect(commit.metadata.status).toBe("failed")
+    expect(commit.output).toContain("unrelated staged files")
   })
 
   test("bash keeps command output out of metadata", async () => {

@@ -75,7 +75,7 @@ export async function runEval(input: { provider: EvalProvider; root?: string; lo
   const results: { id: string; passed: boolean; skipped?: boolean; reason?: string }[] = []
   for (const file of tasks) {
     const task = JSON.parse(await Bun.file(path.join(taskDir, file)).text()) as EvalTask
-    const providers = task.providers ?? ["openai", "deepseek"]
+    const providers = task.providers ?? ["fake", "openai", "deepseek"]
     if (!providers.includes(input.provider)) {
       results.push({ id: task.id, passed: true, skipped: true, reason: `not configured for provider ${input.provider}` })
       continue

@@ -1,5 +1,5 @@
 import path from "node:path"
-import { mkdir, readdir } from "node:fs/promises"
+import { mkdir, readdir, rename, rm } from "node:fs/promises"
 import type { AgentMode } from "./message"
 
 export type BashResult = {
@@ -19,6 +19,9 @@ export type BashResult = {
 export type SandboxOptions = {
   timeoutMs?: number
   maxOutputBytes?: number
+  backend?: "local" | "docker"
+  dockerImage?: string
+  network?: "allow" | "deny"
 }
 
 export type SandboxExecuteOptions = {
@@ -79,6 +82,11 @@ export function isReadOnlyCommand(command: string) {
   return ["pwd", "ls", "find", "rg", "grep", "cat", "wc", "git status", "git diff", "git log", "sed -n"].some((prefix) => text === prefix || text.startsWith(`${prefix} `))
 }
 
+export function isNetworkCommand(command: string) {
+  const text = command.trim().toLowerCase()
+  return /\b(curl|wget|nc|ncat|telnet|ssh|scp|ftp|rsync)\b/.test(text) || /\b(?:bunx?|npm|pnpm|yarn|pip|uv|cargo|go)\s+(?:install|add|get|update|dlx|create)\b/.test(text)
+}
+
 function shellPathReferences(command: string) {
   const matches = command.matchAll(/(^|[\s"'=<>])((?:\.\.?[/\\]|\/)[^\s"'<>;|&]*)/g)
   return [...matches].map((match) => match[2] ?? "")
@@ -119,11 +127,17 @@ export class Sandbox {
   readonly root: string
   readonly timeoutMs: number
   readonly maxOutputBytes: number
+  readonly backend: "local" | "docker"
+  readonly dockerImage: string
+  readonly network: "allow" | "deny"
 
   constructor(root: string, options: SandboxOptions = {}) {
     this.root = path.resolve(root)
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     this.maxOutputBytes = options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES
+    this.backend = options.backend ?? sandboxBackendFromEnv()
+    this.dockerImage = options.dockerImage ?? process.env.EASYCODE_SANDBOX_DOCKER_IMAGE ?? "oven/bun:1"
+    this.network = options.network ?? (process.env.EASYCODE_SANDBOX_NETWORK === "deny" ? "deny" : "allow")
   }
 
   contains(target: string) {
@@ -146,6 +160,17 @@ export class Sandbox {
     const resolved = this.resolve(filePath)
     await mkdir(path.dirname(resolved), { recursive: true })
     await Bun.write(resolved, content)
+  }
+
+  async deleteFile(filePath: string) {
+    await rm(this.resolve(filePath))
+  }
+
+  async moveFile(fromPath: string, toPath: string) {
+    const from = this.resolve(fromPath)
+    const to = this.resolve(toPath)
+    await mkdir(path.dirname(to), { recursive: true })
+    await rename(from, to)
   }
 
   async list(dirPath = ".") {
@@ -174,6 +199,7 @@ export class Sandbox {
   async execute(input: { command: string; cwd?: string; timeoutMs?: number }, mode: AgentMode = "build", options: SandboxExecuteOptions = {}): Promise<BashResult> {
     if (mode === "plan" && !isReadOnlyCommand(input.command)) throw new SandboxCommandError(`Plan mode blocks side-effectful command: ${input.command}`)
     if (isDangerousCommand(input.command)) throw new SandboxCommandError(`Dangerous command denied: ${input.command}`)
+    if (this.network === "deny" && isNetworkCommand(input.command)) throw new SandboxCommandError(`Network command denied by sandbox policy: ${input.command}`)
     const cwd = this.resolve(input.cwd ?? ".")
     if (!options.bypassPathBoundary) {
       for (const reference of shellPathReferences(input.command)) {
@@ -199,13 +225,13 @@ export class Sandbox {
 
     const shell = process.platform === "win32" ? "cmd.exe" : "bash"
     const shellFlag = process.platform === "win32" ? "/c" : "-c"
-    const nativeWriteSandbox = process.platform !== "win32" && !options.bypassNativeWriteSandbox && (await canUseNativeWriteSandbox())
+    const nativeWriteSandbox = this.backend === "local" && process.platform !== "win32" && !options.bypassNativeWriteSandbox && (await canUseNativeWriteSandbox())
     if (cancelled) {
       clearTimeout(timer)
       options.signal?.removeEventListener("abort", onAbort)
       return cancelledBashResult(input.command, started)
     }
-    const command = nativeWriteSandbox ? [SANDBOX_EXEC, "-p", macosSandboxProfile(this.root), shell, shellFlag, input.command] : [shell, shellFlag, input.command]
+    const command = commandForBackend(this, cwd, input.command, shell, shellFlag, nativeWriteSandbox)
     const proc = Bun.spawn(command, {
       cwd,
       stdout: "pipe",
@@ -219,8 +245,8 @@ export class Sandbox {
     const exitCode = await proc.exited.catch(() => null)
     clearTimeout(timer)
     options.signal?.removeEventListener("abort", onAbort)
-    const stdout = truncateBytes(stdoutRaw, this.maxOutputBytes)
-    const stderr = truncateBytes(stderrRaw, this.maxOutputBytes)
+    const stdout = truncateBytes(redactSensitiveEnvValues(stdoutRaw), this.maxOutputBytes)
+    const stderr = truncateBytes(redactSensitiveEnvValues(stderrRaw), this.maxOutputBytes)
     return {
       command: input.command,
       exitCode,
@@ -235,6 +261,45 @@ export class Sandbox {
       pathBoundaryBypassed: Boolean(options.bypassPathBoundary),
     }
   }
+}
+
+function commandForBackend(sandbox: Sandbox, cwd: string, command: string, shell: string, shellFlag: string, nativeWriteSandbox: boolean) {
+  if (sandbox.backend === "docker") {
+    const relativeCwd = path.relative(sandbox.root, cwd) || "."
+    const dockerNetwork = sandbox.network === "deny" ? ["--network", "none"] : []
+    return [
+      "docker",
+      "run",
+      "--rm",
+      ...dockerNetwork,
+      "-v",
+      `${sandbox.root}:/workspace`,
+      "-w",
+      path.posix.join("/workspace", relativeCwd.split(path.sep).join("/")),
+      sandbox.dockerImage,
+      shell,
+      shellFlag,
+      command,
+    ]
+  }
+  return nativeWriteSandbox ? [SANDBOX_EXEC, "-p", macosSandboxProfile(sandbox.root), shell, shellFlag, command] : [shell, shellFlag, command]
+}
+
+function sandboxBackendFromEnv(): "local" | "docker" {
+  return process.env.EASYCODE_SANDBOX_BACKEND === "docker" ? "docker" : "local"
+}
+
+function redactSensitiveEnvValues(text: string) {
+  let output = text
+  for (const value of sensitiveEnvValues()) output = output.split(value).join("[redacted]")
+  return output
+}
+
+function sensitiveEnvValues(env: NodeJS.ProcessEnv = process.env) {
+  return Object.entries(env)
+    .filter(([key, value]) => Boolean(value) && /(?:key|token|secret|password|credential)/i.test(key))
+    .map(([, value]) => value)
+    .filter((value): value is string => typeof value === "string" && value.length >= 6)
 }
 
 function cancelledBashResult(command: string, started: number): BashResult {

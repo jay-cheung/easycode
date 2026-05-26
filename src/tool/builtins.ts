@@ -1,10 +1,12 @@
 import { z } from "zod"
+import { ConnectorService } from "../connector"
+import { ProjectMemoryStore } from "../memory"
 import { CliCodeNavigator } from "./code-navigator"
 import { ToolRegistry } from "./registry"
 import { BashInput, bashApprovalForCommand, bashCwd, bashResultToToolResult, executeBashWithSandboxRecovery, scopedBashApproval } from "./bash"
-import { CallGraphInput, EditInput, FindDefinitionInput, FindReferencesInput, GrepInput, ListInput, ReadInput, ReadLinesInput, RepoMapInput, RgSearchInput, WriteInput, countLines, formatCallGraph, formatRepoMap, formatSearchResults, maxFullReadLines, relativePattern } from "./fs"
-import { GitDiffInput, gitDiffToolResult } from "./git"
-import type { JsonSchema } from "./registry"
+import { CallGraphInput, EditInput, FindDefinitionInput, FindReferencesInput, GrepInput, ListInput, PatchInput, ReadInput, ReadLinesInput, RepoMapInput, RgSearchInput, WriteInput, countLines, formatCallGraph, formatRepoMap, formatSearchResults, maxFullReadLines, relativePattern } from "./fs"
+import { GitBranchInput, GitCommitInput, GitDiffInput, GitLogInput, GitRestoreInput, GitStageInput, GitStatusInput, gitBranchToolResult, gitCommitToolResult, gitDiffToolResult, gitLogToolResult, gitRestoreToolResult, gitStageToolResult, gitStatusToolResult } from "./git"
+import type { JsonSchema, ToolDef } from "./registry"
 
 function objectSchema(properties: JsonSchema["properties"], required = Object.keys(properties)): JsonSchema {
   return { type: "object", properties, required, additionalProperties: false }
@@ -13,6 +15,10 @@ function objectSchema(properties: JsonSchema["properties"], required = Object.ke
 const SkillInput = z.object({ name: z.string() })
 const PlanExitInput = z.object({ markdown: z.string() })
 const LedgerInput = z.object({ query: z.string().optional() })
+const MemoryQueryInput = z.object({ query: z.string(), maxResults: z.number().nullish().transform((value) => value ?? 5) })
+const MemoryAddInput = z.object({ text: z.string(), tags: z.array(z.string()).nullish().transform((value) => value ?? []) })
+const ConnectorListInput = z.object({})
+const ConnectorCallInput = z.object({ name: z.string() })
 
 export function createBuiltinRegistry() {
   const registry = new ToolRegistry()
@@ -224,6 +230,115 @@ export function createBuiltinRegistry() {
   })
 
   registry.register({
+    name: "git_status",
+    description: "Inspect git status without full patches.",
+    inputSchema: GitStatusInput,
+    jsonSchema: objectSchema({ short: { type: "boolean", description: "Use short branch status." } }, []),
+    permission: "bash",
+    modes: ["build", "plan"],
+    patterns: () => [scopedBashApproval("git:status", "project", []).target],
+    execute: async (input, ctx) => gitStatusToolResult(GitStatusInput.parse(input), ctx),
+  })
+
+  registry.register({
+    name: "git_stage",
+    description: "Stage only explicit project files.",
+    inputSchema: GitStageInput,
+    jsonSchema: objectSchema({ files: { type: "array", items: { type: "string" }, description: "Project-relative files to stage." } }),
+    permission: "bash",
+    modes: ["build"],
+    patterns: () => [scopedBashApproval("git:stage", "explicit-files", []).target],
+    execute: async (input, ctx) => gitStageToolResult(GitStageInput.parse(input), ctx),
+  })
+
+  registry.register({
+    name: "git_commit",
+    description: "Stage and commit only explicit files; refuses unrelated staged files.",
+    inputSchema: GitCommitInput,
+    jsonSchema: objectSchema({ message: { type: "string" }, files: { type: "array", items: { type: "string" } } }),
+    permission: "bash",
+    modes: ["build"],
+    patterns: () => [scopedBashApproval("git:commit", "explicit-files", []).target],
+    execute: async (input, ctx) => gitCommitToolResult(GitCommitInput.parse(input), ctx),
+  })
+
+  registry.register({
+    name: "git_branch",
+    description: "Show current branch or create one explicitly.",
+    inputSchema: GitBranchInput,
+    jsonSchema: objectSchema({ name: { type: "string" }, create: { type: "boolean" }, startPoint: { type: "string" } }, []),
+    permission: "bash",
+    modes: ["build", "plan"],
+    patterns: () => [scopedBashApproval("git:branch", "project", []).target],
+    execute: async (input, ctx) => gitBranchToolResult(GitBranchInput.parse(input), ctx),
+  })
+
+  registry.register({
+    name: "git_log",
+    description: "Inspect recent commit history.",
+    inputSchema: GitLogInput,
+    jsonSchema: objectSchema({ limit: { type: "number", description: "Maximum commits, capped at 50." } }, []),
+    permission: "bash",
+    modes: ["build", "plan"],
+    patterns: () => [scopedBashApproval("git:log", "project", []).target],
+    execute: async (input, ctx) => gitLogToolResult(GitLogInput.parse(input), ctx),
+  })
+
+  registry.register({
+    name: "git_restore_guarded",
+    description: "Restore only explicit files from index or worktree.",
+    inputSchema: GitRestoreInput,
+    jsonSchema: objectSchema({ files: { type: "array", items: { type: "string" } }, staged: { type: "boolean" }, worktree: { type: "boolean" } }),
+    permission: "bash",
+    modes: ["build"],
+    patterns: () => [scopedBashApproval("git:restore", "explicit-files", []).target],
+    execute: async (input, ctx) => gitRestoreToolResult(GitRestoreInput.parse(input), ctx),
+  })
+
+  registry.register({
+    name: "patch",
+    description: "Apply explicit multi-operation file patches inside the project root. Supports replace, create, delete, and move operations.",
+    inputSchema: PatchInput,
+    jsonSchema: objectSchema({
+      operations: {
+        type: "array",
+        description: "Patch operations. Each item has type replace/create/delete/move and the required paths/content for that operation.",
+        items: { type: "object" },
+      },
+    }),
+    permission: "edit",
+    modes: ["build"],
+    patterns: (input, ctx) => patchPatterns(PatchInput.parse(input), ctx),
+    execute: async (input, ctx) => {
+      const params = PatchInput.parse(input)
+      const changed: string[] = []
+      for (const operation of params.operations) {
+        if (operation.type === "replace") {
+          const current = await ctx.sandbox.readFile(operation.filePath)
+          if (!current.includes(operation.oldString)) throw new Error(`oldString not found in ${operation.filePath}`)
+          const next = operation.replaceAll ? current.split(operation.oldString).join(operation.newString) : current.replace(operation.oldString, operation.newString)
+          await ctx.sandbox.writeFile(operation.filePath, next)
+          changed.push(operation.filePath)
+        }
+        if (operation.type === "create") {
+          if (!operation.overwrite && await Bun.file(ctx.sandbox.resolve(operation.filePath)).exists()) throw new Error(`Refusing to overwrite existing file: ${operation.filePath}`)
+          await ctx.sandbox.writeFile(operation.filePath, operation.content)
+          changed.push(operation.filePath)
+        }
+        if (operation.type === "delete") {
+          await ctx.sandbox.deleteFile(operation.filePath)
+          changed.push(operation.filePath)
+        }
+        if (operation.type === "move") {
+          await ctx.sandbox.moveFile(operation.fromPath, operation.toPath)
+          changed.push(`${operation.fromPath} -> ${operation.toPath}`)
+        }
+      }
+      return { title: "patch", output: changed.map((item) => `changed ${item}`).join("\n"), metadata: { status: "succeeded", changed, operations: params.operations.length } }
+    },
+  })
+
+  registry.register({
     name: "write",
     description: "Write a file inside the project root.",
     inputSchema: WriteInput,
@@ -301,6 +416,65 @@ export function createBuiltinRegistry() {
   })
 
   registry.register({
+    name: "memory_query",
+    description: "Query short project memory records for cross-session task state.",
+    inputSchema: MemoryQueryInput,
+    jsonSchema: objectSchema({ query: { type: "string" }, maxResults: { type: "number" } }),
+    permission: "read",
+    modes: ["build", "plan"],
+    patterns: () => [".easycode/memory.json"],
+    execute: async (input, ctx) => {
+      const params = MemoryQueryInput.parse(input)
+      const records = await new ProjectMemoryStore(ctx.sandbox.root).query(params.query, params.maxResults)
+      return { title: "project memory", output: records.map((record) => `${record.id} [${record.tags.join(",")}]: ${record.text}`).join("\n") || "No matching memory records.", metadata: { status: "succeeded", count: records.length } }
+    },
+  })
+
+  registry.register({
+    name: "memory_add",
+    description: "Add a short project memory record. Do not store secrets or raw logs.",
+    inputSchema: MemoryAddInput,
+    jsonSchema: objectSchema({ text: { type: "string" }, tags: { type: "array", items: { type: "string" } } }),
+    permission: "write",
+    modes: ["build"],
+    patterns: () => [".easycode/memory.json"],
+    execute: async (input, ctx) => {
+      const params = MemoryAddInput.parse(input)
+      const record = await new ProjectMemoryStore(ctx.sandbox.root).add({ text: params.text, tags: params.tags })
+      return { title: "project memory", output: `Added ${record.id}`, metadata: { status: "succeeded", id: record.id, tags: record.tags } }
+    },
+  })
+
+  registry.register({
+    name: "connector_list",
+    description: "List locally configured external connector tools from .easycode/connectors.json.",
+    inputSchema: ConnectorListInput,
+    jsonSchema: objectSchema({}, []),
+    permission: "read",
+    modes: ["build", "plan"],
+    patterns: () => [".easycode/connectors.json"],
+    execute: async (_input, ctx) => {
+      const tools = await new ConnectorService(ctx.sandbox.root).list()
+      return { title: "connectors", output: tools.map((tool) => `${tool.name}: ${tool.description}`).join("\n") || "No connectors configured.", metadata: { status: "succeeded", count: tools.length } }
+    },
+  })
+
+  registry.register({
+    name: "connector_call",
+    description: "Call one locally configured connector command. Connector commands are static and require bash permission.",
+    inputSchema: ConnectorCallInput,
+    jsonSchema: objectSchema({ name: { type: "string" } }),
+    permission: "bash",
+    modes: ["build"],
+    patterns: () => [scopedBashApproval("connector", "configured-command", []).target],
+    execute: async (input, ctx) => {
+      const params = ConnectorCallInput.parse(input)
+      const { tool, result } = await new ConnectorService(ctx.sandbox.root).call(params.name, ctx.sandbox, ctx.signal)
+      return { title: tool.name, output: bashResultToToolResult(tool.command, result).output, metadata: { ...bashResultToToolResult(tool.command, result).metadata, connector: tool.name } }
+    },
+  })
+
+  registry.register({
     name: "skill",
     description: "Load the full content of a named skill.",
     inputSchema: SkillInput,
@@ -331,4 +505,11 @@ export function createBuiltinRegistry() {
   })
 
   return registry
+}
+
+function patchPatterns(input: z.infer<typeof PatchInput>, ctx: Parameters<ToolDef["patterns"]>[1]) {
+  return input.operations.flatMap((operation) => {
+    if (operation.type === "move") return [relativePattern(ctx, operation.fromPath), relativePattern(ctx, operation.toPath)]
+    return [relativePattern(ctx, operation.filePath)]
+  })
 }

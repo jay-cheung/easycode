@@ -44,6 +44,21 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (prompt.includes("连续给出 10 个看似完美的方案")) {
+      yield { type: "text_delta", text: "缺陷：论证不足，风险未量化。" }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("用 6 轮分别解释缓存、压缩、rag、ttft、sla、apix")) {
+      yield { type: "text_delta", text: "缓存复用前缀，压缩保要点，RAG取证，TTFT量首响，SLA定门槛。" }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("进行 20 轮短问答")) {
+      yield { type: "text_delta", text: "当前状态稳定@@" }
+      yield { type: "done" }
+      return
+    }
     if (prompt.includes("semantic navigation")) {
       if (!hasToolResult(input.messages, "repo_map")) {
         yield { type: "tool_call", call: call("repo_map", { dir: "src", language: "typescript" }) }

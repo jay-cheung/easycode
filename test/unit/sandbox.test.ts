@@ -61,6 +61,24 @@ describe("sandbox", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("denies network commands when network policy is disabled", async () => {
+    const root = await tmpdir()
+    const sandbox = new Sandbox(root, { network: "deny" })
+    await expect(sandbox.execute({ command: "curl https://example.test" })).rejects.toThrow("Network command denied")
+    await expect(sandbox.execute({ command: "npm install" })).rejects.toThrow("Network command denied")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("redacts sensitive env values from bash output", async () => {
+    const root = await tmpdir()
+    process.env.EASYCODE_TEST_SECRET = "super-secret-value"
+    const sandbox = new Sandbox(root)
+    const result = await sandbox.execute({ command: "printf super-secret-value" })
+    expect(result.stdout).toBe("[redacted]")
+    delete process.env.EASYCODE_TEST_SECRET
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("blocks side-effectful bash in plan mode", async () => {
     const root = await tmpdir()
     const sandbox = new Sandbox(root)

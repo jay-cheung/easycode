@@ -97,6 +97,8 @@ On macOS, bash commands run with a native write sandbox that blocks writes outsi
 
 Repeated bash and sandbox-bypass approvals are cached for the current session by reviewed scope. Simple read-only commands such as `ls` can reuse a narrow path scope like `readonly ls /tmp/work/*`; complex or side-effectful commands stay scoped to the exact command. The cache is in memory only and is not saved to session files.
 
+Set `EASYCODE_SANDBOX_NETWORK=deny` to block common network commands during bash execution. Set `EASYCODE_SANDBOX_BACKEND=docker` and optionally `EASYCODE_SANDBOX_DOCKER_IMAGE` to run bash commands through a Docker-backed workspace mount instead of the local shell backend.
+
 ## Code Navigation
 
 EasyCode includes semantic-navigation tools for large repositories. Agents should prefer `repo_map` or `find_definition`, then `call_graph` / `find_references` / `rg_search`, then `read_lines` for a bounded code slice. Full-file `read` is still available, but should be reserved for small files or clear edit targets.
@@ -106,6 +108,26 @@ EasyCode includes semantic-navigation tools for large repositories. Agents shoul
 The code index is a tool-private cache, not prompt context. Tools may read it locally to answer bounded queries, but they must never return the full `code-index/index.json` to the model. Model-visible outputs stay limited to repo-map skeletons, search previews, or `read_lines` slices.
 
 `find_definition`, `find_references`, and `call_graph` read the code index first. The index rebuilds incrementally from file fingerprints, keeps resolved symbol ids for calls/references when possible, and supports lightweight parsing across TypeScript, JavaScript, Python, Go, Rust, Java-family, C/C++, C#, PHP, and Ruby files. TypeScript and JavaScript have the richest import-alias resolution; other languages use conservative declaration/import/call extraction and fall back to bounded text search when needed. If `ast-grep` or `rg` are unavailable, EasyCode keeps pure JavaScript fallbacks for bounded local navigation instead of unbounded full-file reads.
+
+## Editing, Git, Connectors, and Memory
+
+Complex edits can use the `patch` tool for explicit multi-operation changes: replace, create, delete, and move. `write` and `edit` remain available for narrow changes.
+
+Git operations have dedicated tools for status, diff, stage, commit, branch, log, and guarded restore. Stage and commit tools require explicit file lists and refuse unrelated staged files.
+
+External connector commands can be declared in `.easycode/connectors.json`:
+
+```json
+{
+  "tools": [
+    { "name": "github_pr", "description": "Inspect the current PR", "command": "gh pr view --json title,body,headRefName" }
+  ]
+}
+```
+
+Connector commands are static and still go through bash permission and sandbox checks.
+
+Short project memories are stored in `.easycode/memory.json` through `memory_add` and queried with `memory_query`. Memory text is capped and redacts common secret patterns.
 
 ## Instructions
 
@@ -167,4 +189,6 @@ Real provider smoke tests are opt-in so the default test suite stays offline and
 ```bash
 EASYCODE_TEST_PROVIDER=deepseek bun run test:real
 EASYCODE_TEST_PROVIDER=openai bun run test:real
+EASYCODE_TEST_PROVIDER=deepseek bun run eval:real
+EASYCODE_TEST_PROVIDER=openai bun run apix:real
 ```

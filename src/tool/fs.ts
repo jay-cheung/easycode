@@ -17,6 +17,13 @@ export const CallGraphInput = z.object({ symbol: z.string(), direction: z.enum([
 export const RepoMapInput = z.object({ dir: OptionalString, language: OptionalString, maxFiles: OptionalNumber, useCache: OptionalBoolean, query: OptionalString })
 export const WriteInput = z.object({ filePath: z.string(), content: z.string() })
 export const EditInput = z.object({ filePath: z.string(), oldString: z.string(), newString: z.string(), replaceAll: OptionalBoolean })
+const PatchReplaceOperation = z.object({ type: z.literal("replace"), filePath: z.string(), oldString: z.string(), newString: z.string(), replaceAll: OptionalBoolean })
+const PatchCreateOperation = z.object({ type: z.literal("create"), filePath: z.string(), content: z.string(), overwrite: OptionalBoolean })
+const PatchDeleteOperation = z.object({ type: z.literal("delete"), filePath: z.string() })
+const PatchMoveOperation = z.object({ type: z.literal("move"), fromPath: z.string(), toPath: z.string() })
+export const PatchInput = z.object({
+  operations: z.array(z.discriminatedUnion("type", [PatchReplaceOperation, PatchCreateOperation, PatchDeleteOperation, PatchMoveOperation])).min(1).max(20),
+})
 
 export function relativePattern(ctx: ToolContext, filePath: string) {
   const resolved = path.resolve(ctx.sandbox.root, filePath)
@@ -59,4 +66,3 @@ export function countLines(text: string) {
   if (!text) return 0
   return text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length
 }
-
