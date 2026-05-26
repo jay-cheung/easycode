@@ -57,7 +57,9 @@ describe("cli env loading", () => {
 
 describe("cli args", () => {
   test("session mode is the default and does not accept startup prompts", () => {
+    expect(parseArgs([])).toMatchObject({ mode: "build", once: false, session: undefined, prompt: "" })
     expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: undefined, prompt: "" })
+    expect(parseArgs(["--provider", "fake"])).toMatchObject({ mode: "build", once: false, provider: "fake", prompt: "" })
     expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 
@@ -94,7 +96,7 @@ describe("cli args", () => {
 
   test("session startup creates default when no project sessions exist", async () => {
     const root = await tmpdir()
-    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "pipe",
       stdout: "pipe",
@@ -108,6 +110,22 @@ describe("cli args", () => {
     expect(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).exists()).toBe(true)
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
+  })
+
+  test("top-level cli errors are friendly", async () => {
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "unknown-provider"], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(1)
+    expect(stdout).toBe("")
+    expect(stderr).toContain("easycode failed: Unknown provider: unknown-provider.")
+    expect(stderr).not.toContain("src/cli.ts")
+    expect(stderr).not.toContain("$bunfs")
+    expect(stderr).not.toContain("\n    at ")
   })
 
   test("session startup lets users choose or create when sessions exist", async () => {

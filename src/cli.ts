@@ -93,28 +93,29 @@ function removeItem<T>(items: T[], item: T) {
 }
 
 export function parseArgs(argv: string[]) {
-  const mode = argv[0]
+  const normalizedArgv = normalizeModeArgv(argv)
+  const mode = normalizedArgv[0]
   if (mode !== "build" && mode !== "plan") throw new Error(usage())
-  const providerIndex = argv.indexOf("--provider")
-  const rootIndex = argv.indexOf("--root")
-  const sessionIndex = argv.indexOf("--session")
-  const modelIndex = argv.indexOf("--model")
-  const maxTokensIndex = argv.indexOf("--max-tokens")
-  const maxStepsIndex = argv.indexOf("--max-steps")
-  const once = argv.includes("--once")
-  const logger = argv.includes("--logger")
+  const providerIndex = normalizedArgv.indexOf("--provider")
+  const rootIndex = normalizedArgv.indexOf("--root")
+  const sessionIndex = normalizedArgv.indexOf("--session")
+  const modelIndex = normalizedArgv.indexOf("--model")
+  const maxTokensIndex = normalizedArgv.indexOf("--max-tokens")
+  const maxStepsIndex = normalizedArgv.indexOf("--max-steps")
+  const once = normalizedArgv.includes("--once")
+  const logger = normalizedArgv.includes("--logger")
   const providerExplicit = providerIndex !== -1
-  const rawProvider = providerIndex === -1 ? "fake" : argv[providerIndex + 1]
+  const rawProvider = providerIndex === -1 ? "fake" : normalizedArgv[providerIndex + 1]
   if (!hasProvider(rawProvider)) throw new Error(`Unknown provider: ${rawProvider}. Available providers: ${listProviders().join(", ")}`)
   const provider = rawProvider
-  const root = rootIndex === -1 ? process.cwd() : path.resolve(argv[rootIndex + 1])
-  const explicitSession = sessionIndex === -1 ? undefined : argv[sessionIndex + 1]
+  const root = rootIndex === -1 ? process.cwd() : path.resolve(normalizedArgv[rootIndex + 1])
+  const explicitSession = sessionIndex === -1 ? undefined : normalizedArgv[sessionIndex + 1]
   if (sessionIndex !== -1 && (!explicitSession || explicitSession.startsWith("--"))) throw new Error("--session requires an id")
-  const model = modelIndex === -1 ? undefined : argv[modelIndex + 1]
+  const model = modelIndex === -1 ? undefined : normalizedArgv[modelIndex + 1]
   if (modelIndex !== -1 && (!model || model.startsWith("--"))) throw new Error("--model requires an id")
-  const maxTokens = numericFlag(argv, maxTokensIndex, "--max-tokens")
-  const maxSteps = numericFlag(argv, maxStepsIndex, "--max-steps")
-  const prompt = argv.slice(1).filter((arg, index, items) => {
+  const maxTokens = numericFlag(normalizedArgv, maxTokensIndex, "--max-tokens")
+  const maxSteps = numericFlag(normalizedArgv, maxStepsIndex, "--max-steps")
+  const prompt = normalizedArgv.slice(1).filter((arg, index, items) => {
     const realIndex = index + 1
     return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
   }).join(" ")
@@ -122,8 +123,14 @@ export function parseArgs(argv: string[]) {
   return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once }
 }
 
+function normalizeModeArgv(argv: string[]) {
+  const mode = argv[0]
+  if (mode === "build" || mode === "plan") return argv
+  return ["build", ...argv]
+}
+
 function usage() {
-  return `Usage: easycode <build|plan> [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--session id]`
+  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--session id]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {
@@ -172,7 +179,7 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
   return loaded
 }
 
-if (import.meta.main) {
+async function main() {
   let args = parseArgs(process.argv.slice(2))
   const loadedEnvVars = await loadEnvFile(args.root)
   // Use EASYCODE_PROVIDER from .env if --provider was not explicit
@@ -187,7 +194,23 @@ if (import.meta.main) {
     }
   }
   const status = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
-  process.exit(status === "completed" ? 0 : 1)
+  return status === "completed" ? 0 : 1
+}
+
+if (import.meta.main) {
+  const exitCode = await main().catch((error: unknown) => {
+    console.error(formatCliError(error))
+    return 1
+  })
+  process.exit(exitCode)
+}
+
+function formatCliError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  const trimmed = message.trim()
+  if (!trimmed) return "easycode failed. Please try again."
+  if (trimmed.startsWith("Usage:")) return trimmed
+  return `easycode failed: ${trimmed}`
 }
 
 export function requiredEnvForProvider(provider: string) {
