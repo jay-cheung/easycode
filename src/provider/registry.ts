@@ -1,5 +1,6 @@
 import { DeepSeekProvider } from "./deepseek"
 import { FakeProvider } from "./fake"
+import { OpenAICompatibleProvider } from "./openai-compatible"
 import { OpenAIProvider } from "./openai"
 import type { Provider, ProviderOptions } from "./types"
 
@@ -30,3 +31,4 @@ export function createProvider(name: ProviderName, options?: ProviderOptions) {
 registerProvider("fake", (options) => new FakeProvider(options))
 registerProvider("openai", (options) => new OpenAIProvider(options?.model, options))
 registerProvider("deepseek", (options) => new DeepSeekProvider(options?.model, options))
+registerProvider("openai-compatible", (options) => new OpenAICompatibleProvider(options?.model, options))

@@ -24,6 +24,10 @@ EASYCODE_MODEL=gpt-5-mini
 
 DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-v4-pro
+
+OPENAI_COMPAT_API_KEY=...
+OPENAI_COMPAT_API_URL=https://provider.example/v1/chat/completions
+OPENAI_COMPAT_MODEL=provider-model
 ```
 
 ## Providers
@@ -33,8 +37,9 @@ Providers are registered through `src/provider/registry.ts`; agent, CLI, and eva
 Built-in providers:
 
 - `fake`: deterministic local provider for tests and evals.
-- `openai`: OpenAI Responses API provider with image input and reasoning effort controls.
-- `deepseek`: DeepSeek Chat Completions provider with `thinking`, `reasoning_effort`, and streaming enabled.
+- `openai`: OpenAI Responses API provider with image input, reasoning effort controls, JSON mode, explicit prompt cache keys, and `max_output_tokens`.
+- `deepseek`: DeepSeek Chat Completions-like provider with `thinking`, `reasoning_effort`, `reasoning_content` tool-call history, JSON mode, automatic KV cache usage reporting, and `max_tokens`.
+- `openai-compatible`: configurable Chat Completions-like provider using `OPENAI_COMPAT_API_KEY`, `OPENAI_COMPAT_API_URL`, and `OPENAI_COMPAT_MODEL`; it supports tools, JSON mode, and `max_tokens` without provider-specific thinking fields.
 
 ## Usage
 

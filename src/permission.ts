@@ -17,6 +17,11 @@ export type PermissionRequest = {
   metadata: Record<string, unknown>
 }
 
+export type PermissionDecision = {
+  pattern: string
+  action: PermissionAction
+}
+
 export class PermissionDeniedError extends Error {
   readonly rules: PermissionRule[]
 
@@ -45,10 +50,29 @@ function escapeRegExp(input: string) {
   return input.replace(/[.+^${}()|[\]\\]/g, "\\$&")
 }
 
-export function matchPattern(pattern: string, value: string) {
+const patternCacheLimit = 16
+const patternCache = new Map<string, RegExp>()
+
+function patternRegExp(pattern: string) {
   const normalized = pattern.replaceAll("\\", "/")
+  const cached = patternCache.get(normalized)
+  if (cached) {
+    patternCache.delete(normalized)
+    patternCache.set(normalized, cached)
+    return cached
+  }
   const source = `^${normalized.split("*").map(escapeRegExp).join(".*")}$`
-  return new RegExp(source).test(value.replaceAll("\\", "/"))
+  const regexp = new RegExp(source)
+  patternCache.set(normalized, regexp)
+  if (patternCache.size > patternCacheLimit) {
+    const oldest = patternCache.keys().next().value
+    if (oldest !== undefined) patternCache.delete(oldest)
+  }
+  return regexp
+}
+
+export function matchPattern(pattern: string, value: string) {
+  return patternRegExp(pattern).test(value.replaceAll("\\", "/"))
 }
 
 export function evaluatePermission(permission: string, pattern: string, rules: PermissionRule[]): PermissionAction {
@@ -83,21 +107,25 @@ export class PermissionService {
     return new PermissionService(rules, () => "once")
   }
 
+  /**
+   * Creates a mode-specific service with a snapshot of current approvals.
+   * Later approvals are intentionally isolated between parent and child.
+   */
   withRules(rules: PermissionRule[]) {
     const service = new PermissionService(rules, this.askHandler, this.autoReviewer)
     service.approved.push(...this.approved)
     return service
   }
 
-  evaluate(permission: string, pattern: string) {
+  evaluate(permission: string, pattern: string): PermissionAction {
     const base = evaluatePermission(permission, pattern, this.rules)
     if (base === "deny") return "deny"
     if (this.approved.some((rule) => rule.action === "allow" && matchPattern(rule.permission, permission) && matchPattern(rule.pattern, pattern))) return "allow"
     return base
   }
 
-  async authorize(input: Omit<PermissionRequest, "id">) {
-    const decisions = input.patterns.map((pattern) => ({ pattern, action: this.evaluate(input.permission, pattern) }))
+  async authorize(input: Omit<PermissionRequest, "id">, evaluatedDecisions?: PermissionDecision[]) {
+    const decisions = evaluatedDecisions ?? input.patterns.map((pattern) => ({ pattern, action: this.evaluate(input.permission, pattern) }))
     const denied = decisions.filter((decision) => decision.action === "deny")
     if (denied.length > 0) {
       throw new PermissionDeniedError(

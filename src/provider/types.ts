@@ -4,19 +4,27 @@ import type { ReasoningEffort } from "../settings"
 import type { ToolDef } from "../tool"
 
 export type ProviderCapabilities = {
+  apiStyle: "responses" | "chat_completions" | "local"
   supportsImages: boolean
   supportsThinking: boolean
   supportsReasoningEffort: boolean
   effortValues: ReasoningEffort[]
+  supportsJsonObjectResponse: boolean
+  supportsMaxOutputTokens: boolean
+  promptCacheMode: "explicit" | "automatic" | "reported" | "none"
   contextWindowTokens?: number
   promptCacheMinPrefixTokens?: number
 }
 
 export const defaultProviderCapabilities: ProviderCapabilities = {
+  apiStyle: "local",
   supportsImages: false,
   supportsThinking: false,
   supportsReasoningEffort: false,
   effortValues: [],
+  supportsJsonObjectResponse: false,
+  supportsMaxOutputTokens: false,
+  promptCacheMode: "none",
 }
 
 export type ProviderOptions = {

@@ -193,6 +193,7 @@ if (import.meta.main) {
 export function requiredEnvForProvider(provider: string) {
   if (provider === "deepseek") return ["DEEPSEEK_API_KEY"]
   if (provider === "openai") return ["OPENAI_API_KEY"]
+  if (provider === "openai-compatible") return ["OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_API_URL"]
   return []
 }
 
@@ -281,6 +282,25 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
           rl.question("OpenAI model [gpt-5-mini]: ", resolve)
         })
         if (model.trim()) entries.EASYCODE_MODEL = model.trim()
+      }
+    } else if (selectedProvider === "openai-compatible") {
+      if (!env.OPENAI_COMPAT_API_KEY) {
+        const apiKey = await new Promise<string>((resolve) => {
+          rl.question("OpenAI-compatible API key: ", resolve)
+        })
+        if (apiKey.trim()) entries.OPENAI_COMPAT_API_KEY = apiKey.trim()
+      }
+      if (!env.OPENAI_COMPAT_API_URL) {
+        const url = await new Promise<string>((resolve) => {
+          rl.question("OpenAI-compatible chat completions URL: ", resolve)
+        })
+        if (url.trim()) entries.OPENAI_COMPAT_API_URL = url.trim()
+      }
+      if (!env.OPENAI_COMPAT_MODEL && !env.EASYCODE_MODEL) {
+        const model = await new Promise<string>((resolve) => {
+          rl.question("OpenAI-compatible model: ", resolve)
+        })
+        if (model.trim()) entries.OPENAI_COMPAT_MODEL = model.trim()
       }
     }
 

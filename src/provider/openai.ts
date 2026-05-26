@@ -16,7 +16,7 @@ export class OpenAIProvider extends OpenAILikeProvider {
         promptCacheKey: runtime.promptCacheKey ?? process.env.EASYCODE_PROMPT_CACHE_KEY ?? process.env.OPENAI_PROMPT_CACHE_KEY,
         promptCacheRetention: runtime.promptCacheRetention ?? promptCacheRetentionFromEnv(),
       },
-      capabilities: { supportsImages: true, supportsThinking: reasoningModel, supportsReasoningEffort: reasoningModel, effortValues: reasoningModel ? ["low", "medium", "high"] : [], contextWindowTokens: numberFromEnv("OPENAI_CONTEXT_WINDOW_TOKENS") ?? numberFromEnv("EASYCODE_CONTEXT_WINDOW_TOKENS"), promptCacheMinPrefixTokens: numberFromEnv("OPENAI_PROMPT_CACHE_MIN_PREFIX_TOKENS") ?? numberFromEnv("EASYCODE_PROMPT_CACHE_MIN_PREFIX_TOKENS") },
+      capabilities: { apiStyle: "responses", supportsImages: true, supportsThinking: reasoningModel, supportsReasoningEffort: reasoningModel, effortValues: reasoningModel ? ["low", "medium", "high"] : [], supportsJsonObjectResponse: true, supportsMaxOutputTokens: true, promptCacheMode: "explicit", contextWindowTokens: numberFromEnv("OPENAI_CONTEXT_WINDOW_TOKENS") ?? numberFromEnv("EASYCODE_CONTEXT_WINDOW_TOKENS"), promptCacheMinPrefixTokens: numberFromEnv("OPENAI_PROMPT_CACHE_MIN_PREFIX_TOKENS") ?? numberFromEnv("EASYCODE_PROMPT_CACHE_MIN_PREFIX_TOKENS") },
       missingApiKeyMessage: "OPENAI_API_KEY is required for OpenAIProvider",
       errorPrefix: "Responses API failed",
     })
@@ -24,7 +24,7 @@ export class OpenAIProvider extends OpenAILikeProvider {
 }
 
 function isReasoningModel(model: string): boolean {
-  return model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")
+  return model.startsWith("gpt-5") || model.startsWith("o1") || model.startsWith("o3") || model.startsWith("o4")
 }
 
 function numberFromEnv(name: string) {

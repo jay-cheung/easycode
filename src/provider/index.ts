@@ -1,7 +1,10 @@
 export * from './fake';
-export { OpenAILikeProvider, type OpenAILikeProviderOptions } from './openai-like';
+export { ResponsesProvider, OpenAILikeProvider, type ResponsesProviderOptions, type OpenAILikeProviderOptions } from './openai-like';
+export * from './chat-completions-like';
 export * from './openai';
+export * from './openai-compatible';
 export * from './deepseek';
+export * from './http-sse';
 export * from './registry';
 export * from './types';
 export * from './utils';

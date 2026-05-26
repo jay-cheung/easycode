@@ -38,6 +38,7 @@ describe("cli env loading", () => {
     expect(needsEnvSetup("fake", {})).toBe(false)
     expect(missingProviderEnv("deepseek", {})).toEqual(["DEEPSEEK_API_KEY"])
     expect(missingProviderEnv("openai", { OPENAI_API_KEY: "sk-test" })).toEqual([])
+    expect(missingProviderEnv("openai-compatible", { OPENAI_COMPAT_API_KEY: "sk-test" })).toEqual(["OPENAI_COMPAT_API_URL"])
   })
 
   test("merges missing env values without replacing existing entries", () => {

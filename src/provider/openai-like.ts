@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto"
 import { toolToResponseTool } from "./utils"
-import { Provider, ProviderInput, ProviderEvent, ProviderError } from "./types"
+import { ProviderInput, ProviderEvent } from "./types"
 import type { ProviderInputMessage } from "../message"
 import { parseProviderToolArguments } from "../tool/utils/arguments"
 import { imageSourceToDataURL } from "../image"
 import type { ProviderCapabilities, ProviderOptions } from "./types"
+import { HttpSSEProviderBase } from "./http-sse"
 
 type OpenAIContentPart = {
   type?: string
@@ -52,7 +53,7 @@ type OpenAIStreamParseState = {
   emittedFailure: boolean
 }
 
-export type OpenAILikeProviderOptions = {
+export type ResponsesProviderOptions = {
   name: string
   model: string
   apiKeyEnv: string
@@ -62,6 +63,8 @@ export type OpenAILikeProviderOptions = {
   missingApiKeyMessage?: string
   errorPrefix?: string
 }
+
+export type OpenAILikeProviderOptions = ResponsesProviderOptions
 
 export function createOpenAIStreamParseState(): OpenAIStreamParseState {
   return { textItemsWithDeltas: new Set(), emittedToolItems: new Set(), emittedFailure: false }
@@ -136,46 +139,22 @@ export function openAIStreamEventToProviderEvents(parsed: OpenAIStreamEvent, sta
   return []
 }
 
-export class OpenAILikeProvider implements Provider {
-  readonly name: string
-  readonly model: string
-  readonly capabilities: ProviderCapabilities
-  private readonly apiKeyEnv: string
-  private readonly url: string
-  protected readonly runtime: ProviderOptions
-  private readonly missingApiKeyMessage: string
-  private readonly errorPrefix: string
-
-  constructor(options: OpenAILikeProviderOptions) {
-    this.name = options.name
-    this.model = options.model
-    this.capabilities = options.capabilities ?? { supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high"] }
-    this.apiKeyEnv = options.apiKeyEnv
-    this.url = options.url
-    this.runtime = options.runtime ?? {}
-    this.missingApiKeyMessage = options.missingApiKeyMessage ?? `${options.apiKeyEnv} is required for ${options.name} provider`
-    this.errorPrefix = options.errorPrefix ?? "OpenAI-like API failed"
-  }
-
-  async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
-    const apiKey = process.env[this.apiKeyEnv]
-    if (!apiKey) throw new ProviderError(this.missingApiKeyMessage)
-    const body = this.buildRequestBody(input)
-    yield { type: "request", request: { url: this.url, method: "POST", body } }
-    const response = await fetch(this.url, {
-      method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify(body),
-      signal: input.signal,
+export class ResponsesProvider extends HttpSSEProviderBase<OpenAIStreamParseState> {
+  constructor(options: ResponsesProviderOptions) {
+    super({
+      ...options,
+      capabilities: options.capabilities ?? {
+        apiStyle: "responses",
+        supportsImages: true,
+        supportsThinking: true,
+        supportsReasoningEffort: true,
+        effortValues: ["low", "medium", "high"],
+        supportsJsonObjectResponse: true,
+        supportsMaxOutputTokens: true,
+        promptCacheMode: "explicit",
+      },
+      errorPrefix: options.errorPrefix ?? "Responses API failed",
     })
-    if (!response.ok || !response.body) {
-      const output = await response.text().catch(() => "")
-      yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), body: output } }
-      throw new ProviderError(`${this.errorPrefix}: ${response.status} ${output}`, { status: response.status, output })
-    }
-    yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), ...(await this.successfulResponseBody(response)) } }
-    yield* this.readResponseEvents(response)
-    yield { type: "done" }
   }
 
   protected buildRequestBody(input: ProviderInput): unknown {
@@ -188,6 +167,7 @@ export class OpenAILikeProvider implements Provider {
     }
     if (this.runtime.promptCacheRetention) body.prompt_cache_retention = this.runtime.promptCacheRetention
     if (this.runtime.maxOutputTokens) body.max_output_tokens = this.runtime.maxOutputTokens
+    if (this.runtime.responseFormat) body.text = { format: { type: this.runtime.responseFormat } }
     const reasoning = this.responseReasoning()
     if (reasoning) body.reasoning = reasoning
     return body
@@ -209,32 +189,16 @@ export class OpenAILikeProvider implements Provider {
     return { effort }
   }
 
-  protected async *readResponseEvents(response: Response): AsyncIterable<ProviderEvent> {
-    if (!response.body) return
-    const reader = response.body.getReader()
-    const decoder = new TextDecoder()
-    let buffer = ""
-    const parseState = createOpenAIStreamParseState()
-    while (true) {
-      const chunk = await reader.read()
-      if (chunk.done) break
-      buffer += decoder.decode(chunk.value, { stream: true })
-      const lines = buffer.split("\n")
-      buffer = lines.pop() ?? ""
-      for (const line of lines) yield* providerEventsFromSSELine(line, parseState, true)
-    }
-    if (buffer) yield* providerEventsFromSSELine(buffer, parseState, true)
+  protected createStreamParseState() {
+    return createOpenAIStreamParseState()
   }
 
-  protected includeSuccessfulResponseBody() {
-    return false
-  }
-
-  private async successfulResponseBody(response: Response) {
-    if (!this.includeSuccessfulResponseBody()) return {}
-    return { body: await response.clone().text().catch(() => "") }
+  protected eventsFromSSELine(line: string, state: OpenAIStreamParseState, includeRaw: boolean) {
+    return providerEventsFromSSELine(line, state, includeRaw)
   }
 }
+
+export class OpenAILikeProvider extends ResponsesProvider {}
 
 function usageEvent(usage: OpenAIUsage | undefined): ProviderEvent {
   const inputTokens = usage?.input_tokens ?? 0
@@ -276,10 +240,6 @@ function providerEventsFromSSELine(line: string, state: OpenAIStreamParseState, 
   const parsed = JSON.parse(data) as OpenAIStreamEvent
   const events = openAIStreamEventToProviderEvents(parsed, state)
   return includeRaw ? [{ type: "response_raw", response: parsed } satisfies ProviderEvent, ...events] : events
-}
-
-function responseHeaders(response: Response) {
-  return Object.fromEntries(response.headers.entries())
 }
 
 function toolCallFromOutputItem(item: OpenAIOutputItem | undefined, state: OpenAIStreamParseState) {

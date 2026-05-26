@@ -81,9 +81,10 @@ export class ToolRegistry implements ToolRegistryLike {
     try {
       const patterns = tool.patterns(parsed.data, ctx)
       const request = permissionRequestForTool(tool, parsed.data, ctx, patterns)
-      const permissionAction = permissionActionFor(request.patterns.map((pattern) => ctx.permission.evaluate(tool.permission, pattern)))
+      const permissionDecisions = request.patterns.map((pattern) => ({ pattern, action: ctx.permission.evaluate(tool.permission, pattern) }))
+      const permissionAction = permissionActionFor(permissionDecisions.map((decision) => decision.action))
       if (ctx.signal?.aborted) return toolCancelledResult(name)
-      await ctx.permission.authorize(request)
+      await ctx.permission.authorize(request, permissionDecisions)
       if (ctx.signal?.aborted) return toolCancelledResult(name)
       ctx.onExecuteStart?.(name)
       const result = await tool.execute(parsed.data, ctx)

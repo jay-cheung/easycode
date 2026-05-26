@@ -66,10 +66,14 @@ export async function runAPIxEval(options: APIxOptions) {
       if (!options.quiet) console.error(`[apix] skip ${task.id} unsupported_validator=${unsupportedExpectedFields.join(",")}`)
       continue
     }
+    const providerProbe = createProvider(options.provider, {
+      ...(options.model ? { model: options.model } : {}),
+    })
+    const useNativeJsonMode = Boolean(task.expected.json_schema && providerProbe.capabilities?.supportsJsonObjectResponse)
     const provider = createProvider(options.provider, {
       ...(options.model ? { model: options.model } : {}),
       thinking: task.expected.json_schema ? false : options.thinking,
-      ...(task.expected.json_schema ? { responseFormat: "json_object" as const } : {}),
+      ...(useNativeJsonMode ? { responseFormat: "json_object" as const } : {}),
       maxOutputTokens: maxOutputTokensForCase(task, options.maxOutputTokens),
     })
     const startedLabel = new Date().toISOString()

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chatCompletionSSEToProviderEvents, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAILikeProvider, OpenAIProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
+import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
 import { imagePart, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 
@@ -31,16 +31,34 @@ describe("provider", () => {
     expect(new OpenAIProvider("GPT-5-mini").model).toBe("gpt-5-mini")
   })
 
-  test("OpenAI and DeepSeek providers share OpenAI-like base", () => {
-    expect(new OpenAIProvider("gpt-5-mini")).toBeInstanceOf(OpenAILikeProvider)
-    expect(new DeepSeekProvider("deepseek-chat")).toBeInstanceOf(OpenAILikeProvider)
-    expect(new DeepSeekProvider("deepseek-chat").name).toBe("deepseek")
+  test("providers expose the expected adapter bases and capabilities", () => {
+    const previousDeepSeekModel = process.env.DEEPSEEK_MODEL
+    const previousEasyCodeModel = process.env.EASYCODE_MODEL
+    delete process.env.DEEPSEEK_MODEL
+    delete process.env.EASYCODE_MODEL
+    try {
+      expect(new OpenAIProvider("gpt-5-mini")).toBeInstanceOf(OpenAILikeProvider)
+      expect(new OpenAIProvider("gpt-5-mini")).toBeInstanceOf(ResponsesProvider)
+      expect(new DeepSeekProvider("deepseek-v4-pro")).toBeInstanceOf(ChatCompletionsLikeProvider)
+      expect(new OpenAICompatibleProvider("qwen-coder")).toBeInstanceOf(ChatCompletionsLikeProvider)
+      expect(new DeepSeekProvider().model).toBe("deepseek-v4-pro")
+      expect(new DeepSeekProvider("deepseek-chat").model).toBe("deepseek-chat")
+      expect(new OpenAIProvider("gpt-5-mini").capabilities).toMatchObject({ apiStyle: "responses", supportsThinking: true, supportsJsonObjectResponse: true, supportsMaxOutputTokens: true, promptCacheMode: "explicit" })
+      expect(new DeepSeekProvider("deepseek-v4-pro").capabilities).toMatchObject({ apiStyle: "chat_completions", supportsImages: false, supportsThinking: true, supportsJsonObjectResponse: true, promptCacheMode: "automatic" })
+      expect(new OpenAICompatibleProvider("qwen-coder").capabilities).toMatchObject({ apiStyle: "chat_completions", supportsThinking: false, supportsJsonObjectResponse: true, promptCacheMode: "reported" })
+    } finally {
+      if (previousDeepSeekModel === undefined) delete process.env.DEEPSEEK_MODEL
+      else process.env.DEEPSEEK_MODEL = previousDeepSeekModel
+      if (previousEasyCodeModel === undefined) delete process.env.EASYCODE_MODEL
+      else process.env.EASYCODE_MODEL = previousEasyCodeModel
+    }
   })
 
   test("provider registry creates registered providers", () => {
     expect(listProviders()).toContain("fake")
     expect(listProviders()).toContain("openai")
     expect(listProviders()).toContain("deepseek")
+    expect(listProviders()).toContain("openai-compatible")
     expect(hasProvider("fake")).toBe(true)
     expect(createProvider("fake")).toBeInstanceOf(FakeProvider)
     expect(() => registerProvider("fake", () => new FakeProvider())).toThrow("Provider already registered")
@@ -140,11 +158,33 @@ describe("provider", () => {
     }
   })
 
+  test("adds OpenAI Responses JSON mode when requested", async () => {
+    const previous = process.env.OPENAI_API_KEY
+    process.env.OPENAI_API_KEY = "test-key"
+    try {
+      const provider = new OpenAIProvider("gpt-5-mini", { responseFormat: "json_object" })
+      const stream = provider.stream({ mode: "build", prompt: "json", messages: [], providerMessages: [{ role: "user", content: "Return JSON." }], tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            text: { format: { type: "json_object" } },
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = previous
+    }
+  })
+
   test("rejects image input for DeepSeek before fetch", async () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"
     try {
-      const provider = new DeepSeekProvider("deepseek-chat")
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
       const messages = messagesToProviderInput([userMessage("describe", [imagePart({ type: "url", url: "https://example.test/image.png" })])])
       let error: unknown
       try {
@@ -166,7 +206,7 @@ describe("provider", () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"
     try {
-      const provider = new DeepSeekProvider("deepseek-chat")
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
       const readTool = createBuiltinRegistry().get("read")
       if (!readTool) throw new Error("missing read tool")
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [readTool] })[Symbol.asyncIterator]()
@@ -178,7 +218,7 @@ describe("provider", () => {
           url: "https://api.deepseek.com/chat/completions",
           method: "POST",
           body: {
-            model: "deepseek-chat",
+            model: "deepseek-v4-pro",
             messages: [{ role: "user", content: "hi" }],
             thinking: { type: "enabled" },
             reasoning_effort: "max",
@@ -198,7 +238,7 @@ describe("provider", () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"
     try {
-      const provider = new DeepSeekProvider("deepseek-chat", { responseFormat: "json_object" })
+      const provider = new DeepSeekProvider("deepseek-v4-pro", { responseFormat: "json_object" })
       const stream = provider.stream({ mode: "build", prompt: "json", messages: [], providerMessages: [{ role: "user", content: "Return {\"ok\": true}" }], tools: [] })[Symbol.asyncIterator]()
       const first = await stream.next()
       await stream.return?.()
@@ -220,7 +260,7 @@ describe("provider", () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"
     try {
-      const provider = new DeepSeekProvider("deepseek-chat", { maxOutputTokens: 123 })
+      const provider = new DeepSeekProvider("deepseek-v4-pro", { maxOutputTokens: 123 })
       const stream = provider.stream({ mode: "build", prompt: "short", messages: [], providerMessages: [{ role: "user", content: "short" }], tools: [] })[Symbol.asyncIterator]()
       const first = await stream.next()
       await stream.return?.()
@@ -238,11 +278,48 @@ describe("provider", () => {
     }
   })
 
+  test("openai-compatible provider reuses chat completions payload without DeepSeek thinking fields", async () => {
+    const previousKey = process.env.OPENAI_COMPAT_API_KEY
+    const previousUrl = process.env.OPENAI_COMPAT_API_URL
+    process.env.OPENAI_COMPAT_API_KEY = "test-key"
+    process.env.OPENAI_COMPAT_API_URL = "https://compat.example.test/v1/chat/completions"
+    try {
+      const provider = new OpenAICompatibleProvider("qwen-coder", { responseFormat: "json_object", maxOutputTokens: 55 })
+      const readTool = createBuiltinRegistry().get("read")
+      if (!readTool) throw new Error("missing read tool")
+      const stream = provider.stream({ mode: "build", prompt: "json", messages: [], providerMessages: [{ role: "user", content: "Return JSON." }], tools: [readTool] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          url: "https://compat.example.test/v1/chat/completions",
+          body: {
+            model: "qwen-coder",
+            messages: [{ role: "user", content: "Return JSON." }],
+            stream: true,
+            stream_options: { include_usage: true },
+            response_format: { type: "json_object" },
+            max_tokens: 55,
+          },
+        },
+      })
+      expect((first.value as { request: { body: Record<string, unknown> } }).request.body.thinking).toBeUndefined()
+      expect((first.value as { request: { body: Record<string, unknown> } }).request.body.reasoning_effort).toBeUndefined()
+      expect((first.value as { request: { body: { tools: unknown[] } } }).request.body.tools[0]).toMatchObject({ type: "function", function: { name: "read" } })
+    } finally {
+      if (previousKey === undefined) delete process.env.OPENAI_COMPAT_API_KEY
+      else process.env.OPENAI_COMPAT_API_KEY = previousKey
+      if (previousUrl === undefined) delete process.env.OPENAI_COMPAT_API_URL
+      else process.env.OPENAI_COMPAT_API_URL = previousUrl
+    }
+  })
+
   test("maps structured tool history to DeepSeek chat messages", async () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"
     try {
-      const provider = new DeepSeekProvider("deepseek-chat")
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
       const history = messagesToProviderInput([
         toolCallMessage({ id: "call_1", name: "list", input: { __easycodeInvalidToolArguments: true }, rawArguments: "{\"dirPath\": .}", reasoningContent: "I should inspect files." }),
         toolResultMessage({ callID: "call_1", toolName: "list", status: "succeeded", output: "README.md" }),
@@ -280,7 +357,7 @@ describe("provider", () => {
         { choices: [{ index: 0, finish_reason: "stop" }], usage: { prompt_tokens: 2, completion_tokens: 3, total_tokens: 5, prompt_cache_hit_tokens: 1, prompt_cache_miss_tokens: 1, completion_tokens_details: { reasoning_tokens: 0 } } },
       ])) as unknown as typeof fetch
     try {
-      const provider = new DeepSeekProvider("deepseek-chat")
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
       await stream.next()
       const response = await stream.next()
@@ -318,7 +395,7 @@ describe("provider", () => {
         { choices: [{ index: 0, finish_reason: "tool_calls" }] },
       ])) as unknown as typeof fetch
     try {
-      const provider = new DeepSeekProvider("deepseek-chat")
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
       const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
       await stream.next()
       await stream.next()
