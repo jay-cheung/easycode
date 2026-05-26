@@ -55,7 +55,3 @@ export function defaultRunner(command: string, args: string[], options: { cwd: s
 export function firstLine(text: string) {
   return text.split(/\r?\n/).find((line) => line.trim())?.trim() ?? ""
 }
-
-export function commandFailure(command: string, result: CommandResult) {
-  return `${command} failed with exit code ${result.exitCode}: ${firstLine(result.stderr) || firstLine(result.stdout) || "no output"}`
-}

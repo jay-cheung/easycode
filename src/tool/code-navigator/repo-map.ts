@@ -1,26 +1,6 @@
 import path from "node:path"
 import { createHash } from "node:crypto"
-import type { RepoMapEntry, RepoMapResult, RepoMapSymbol } from "./types"
-
-export function extractSymbols(text: string) {
-  const symbols: RepoMapSymbol[] = []
-  const lines = text.split(/\r?\n/)
-  const declarationPattern = /^\s*(?:export\s+)?(?:default\s+)?(async\s+function|function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)\b(.*)$/
-  const methodPattern = /^\s*(?:(?:public|private|protected|static|async|override|readonly)\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^ {]+)?\s*\{?\s*$/
-  const excludedMethods = new Set(["if", "for", "while", "switch", "catch", "function"])
-  for (const [index, line] of lines.entries()) {
-    const declaration = line.match(declarationPattern)
-    if (declaration) {
-      symbols.push({ name: declaration[2] ?? "", kind: normalizeSymbolKind(declaration[1] ?? ""), line: index + 1, signature: cleanSignature(line) })
-      continue
-    }
-    const method = line.match(methodPattern)
-    if (method && !excludedMethods.has(method[1] ?? "")) {
-      symbols.push({ name: method[1] ?? "", kind: "method", line: index + 1, signature: cleanSignature(line) })
-    }
-  }
-  return symbols
-}
+import type { RepoMapEntry, RepoMapResult } from "./types"
 
 export function normalizeSymbolKind(kind: string) {
   return kind.replace(/^async\s+/, "")
