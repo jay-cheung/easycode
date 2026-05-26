@@ -1,5 +1,4 @@
-import type { AgentMode } from "../message"
-import type { Agent } from "./types"
+import type { Agent, AgentKind } from "./types"
 
 const stableOperatingProtocol = [
   "Stable operating protocol:",
@@ -58,6 +57,17 @@ const planModeProtocol = [
   "</system-reminder>",
 ].join("\n")
 
+const summaryModeProtocol = [
+  "<system-reminder>",
+  "# Summary Agent - System Reminder",
+  "",
+  "You are a background summary agent for context compaction.",
+  "Do not call tools, do not edit files, and do not answer the user directly.",
+  "Summarize only the supplied conversation and preserve exact user intent, recent decisions, files, commands, failures, and next steps.",
+  "Return the summary in <summary> tags.",
+  "</system-reminder>",
+].join("\n")
+
 
 export function hasProposedPlanText(text: string): boolean {
   return /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(text)
@@ -67,7 +77,8 @@ export function stripPlanTags(text: string): string {
   return text.replace(/<\/?proposed_plan>/gi, "").trim()
 }
 
-export function createAgent(mode: AgentMode): Agent {
-  if (mode === "plan") return { name: "plan", mode, systemPrompt: `You are EasyCode in plan mode.\n\n${planModeProtocol}\n\n${stableOperatingProtocol}` }
-  return { name: "build", mode, systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}` }
+export function createAgent(kind: AgentKind): Agent {
+  if (kind === "summary") return { kind, name: "summary", mode: "plan", tools: "none", systemPrompt: `You are EasyCode in summary mode.\n\n${summaryModeProtocol}\n\n${stableOperatingProtocol}` }
+  if (kind === "plan") return { kind, name: "plan", mode: kind, tools: "enabled", systemPrompt: `You are EasyCode in plan mode.\n\n${planModeProtocol}\n\n${stableOperatingProtocol}` }
+  return { kind, name: "build", mode: kind, tools: "enabled", systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}` }
 }

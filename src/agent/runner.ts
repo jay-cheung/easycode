@@ -1,11 +1,11 @@
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
-import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ToolCall } from "../message"
+import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ProviderInputMessage, type ToolCall } from "../message"
 import { defaultPermissionRules, PermissionService } from "../permission"
 import { createProvider, ProviderError, type Provider, type ProviderName } from "../provider"
 import { Sandbox } from "../sandbox"
 import { SkillService, type SkillServiceLike } from "../skill"
 import { InstructionService, type InstructionServiceLike } from "../instruction"
-import { createBuiltinRegistry, type ToolRegistryLike } from "../tool"
+import { createBuiltinRegistry, type ToolDef, type ToolRegistryLike } from "../tool"
 import { CliCodeNavigator } from "../tool/code-navigator"
 import { createRunAspect, type RunAspect } from "../instrumentation"
 import type { Logger } from "../logger"
@@ -15,18 +15,40 @@ import type { PermissionRule } from "../permission"
 import { defaultSessionSettings, type SessionSettings } from "../settings"
 import type { RunUiEvent } from "../ui/timeline"
 import { createAgent } from "./protocol"
-import type { AgentRunResult, AgentRunnerOptions } from "./types"
+import type { Agent, AgentRunResult, AgentRunnerOptions } from "./types"
 import { createProviderMetrics, finalizeProviderMetrics, finishProviderMetricCall, observeProviderMetricEvent, startProviderMetricCall, type ProviderMetricsAccumulator } from "./metrics"
 import { ledgerRecord, toolScopeFiles } from "./ledger"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
 
-type SummarySubagentTask = {
+type BackgroundAgentTask = {
+  kind: "summary"
   id: number
   startedAt: number
+  agent: Agent
   snapshot: ContextCompactionSnapshot
   promise: Promise<void>
+}
+
+type ProviderTurnResult = {
+  text: string
+  reasoningText: string
+  toolCalls: ToolCall[]
+  failureText?: string
+  cancelledOutput?: string
+}
+
+type ProviderTurnInput = {
+  agent: Agent
+  prompt: string
+  messages: Message[]
+  providerMessages: ProviderInputMessage[]
+  tools: ToolDef[]
+  signal?: AbortSignal
+  providerMetrics?: ProviderMetricsAccumulator
+  emitDeltas?: boolean
+  observeContextUsage?: boolean
 }
 
 
@@ -46,7 +68,7 @@ export class AgentRunner {
   readonly providerProgressIntervalMs: number
   readonly settings: SessionSettings
   readonly onBackgroundContextUpdate?: () => void | Promise<void>
-  private summarySubagent: SummarySubagentTask | undefined
+  private summarySubagent: BackgroundAgentTask | undefined
   private nextSummarySubagentID = 1
   private hasProposedPlan: boolean
 
@@ -103,7 +125,7 @@ export class AgentRunner {
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       this.aspect.step(step + 1, this.maxSteps)
       try {
-        await this.compactContext(effectiveMode, providerMetrics)
+        await this.compactContext(providerMetrics)
       } catch (error) {
         if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
         throw error
@@ -113,84 +135,39 @@ export class AgentRunner {
       const shouldCheckSummaryReadiness = usedTools.length > 0 && step >= explorationSummaryStep(this.maxSteps)
       const providerMessages = shouldCheckSummaryReadiness ? [...plan.providerMessages, explorationSummaryReadinessMessage(step + 1, this.maxSteps)] : plan.providerMessages
       const availableTools = shouldCheckSummaryReadiness ? [] : tools
-      let text = ""
-      let reasoningText = ""
-      const toolCalls: ToolCall[] = []
-      let failureText: string | undefined
-      const currentReasoningTranscript = () => appendOutput(reasoningTranscript, reasoningText)
       state = this.aspect.transition("streaming", { step: step + 1 })
-      const stopProviderProgress = this.startProviderProgressTimer()
-      const metricCall = startProviderMetricCall(providerMetrics)
-      try {
-        for await (const event of this.provider.stream({ mode: effectiveMode, prompt, messages: this.context.state.messages, providerMessages, tools: availableTools, signal: input.signal })) {
-          observeProviderMetricEvent(providerMetrics, metricCall, event)
-          if (input.signal?.aborted) return this.cancelledResult(currentReasoningTranscript(), usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
-          if (event.type === "reasoning_delta") {
-            stopProviderProgress()
-            reasoningText += event.text
-            this.onEvent?.({ type: "reasoning_delta", text: event.text })
-            this.onTextDelta?.(event.text)
-          }
-          if (event.type === "text_delta") {
-            stopProviderProgress()
-            text += event.text
-            this.onEvent?.({ type: "text_delta", text: event.text })
-            this.onTextDelta?.(event.text)
-          }
-          if (event.type === "failure") {
-            stopProviderProgress()
-            failureText = runFailureText(event.error.output || event.error.message, "provider_error")
-            this.onEvent?.({ type: "failure", text: failureText })
-            this.onTextDelta?.(failureText)
-          }
-          if (event.type === "tool_call") {
-            stopProviderProgress()
-            toolCalls.push(event.call)
-            this.onEvent?.({ type: "tool_call", call: event.call })
-          }
-          if (event.type === "usage") {
-            this.context.observeUsage(event)
-          }
-        }
-      } catch (error) {
-        stopProviderProgress()
-        if (input.signal?.aborted) return this.cancelledResult(currentReasoningTranscript(), usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
-        if (error instanceof ProviderError) {
-          const failureText = runFailureText(providerFailureText(error), "provider_error")
-          this.onEvent?.({ type: "failure", text: failureText })
-          const output = appendOutput(text, failureText)
-          reasoningTranscript = currentReasoningTranscript()
-          this.context.add(assistantMessage(reasoningTranscript, output))
-          state = this.aspect.runFailed("provider_error", usedTools)
-          this.emitRunDone("failed", providerMetrics)
-          return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
-        }
-        throw error
-      } finally {
-        finishProviderMetricCall(providerMetrics, metricCall)
-        stopProviderProgress()
-      }
+      const turn = await this.runProviderTurn({
+        agent,
+        prompt,
+        messages: this.context.state.messages,
+        providerMessages,
+        tools: availableTools,
+        signal: input.signal,
+        providerMetrics,
+      })
+      const currentReasoningTranscript = () => appendOutput(reasoningTranscript, turn.reasoningText)
+      if (turn.cancelledOutput) return this.cancelledResult(currentReasoningTranscript(), usedTools, turn.cancelledOutput, providerMetrics)
       reasoningTranscript = currentReasoningTranscript()
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(text, "Run cancelled by user."), providerMetrics)
-      if (failureText) {
-        const output = appendOutput(text, failureText)
+      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(turn.text, "Run cancelled by user."), providerMetrics)
+      if (turn.failureText) {
+        const output = appendOutput(turn.text, turn.failureText)
         this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.runFailed("provider_error", usedTools)
         this.emitRunDone("failed", providerMetrics)
         return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
-      if (text) latestAssistantText = text
-      if (toolCalls.length === 0) {
-        const output = text
+      if (turn.text) latestAssistantText = turn.text
+      if (turn.toolCalls.length === 0) {
+        const output = turn.text
         if (mode === "plan" && protocol.hasProposedPlanText(output)) this.hasProposedPlan = true
         this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.transition("completed", { usedTools })
         this.emitRunDone("completed", providerMetrics)
         return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
-      state = this.aspect.transition("tool_pending", { tools: toolCalls.map((call) => call.name), callIDs: toolCalls.map((call) => call.id) })
-      this.context.add(toolCallMessage(toolCalls))
-      for (const toolCall of toolCalls) {
+      state = this.aspect.transition("tool_pending", { tools: turn.toolCalls.map((call) => call.name), callIDs: turn.toolCalls.map((call) => call.id) })
+      this.context.add(toolCallMessage(turn.toolCalls))
+      for (const toolCall of turn.toolCalls) {
         usedTools.push(toolCall.name)
         state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
         const result = await this.runTool(toolCall, effectiveMode, input.signal)
@@ -221,6 +198,66 @@ export class AgentRunner {
     state = this.aspect.runFailed("max_steps", usedTools)
     this.emitRunDone("failed", providerMetrics)
     return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+  }
+
+  private async runProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
+    const textChunks: string[] = []
+    const reasoningChunks: string[] = []
+    const toolCalls: ToolCall[] = []
+    const tools = input.agent.tools === "none" ? [] : input.tools
+    const emitDeltas = input.emitDeltas ?? true
+    const observeContextUsage = input.observeContextUsage ?? true
+    let failureText: string | undefined
+    const stopProviderProgress = this.startProviderProgressTimer()
+    const metricCall = startProviderMetricCall(input.providerMetrics)
+    const currentText = () => textChunks.join("")
+    const currentReasoning = () => reasoningChunks.join("")
+    try {
+      for await (const event of this.provider.stream({ mode: input.agent.mode, prompt: input.prompt, messages: input.messages, providerMessages: input.providerMessages, tools, signal: input.signal })) {
+        observeProviderMetricEvent(input.providerMetrics, metricCall, event)
+        if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user.") }
+        if (event.type === "reasoning_delta") {
+          stopProviderProgress()
+          reasoningChunks.push(event.text)
+          if (emitDeltas) {
+            this.onEvent?.({ type: "reasoning_delta", text: event.text })
+            this.onTextDelta?.(event.text)
+          }
+        }
+        if (event.type === "text_delta") {
+          stopProviderProgress()
+          textChunks.push(event.text)
+          if (emitDeltas) {
+            this.onEvent?.({ type: "text_delta", text: event.text })
+            this.onTextDelta?.(event.text)
+          }
+        }
+        if (event.type === "failure") {
+          stopProviderProgress()
+          failureText = runFailureText(event.error.output || event.error.message, "provider_error")
+          if (emitDeltas) {
+            this.onEvent?.({ type: "failure", text: failureText })
+            this.onTextDelta?.(failureText)
+          }
+        }
+        if (event.type === "tool_call") {
+          stopProviderProgress()
+          toolCalls.push(event.call)
+          if (emitDeltas) this.onEvent?.({ type: "tool_call", call: event.call })
+        }
+        if (event.type === "usage" && observeContextUsage) this.context.observeUsage(event)
+      }
+      return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }
+    } catch (error) {
+      if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user.") }
+      if (!(error instanceof ProviderError)) throw error
+      const failureText = runFailureText(providerFailureText(error), "provider_error")
+      if (emitDeltas) this.onEvent?.({ type: "failure", text: failureText })
+      return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }
+    } finally {
+      finishProviderMetricCall(input.providerMetrics, metricCall)
+      stopProviderProgress()
+    }
   }
 
   private async runTool(call: ToolCall, mode: AgentMode, signal?: AbortSignal) {
@@ -276,41 +313,50 @@ export class AgentRunner {
     return { status: "cancelled" as const, failureReason: "cancelled" as const, text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
   }
 
-  private async compactContext(mode: AgentMode, providerMetrics?: ProviderMetricsAccumulator) {
+  private async compactContext(providerMetrics?: ProviderMetricsAccumulator) {
     if (this.summarySubagent || !this.context.needsCompaction()) return
     const snapshot = this.context.compactionSnapshot()
     if (!snapshot) return
-    this.startSummarySubagent(mode, snapshot, providerMetrics)
+    this.startSummarySubagent(snapshot, providerMetrics)
   }
 
   async waitForSummarySubagent() {
     await this.summarySubagent?.promise
   }
 
-  private startSummarySubagent(mode: AgentMode, snapshot: ContextCompactionSnapshot, providerMetrics?: ProviderMetricsAccumulator) {
-    const task: SummarySubagentTask = {
+  private startSummarySubagent(snapshot: ContextCompactionSnapshot, providerMetrics?: ProviderMetricsAccumulator) {
+    const task: BackgroundAgentTask = {
+      kind: "summary",
       id: this.nextSummarySubagentID++,
       startedAt: Date.now(),
+      agent: createAgent("summary"),
       snapshot,
       promise: Promise.resolve(),
     }
     this.summarySubagent = task
     this.onEvent?.({ type: "context_compaction", status: "started", inputMessages: snapshot.providerMessages.length })
-    task.promise = this.runSummarySubagent(task, mode, providerMetrics)
+    task.promise = this.runSummarySubagent(task, providerMetrics)
     void task.promise
   }
 
-  private async runSummarySubagent(task: SummarySubagentTask, mode: AgentMode, providerMetrics?: ProviderMetricsAccumulator) {
-    const providerMessages = [{ role: "user" as const, content: compactPrompt(task.snapshot.providerMessages) }]
-    let summary = ""
-    const metricCall = startProviderMetricCall(providerMetrics)
+  private async runSummarySubagent(task: BackgroundAgentTask, providerMetrics?: ProviderMetricsAccumulator) {
+    const providerMessages = [
+      { role: "system" as const, content: `${task.agent.systemPrompt}\n\nMode: ${task.agent.mode}\nTools: none` },
+      { role: "user" as const, content: compactPrompt(task.snapshot.providerMessages) },
+    ]
     try {
-      for await (const event of this.provider.stream({ mode, prompt: "Summarize conversation for context compaction", messages: [], providerMessages, tools: [] })) {
-        observeProviderMetricEvent(providerMetrics, metricCall, event)
-        if (event.type === "text_delta") summary += event.text
-        if (event.type === "failure") throw new ProviderError(event.error.message, { output: event.error.output })
-      }
-      const extracted = extractSummary(summary)
+      const turn = await this.runProviderTurn({
+        agent: task.agent,
+        prompt: "Summarize conversation for context compaction",
+        messages: [],
+        providerMessages,
+        tools: [],
+        providerMetrics,
+        emitDeltas: false,
+        observeContextUsage: false,
+      })
+      if (turn.failureText) throw new Error(turn.failureText)
+      const extracted = extractSummary(turn.text)
       const compacted = this.context.compactSnapshot(extracted, task.snapshot)
       if (compacted) {
         await this.onBackgroundContextUpdate?.()
@@ -319,7 +365,6 @@ export class AgentRunner {
     } catch (error) {
       this.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: error instanceof Error ? error.message : String(error) })
     } finally {
-      finishProviderMetricCall(providerMetrics, metricCall)
       if (this.summarySubagent?.id === task.id) this.summarySubagent = undefined
     }
   }

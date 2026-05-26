@@ -103,7 +103,7 @@ export class LoggingRunAspect implements RunAspect {
             messages: input.providerMessages.map((message) => ({ role: message.role, content: message.content })),
           },
         })
-        if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_request", detail: { prompt: input.prompt, content: input.providerMessages[0]?.content ?? "" } })
+        if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_request", detail: { prompt: input.prompt, content: input.providerMessages.find((message) => message.content.includes("Conversation to summarize:"))?.content ?? input.providerMessages[0]?.content ?? "" } })
         try {
           for await (const event of provider.stream(input)) {
             if (event.type === "usage") usage = providerUsageLog(event)

@@ -726,11 +726,17 @@ describe("agent integration", () => {
     }
     const events: RunUiEvent[] = []
     let summaryPrompt = ""
+    let summarySystemPrompt = ""
+    let summaryMode = ""
+    let summaryToolCount = -1
     const provider: Provider = {
       name: "test-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
         if (input.prompt.includes("Summarize conversation")) {
-          summaryPrompt = input.providerMessages[0]?.content ?? ""
+          summarySystemPrompt = input.providerMessages.find((message) => message.role === "system")?.content ?? ""
+          summaryPrompt = input.providerMessages.find((message) => message.content.includes("Conversation to summarize:"))?.content ?? ""
+          summaryMode = input.mode
+          summaryToolCount = input.tools.length
           yield { type: "text_delta", text: "<summary>\nModel generated summary.\n</summary>" }
           return
         }
@@ -743,6 +749,9 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(summaryPrompt).toContain("Your task is to create a detailed summary")
     expect(summaryPrompt).toContain("Conversation to summarize:")
+    expect(summarySystemPrompt).toContain("# Summary Agent - System Reminder")
+    expect(summaryMode).toBe("plan")
+    expect(summaryToolCount).toBe(0)
     expect(context.state.summary).toBe("Model generated summary.")
     expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "started" }))
     expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "completed", summaryChars: "Model generated summary.".length }))
@@ -800,7 +809,7 @@ describe("agent integration", () => {
       async *stream(input): AsyncIterable<ProviderEvent> {
         if (input.prompt.includes("Summarize conversation")) {
           summaryCalls += 1
-          summaryPrompt = input.providerMessages[0]?.content ?? ""
+          summaryPrompt = input.providerMessages.find((message) => message.content.includes("Conversation to summarize:"))?.content ?? ""
           yield { type: "text_delta", text: "<summary>\nCurrent-window summary.\n</summary>" }
           return
         }

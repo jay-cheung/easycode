@@ -65,7 +65,7 @@ export function agentForCase(task: APIxCase): Agent {
     task.static_prefix,
     jsonPrefix,
   ].filter(Boolean).join("\n")
-  return { name: "apix", mode: "build", systemPrompt }
+  return { kind: "build", name: "apix", mode: "build", tools: "enabled", systemPrompt }
 }
 
 function executionContractForCase(task: APIxCase) {

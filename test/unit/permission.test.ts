@@ -66,6 +66,11 @@ describe("permission", () => {
     expect(evaluatePermission("sandbox_bypass", "git log", defaultPermissionRules("plan"))).toBe("ask")
   })
 
+  test("plan_exit is allowed only for plan mode", () => {
+    expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("plan"))).toBe("allow")
+    expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("build"))).toBe("deny")
+  })
+
   test("auto reviewer approves repeat-safe readonly bash scopes", async () => {
     const service = new PermissionService(defaultPermissionRules("build"), () => {
       throw new Error("manual prompt should not be reached")

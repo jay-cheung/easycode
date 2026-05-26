@@ -11,10 +11,15 @@ import type { RunAspect } from "../instrumentation"
 import type { SessionSettings } from "../settings"
 import type { RunUiEvent } from "../ui/timeline"
 
+export type AgentKind = AgentMode | "summary"
+export type AgentToolPolicy = "enabled" | "none"
+
 export type Agent = {
+  kind: AgentKind
   name: string
   mode: AgentMode
   systemPrompt: string
+  tools: AgentToolPolicy
 }
 
 export type AgentRunState = "idle" | "preparing" | "streaming" | "tool_pending" | "tool_running" | "completed" | "failed" | "cancelled"

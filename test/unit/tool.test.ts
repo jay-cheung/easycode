@@ -37,6 +37,8 @@ describe("tool", () => {
     const registry = createBuiltinRegistry()
     expect(registry.list("plan").some((tool) => tool.name === "edit")).toBe(false)
     expect(registry.list("build").some((tool) => tool.name === "edit")).toBe(true)
+    expect(registry.list("plan").some((tool) => tool.name === "plan_exit")).toBe(true)
+    expect(registry.list("build").some((tool) => tool.name === "plan_exit")).toBe(false)
   })
 
   test("ledger tool pulls structured context only when called", async () => {

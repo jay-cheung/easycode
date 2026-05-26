@@ -10,4 +10,15 @@ describe("agent protocol", () => {
     expect(prompt).toContain("End the turn by calling the plan_exit tool")
     expect(prompt).toContain("Files likely to change")
   })
+
+  test("summary agent is internal and tool-free", () => {
+    const agent = createAgent("summary")
+
+    expect(agent.kind).toBe("summary")
+    expect(agent.name).toBe("summary")
+    expect(agent.mode).toBe("plan")
+    expect(agent.tools).toBe("none")
+    expect(agent.systemPrompt).toContain("# Summary Agent - System Reminder")
+    expect(agent.systemPrompt).toContain("Return the summary in <summary> tags")
+  })
 })
