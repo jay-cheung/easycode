@@ -2,13 +2,14 @@
 import path from "node:path"
 import { createInterface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
-import { createRunner } from "./agent"
+import { createRunner, hasProposedPlanText } from "./agent"
 import type { ContextManagerLike } from "./context"
 import { imageLabel, imagePartFromInput } from "./image"
 import { createLogger, emitLog } from "./logger"
 import type { AgentMode, ImagePart } from "./message"
 import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders } from "./provider"
+import { savePlan } from "./plans"
 import { SessionStore } from "./session"
 import { isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
 import { parseSlashCommand, slashHelpText, type SlashCommand } from "./slash"
@@ -377,9 +378,27 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       activeAbort = undefined
       timeline.finish()
       await saveSession(activeRunner.context)
-      if (activeMode === "plan" && result.status === "completed" && hasProposedPlan(result.text)) {
-        activeMode = "build"
-        runner = undefined
+      if (result.status === "completed" && hasProposedPlanText(result.text)) {
+        savePlan(args.root, session, result.text).catch((err) => {
+          emitLog(logger, { type: "error", name: "plan.save_failed", detail: { error: String(err) } })
+          console.error("⚠️ Failed to save plan file:", err)
+        })
+        const choice = (await reader.question(
+          `[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: `
+        )).trim().toLowerCase() || "a"
+        if (choice === "r" || choice.startsWith("reject")) {
+          // stay in plan mode
+        } else if (choice === "e" || choice.startsWith("edit")) {
+          const editDesc = await reader.question("What would you like changed? ")
+          if (editDesc) queuedPrompts.push(`Revise the plan: ${editDesc}`)
+        } else if (choice === "n" || choice.startsWith("new")) {
+          // just continue, no mode change
+        } else {
+          // default: approve
+          activeMode = "build"
+          runner = undefined
+          queuedPrompts.push("Proceed with the approved plan.")
+        }
       }
       if (result.status !== "completed") continue
     }
@@ -522,10 +541,6 @@ function settingsText(settings: SessionSettings, images: ImagePart[]) {
     `pendingSkillLoads: ${settings.pendingSkillLoads.join(", ") || "(none)"}`,
     `pending images: ${images.length}`,
   ].join("\n")
-}
-
-function hasProposedPlan(text: string) {
-  return /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(text)
 }
 
 function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[]) {

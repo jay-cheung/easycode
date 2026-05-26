@@ -219,7 +219,11 @@ export function truncateLargeMessageOutputs(messages: Message[]): Message[] {
     ...message,
     parts: message.parts.map((part) => {
       if (part.type === "tool_result") return { ...part, output: truncateLargeOutput(part.output, true) }
-      if (message.role === "assistant" && part.type === "text") return { ...part, text: truncateLargeOutput(part.text, true) }
+      if (message.role === "assistant" && part.type === "text") {
+        // Preserve full plan output (wrapped in <proposed_plan> tags)
+        if (/<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)) return part
+        return { ...part, text: truncateLargeOutput(part.text, true) }
+      }
       if (message.role === "assistant" && part.type === "reasoning") return { ...part, text: truncateLargeOutput(part.text, true) }
       return part
     }),

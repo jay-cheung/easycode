@@ -59,7 +59,15 @@ const planModeProtocol = [
 ].join("\n")
 
 
+export function hasProposedPlanText(text: string): boolean {
+  return /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(text)
+}
+
+export function stripPlanTags(text: string): string {
+  return text.replace(/<\/?proposed_plan>/gi, "").trim()
+}
+
 export function createAgent(mode: AgentMode): Agent {
   if (mode === "plan") return { name: "plan", mode, systemPrompt: `You are EasyCode in plan mode.\n\n${planModeProtocol}\n\n${stableOperatingProtocol}` }
-  return { name: "build", mode, systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}` }
+  return { name: "build", mode, systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}\n\n<system-reminder>\nIf the user requests a plan or design before implementation, use the plan_exit tool to output your proposed plan with <proposed_plan> tags and wait for approval.\n</system-reminder>` }
 }

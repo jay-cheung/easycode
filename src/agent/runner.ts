@@ -10,6 +10,7 @@ import { CliCodeNavigator } from "../tool/code-navigator"
 import { createRunAspect, type RunAspect } from "../instrumentation"
 import type { Logger } from "../logger"
 import { BASE_COMPACT_PROMPT } from "../context/prompt"
+import * as protocol from "./protocol"
 import type { PermissionRule } from "../permission"
 import { defaultSessionSettings, type SessionSettings } from "../settings"
 import type { RunUiEvent } from "../ui/timeline"
@@ -47,6 +48,7 @@ export class AgentRunner {
   readonly onBackgroundContextUpdate?: () => void | Promise<void>
   private summarySubagent: SummarySubagentTask | undefined
   private nextSummarySubagentID = 1
+  private hasProposedPlan: boolean
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -55,6 +57,9 @@ export class AgentRunner {
     this.registry = this.aspect.instrumentRegistry(options.registry ?? createBuiltinRegistry())
     this.permission = options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))
     this.context = this.aspect.instrumentContext(options.context ?? new ContextManager())
+    this.hasProposedPlan = this.context.state.messages.some(
+      (m) => m.role === "assistant" && m.parts.some((p) => p.type === "text" && protocol.hasProposedPlanText(p.text))
+    )
     this.skills = this.aspect.instrumentSkills(options.skills ?? new SkillService(options.root))
     this.instructions = options.instructions ?? new InstructionService(options.root)
     this.sandbox = options.sandbox ?? new Sandbox(options.root)
@@ -177,6 +182,7 @@ export class AgentRunner {
       if (text) latestAssistantText = text
       if (toolCalls.length === 0) {
         const output = text
+        if (mode === "plan" && protocol.hasProposedPlanText(output)) this.hasProposedPlan = true
         this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.transition("completed", { usedTools })
         this.emitRunDone("completed", providerMetrics)
@@ -193,10 +199,12 @@ export class AgentRunner {
         this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
         this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
         if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-        if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
+        if (toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
           const output = result.output
-          this.onEvent?.({ type: "text_delta", text: result.output })
-          this.onTextDelta?.(result.output)
+          const displayText = protocol.stripPlanTags(result.output)
+          this.onEvent?.({ type: "text_delta", text: displayText })
+          this.onTextDelta?.(displayText)
+          this.hasProposedPlan = true
           this.context.add(assistantMessage(reasoningTranscript, output))
           state = this.aspect.transition("completed", { usedTools })
           this.emitRunDone("completed", providerMetrics)
@@ -349,7 +357,7 @@ export class AgentRunner {
   private effectiveMode(prompt: string, mode: AgentMode): AgentMode {
     if (mode !== "plan") return mode
     if (!isPlanApproval(prompt)) return mode
-    return contextHasProposedPlan(this.context.state.messages) ? "build" : mode
+    return this.hasProposedPlan ? "build" : mode
   }
 
   private permissionFor(mode: AgentMode) {
@@ -543,11 +551,9 @@ function extractSummary(output: string) {
 
 function isPlanApproval(prompt: string) {
   const text = prompt.trim().toLowerCase()
-  return /^(执行吧|执行|确认|接受|同意|继续|开始|approve|accepted|execute|go ahead|yes|y)$/i.test(text)
-}
-
-function contextHasProposedPlan(messages: Message[]) {
-  return messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && /<proposed_plan>[\s\S]*?<\/proposed_plan>/i.test(part.text)))
+  // Remove common punctuation and whitespace for more robust matching
+  const cleaned = text.replace(/[.!?，。！？、\s]+$/g, "").trim()
+  return /^(执行吧|执行|确认|接受|同意|继续|开始|approve|accepted|approved|execute|go ahead|yes|yeah|yep|y|ok|okay|do it|let's go|sure|proceed)$/i.test(cleaned)
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings }) {
