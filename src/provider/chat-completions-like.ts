@@ -1,7 +1,7 @@
 import { HttpSSEProviderBase } from "./http-sse"
 import { ProviderError, type ProviderEvent, type ProviderInput } from "./types"
 import type { ProviderCapabilities, ProviderOptions } from "./types"
-import { toolToResponseTool } from "./utils"
+import type { ToolDef } from "../tool"
 import { partToText, type ReasoningPart, type SummaryPart, type TextPart, type ToolCallPart, type ToolResultPart } from "../message"
 import { parseProviderToolArguments } from "../tool/utils/arguments"
 
@@ -258,15 +258,13 @@ function toolResultContent(part: ToolResultPart) {
   return `status: ${part.status}\n${part.output}`
 }
 
-export function toolToChatCompletionTool(tool: Parameters<typeof toolToResponseTool>[0]) {
-  const responseTool = toolToResponseTool(tool)
+export function toolToChatCompletionTool(tool: ToolDef) {
   return {
     type: "function",
     function: {
-      name: responseTool.name,
-      description: responseTool.description,
-      parameters: responseTool.parameters,
-      strict: responseTool.strict,
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.jsonSchema,
     },
   }
 }

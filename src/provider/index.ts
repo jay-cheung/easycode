@@ -5,6 +5,7 @@ export * from './openai';
 export * from './openai-compatible';
 export * from './deepseek';
 export * from './http-sse';
+export * from './text-tool-protocol';
 export * from './registry';
 export * from './types';
 export * from './utils';

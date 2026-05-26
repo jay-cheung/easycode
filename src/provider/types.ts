@@ -4,7 +4,7 @@ import type { ReasoningEffort } from "../settings"
 import type { ToolDef } from "../tool"
 
 export type ProviderCapabilities = {
-  apiStyle: "responses" | "chat_completions" | "local"
+  apiStyle: "responses" | "chat_completions" | "text_tool_protocol" | "local"
   supportsImages: boolean
   supportsThinking: boolean
   supportsReasoningEffort: boolean

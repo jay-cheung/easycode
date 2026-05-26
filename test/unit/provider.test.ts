@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, toolToResponseTool } from "../../src/provider"
+import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
 import { imagePart, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
+import type { Provider, ProviderEvent } from "../../src/provider"
 
 describe("provider", () => {
   test("fake provider emits deterministic tool calls", async () => {
@@ -23,6 +24,15 @@ describe("provider", () => {
     const responseTool = toolToResponseTool(tool)
     expect(responseTool.parameters.required).toEqual(["dirPath"])
     expect(responseTool.parameters.properties.dirPath.type).toEqual(["string", "null"])
+  })
+
+  test("maps chat-completions tools without Responses strict schema rewriting", () => {
+    const tool = createBuiltinRegistry().get("list")
+    if (!tool) throw new Error("missing list tool")
+    const chatTool = toolToChatCompletionTool(tool)
+    expect(chatTool).toMatchObject({ type: "function", function: { name: "list", parameters: tool.jsonSchema } })
+    expect(chatTool.function).not.toHaveProperty("strict")
+    expect(chatTool.function.parameters.required).toEqual([])
   })
 
   test("normalizes common OpenAI model display casing", () => {
@@ -502,6 +512,49 @@ describe("provider", () => {
     expect(chatCompletionSSEToProviderEvents({ choices: [], usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14, prompt_cache_hit_tokens: 7, prompt_cache_miss_tokens: 3, completion_tokens_details: { reasoning_tokens: 2 } } })).toEqual([
       { type: "usage", inputTokens: 10, outputTokens: 4, cacheHitTokens: 7, cacheMissTokens: 3, totalTokens: 14, reasoningTokens: 2 },
     ])
+  })
+
+  test("text tool protocol injects tool instructions and strips native tools", () => {
+    const readTool = createBuiltinRegistry().get("read")
+    if (!readTool) throw new Error("missing read tool")
+    const input = textToolProtocolInput({ mode: "build", prompt: "inspect", messages: [], providerMessages: [{ role: "user", content: "inspect" }], tools: [readTool] })
+    expect(input.tools).toEqual([])
+    expect(input.providerMessages[0]?.role).toBe("system")
+    expect(input.providerMessages[0]?.content).toContain("<easycode_tool_call")
+    expect(input.providerMessages[0]?.content).toContain("read")
+  })
+
+  test("text tool protocol parses tool calls from plain model text", () => {
+    expect(textToolProtocolOutputToProviderEvents('Checking.\n<easycode_tool_call name="read" id="call_1">{"filePath":"README.md"}</easycode_tool_call>')).toEqual([
+      { type: "text_delta", text: "Checking.\n" },
+      { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "README.md" }, rawArguments: "{\"filePath\":\"README.md\"}" } },
+    ])
+    expect(textToolProtocolOutputToProviderEvents('<easycode_tool_call name="list">{"dirPath": .}</easycode_tool_call>')[0]).toMatchObject({
+      type: "tool_call",
+      call: { name: "list", input: { __easycodeInvalidToolArguments: true, arguments: "{\"dirPath\": .}" } },
+    })
+  })
+
+  test("text tool protocol provider converts buffered text into provider events", async () => {
+    const inner: Provider = {
+      name: "plain-text",
+      model: "plain-model",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        expect(input.tools).toEqual([])
+        expect(input.providerMessages[0]?.content).toContain("Text tool protocol")
+        yield { type: "text_delta", text: '<easycode_tool_call name="read">' }
+        yield { type: "text_delta", text: '{"filePath":"README.md"}</easycode_tool_call>' }
+        yield { type: "usage", inputTokens: 5, outputTokens: 2 }
+        yield { type: "done" }
+      },
+    }
+    const readTool = createBuiltinRegistry().get("read")
+    if (!readTool) throw new Error("missing read tool")
+    const events: ProviderEvent[] = []
+    for await (const event of new TextToolProtocolProvider(inner).stream({ mode: "build", prompt: "inspect", messages: [], providerMessages: [{ role: "user", content: "inspect" }], tools: [readTool] })) events.push(event)
+    expect(events).toContainEqual({ type: "tool_call", call: { id: "call_text_1", name: "read", input: { filePath: "README.md" }, rawArguments: "{\"filePath\":\"README.md\"}" } })
+    expect(events).toContainEqual({ type: "usage", inputTokens: 5, outputTokens: 2 })
+    expect(events.at(-1)).toEqual({ type: "done" })
   })
 })
 
