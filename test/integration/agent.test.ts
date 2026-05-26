@@ -785,6 +785,7 @@ describe("agent integration", () => {
     releaseSummary()
     await runner.waitForSummarySubagent()
     expect(context.state.summary).toBe("Background summary.")
+    expect(JSON.stringify(context.state.messages)).toContain("Done without waiting.")
     await rm(root, { recursive: true, force: true })
   })
 
