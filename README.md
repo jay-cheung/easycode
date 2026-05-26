@@ -1,22 +1,46 @@
-# easycode
+# EasyCode
 
-Lightweight specs-driven coding agent built with Bun and TypeScript.
+中文 | [English](README.en.md)
 
-## Translations
+EasyCode 是一个面向真实代码仓库的命令行 Coding Agent。它专注于“读代码、做计划、改代码、跑验证、保留上下文”，适合在本地仓库里完成日常修 bug、重构、测试修复和代码探索。
 
-- [中文](README.zh-CN.md)
-- [日本語](README.ja.md)
-- [한국어](README.ko.md)
-- [Deutsch](README.de.md)
-- [Français](README.fr.md)
+## 项目亮点
 
-## Setup
+- **计划 / 执行分离**：`plan` 模式只读分析并输出方案，`build` 模式才允许修改文件。
+- **真实仓库工作流**：内置文件读取、精确编辑、patch、bash、Git diff/status/stage/commit、代码导航等工具。
+- **安全边界明确**：默认限制写入项目外路径，危险命令会被拒绝，敏感输出会做基础脱敏。
+- **长上下文可持续**：支持会话保存、上下文压缩、项目记忆和技能按需加载。
+- **多 Provider 支持**：内置 `openai`、`deepseek`、`openai-compatible` 和离线测试用 `fake`。
+- **可验证质量**：提供离线测试、fake eval、APIx eval、cache benchmark 和真实 provider smoke test。
+
+## 安装
+
+从 [GitHub Releases](https://github.com/FanFan-web-developer/easycode/releases) 下载对应平台二进制并放入 `PATH`。
+
+macOS arm64 示例：
 
 ```bash
-bun install
+curl -L https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-darwin-arm64 -o /tmp/easycode && chmod +x /tmp/easycode && sudo mv /tmp/easycode /usr/local/bin/easycode
 ```
 
-Put provider credentials in `.env` or export them in the shell. Shell variables win over `.env` values.
+验证安装：
+
+```bash
+easycode build --provider fake
+```
+
+从源码构建：
+
+```bash
+git clone https://github.com/FanFan-web-developer/easycode.git
+cd easycode
+bun install
+bun run build
+```
+
+## 配置
+
+在项目根目录创建 `.env`，或直接通过 shell 环境变量提供凭据。shell 环境变量优先级更高。
 
 ```env
 OPENAI_API_KEY=...
@@ -30,161 +54,53 @@ OPENAI_COMPAT_API_URL=https://provider.example/v1/chat/completions
 OPENAI_COMPAT_MODEL=provider-model
 ```
 
-## Providers
+## 使用
 
-Providers are registered through `src/provider/registry.ts`; agent, CLI, and eval code create providers through that registry instead of hard-coded provider checks.
+交互式执行：
 
-Built-in providers:
+```bash
+easycode build --provider deepseek
+easycode plan --provider deepseek
+```
 
-- `fake`: deterministic local provider for tests and evals.
-- `openai`: OpenAI Responses API provider with image input, reasoning effort controls, JSON mode, explicit prompt cache keys, and `max_output_tokens`.
-- `deepseek`: DeepSeek Chat Completions-like provider with `thinking`, `reasoning_effort`, `reasoning_content` tool-call history, JSON mode, automatic KV cache usage reporting, and `max_tokens`.
-- `openai-compatible`: configurable Chat Completions-like provider using `OPENAI_COMPAT_API_KEY`, `OPENAI_COMPAT_API_URL`, and `OPENAI_COMPAT_MODEL`; it supports tools, JSON mode, and `max_tokens` without provider-specific thinking fields.
+单次任务：
 
-## Usage
+```bash
+easycode build --once "修复失败的测试" --provider deepseek
+easycode plan --once "给出最小安全改动方案" --provider deepseek
+```
+
+本地开发时也可以直接用 Bun 运行源码：
 
 ```bash
 bun run src/cli.ts build --provider fake
 bun run src/cli.ts plan --provider fake
-bun run src/cli.ts build --provider openai
-bun run src/cli.ts build --provider deepseek --logger
 ```
 
-Without `--logger`, EasyCode renders a lightweight timeline with model thinking, tool calls, elapsed command progress, tool results, and the final answer. With `--logger`, structured diagnostic logs are emitted instead of the timeline.
-
-Use `--once` to run a single prompt without entering an interactive session.
-
-```bash
-bun run src/cli.ts build --once "Fix the failing test" --provider fake
-bun run src/cli.ts plan --once "Plan the smallest safe change" --provider fake
-```
-
-Context defaults favor prompt caching with a fixed every-step strategy: stable context is sent on every provider step, `maxTokens` defaults to `32000`, and `maxSteps` defaults to `20`. Use `--max-tokens <n>` and `--max-steps <n>` to override a run or session. When a session stops on `maxSteps` or a provider error, EasyCode prints a continuation hint and returns to the next prompt.
-
-## Sessions
-
-Interactive session mode is the default and persists conversation history under `.easycode/sessions/`. Without `--session`, easycode starts a new `default` session when the project has no saved sessions; otherwise it asks you to pick an existing session or type a new session id. Use `--session <id>` to skip the prompt and select a named session. Enter prompts after the `> ` prompt appears. While a run is active, type `/cancel` and press Enter to stop it; any other input is queued and runs as the next prompt.
-
-```bash
-bun run src/cli.ts build --provider deepseek
-bun run src/cli.ts build --provider deepseek --session demo
-```
-
-Exit with `exit`, `:exit`, `quit`, or `:quit`.
-
-## Slash Commands
-
-Interactive sessions support a small command set:
+## 常用命令
 
 ```text
-/image <path-or-url>    attach an image to the next prompt
-/image clear            clear pending images
-/skill list             list available skills
-/skill use <name>       keep a skill active for this session
-/skill clear            clear active skills
-/model <provider> [id]  switch provider/model
-/effort <level>         set thinking strength: low, medium, high, max
-/thinking on|off        enable or disable model thinking
-/settings               show current session settings
-/help                   show command help
+/model <provider> [id]  切换 provider 或模型
+/image <path-or-url>    给下一轮 prompt 附加图片
+/skill list             查看可用技能
+/skill use <name>       启用技能
+/thinking on|off        开启或关闭模型 thinking
+/effort <level>         设置思考强度：low、medium、high、max
+/settings               查看当前会话设置
+/cancel                 取消正在运行的任务
 ```
 
-Image input is capability-gated. OpenAI Responses receives image parts directly; providers without vision support, such as DeepSeek, return a local error asking you to switch provider.
-
-## Sandbox Recovery
-
-On macOS, bash commands run with a native write sandbox that blocks writes outside the project root, and EasyCode also preflights explicit command paths so they stay inside the project. If either guard blocks a command, EasyCode prompts before retrying with the relevant guard bypassed. The retry still keeps dangerous-command checks. Native sandbox bypass may let the command write to temp, cache, or home directories outside the project; path-boundary bypass may let the command read from or reference paths outside the project.
-
-Repeated bash and sandbox-bypass approvals are cached for the current session by reviewed scope. Simple read-only commands such as `ls` can reuse a narrow path scope like `readonly ls /tmp/work/*`; complex or side-effectful commands stay scoped to the exact command. The cache is in memory only and is not saved to session files.
-
-Set `EASYCODE_SANDBOX_NETWORK=deny` to block common network commands during bash execution. Set `EASYCODE_SANDBOX_BACKEND=docker` and optionally `EASYCODE_SANDBOX_DOCKER_IMAGE` to run bash commands through a Docker-backed workspace mount instead of the local shell backend.
-
-## Code Navigation
-
-EasyCode includes semantic-navigation tools for large repositories. Agents should prefer `repo_map` or `find_definition`, then `call_graph` / `find_references` / `rg_search`, then `read_lines` for a bounded code slice. Full-file `read` is still available, but should be reserved for small files or clear edit targets.
-
-`repo_map` writes derived caches to `<project>/.easycode/cache/repo-map.json` and `<project>/.easycode/cache/code-index/index.json`. The repo map stores file fingerprints and symbol skeletons; the code index stores files, symbols, ranges, imports, exports, calls, references, inherits, and implements edges. These caches are not source of truth and can be deleted at any time. Projects should ignore `.easycode` so local caches are not committed.
-
-The code index is a tool-private cache, not prompt context. Tools may read it locally to answer bounded queries, but they must never return the full `code-index/index.json` to the model. Model-visible outputs stay limited to repo-map skeletons, search previews, or `read_lines` slices.
-
-`find_definition`, `find_references`, and `call_graph` read the code index first. The index rebuilds incrementally from file fingerprints, keeps resolved symbol ids for calls/references when possible, and supports lightweight parsing across TypeScript, JavaScript, Python, Go, Rust, Java-family, C/C++, C#, PHP, and Ruby files. TypeScript and JavaScript have the richest import-alias resolution; other languages use conservative declaration/import/call extraction and fall back to bounded text search when needed. If `ast-grep` or `rg` are unavailable, EasyCode keeps pure JavaScript fallbacks for bounded local navigation instead of unbounded full-file reads.
-
-## Editing, Git, Connectors, and Memory
-
-Complex edits can use the `patch` tool for explicit multi-operation changes: replace, create, delete, and move. `write` and `edit` remain available for narrow changes.
-
-Git operations have dedicated tools for status, diff, stage, commit, branch, log, and guarded restore. Stage and commit tools require explicit file lists and refuse unrelated staged files.
-
-External connector commands can be declared in `.easycode/connectors.json`:
-
-```json
-{
-  "tools": [
-    { "name": "github_pr", "description": "Inspect the current PR", "command": "gh pr view --json title,body,headRefName" }
-  ]
-}
-```
-
-Connector commands are static and still go through bash permission and sandbox checks.
-
-Short project memories are stored in `.easycode/memory.json` through `memory_add` and queried with `memory_query`. Memory text is capped and redacts common secret patterns.
-
-## Instructions
-
-EasyCode automatically loads durable instruction files into provider context before dynamic conversation history. It reads the first existing project file from `easycode.md`, `EASYCODE.md`, `AGENTS.md`, `CLAUDE.md`, and `CONTEXT.md`, then the first existing global file from `~/.easycode/easycode.md`, `~/.easycode/EASYCODE.md`, `~/.easycode/AGENTS.md`, `~/.agent/AGENTS.md`, and `~/.claude/CLAUDE.md`.
-
-Instruction files are part of the stable prompt prefix. Put repository and user workflow rules there, and keep turn-specific facts in the conversation so prompt-cache reuse stays predictable.
-
-## Skills
-
-Skills are discovered from these roots:
-
-- `<project>/.agent/skills`
-- `<project>/.easycode/skills`
-- `~/.agent/skills`
-- `~/.easycode/skills`
-
-Skill files are matched case-insensitively as `skill.md` / `SKILL.md`. Only skill names and descriptions are loaded into context up front; full content is loaded through the `skill` tool.
-
-`/skill use <name>` makes a skill active for the current session without injecting full instructions into the stable system prefix. Active skill names are saved in `.easycode/sessions/`; the next task after activation requires the model to load full instructions once through the `skill` tool, then the pending first-use load is cleared.
-
-## Logger
-
-```bash
-bun run src/cli.ts build --provider deepseek --logger
-```
-
-Logger behavior:
-
-- Network request and error response logs are highlighted in yellow. `provider.request` and `provider.response` only include the request/response body.
-- State transition logs are highlighted in cyan.
-- Only real error events are written to stderr.
-- Provider failures are surfaced in `provider.output` and returned to the user as the final failed result text.
-
-## Checks
+## 验证
 
 ```bash
 bun run verify:v1
 bun test
 bun run eval --provider fake
-bun run cache:bench
-bun run typecheck
+bun run apix:eval --provider simulated --table
+bun run cache:bench -- --provider simulated --suite real --quiet
 ```
 
-`verify:v1` runs the default v1 release gate: typecheck, full offline tests, fake-provider evals, and the simulated real-suite cache benchmark with quiet progress logs.
-
-Cache benchmark measures the fixed every-step prompt strategy. By default it runs the `real` suite:
-
-```bash
-bun run cache:bench -- --provider deepseek --suite real
-bun run cache:bench -- --provider simulated --suite real
-```
-
-It prints input tokens, cached tokens, cache misses, output tokens, hit rate, and effective input cost. Output tokens are shown for visibility but are not included in the effective cost because model output length is not controlled by the cache strategy. The default cached-input multiplier is `0.02`, matching cached input 0.02 per 1M tokens and cache-miss input 1.00 per 1M tokens. Override with `--cached-input-multiplier`.
-
-Benchmark progress logs are written to stderr by default, including profile/task/turn progress, provider requests, usage chunks, and a 10s heartbeat while waiting for real provider responses. Use `--quiet` to suppress progress logs or `--heartbeat-ms 30000` to change the heartbeat interval.
-
-Real provider smoke tests are opt-in so the default test suite stays offline and deterministic:
+真实 provider 验证需要显式启用：
 
 ```bash
 EASYCODE_TEST_PROVIDER=deepseek bun run test:real

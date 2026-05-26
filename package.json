@@ -3,9 +3,6 @@
   "version": "0.1.0",
   "private": false,
   "type": "module",
-  "bin": {
-    "easycode": "./src/cli.ts"
-  },
   "scripts": {
     "start": "bun run src/cli.ts",
     "dev": "bun run src/cli.ts build --provider deepseek --logger",
@@ -20,7 +17,14 @@
     "apix:fixtures": "bun run evals/apix/generate-fixtures.ts",
     "cache:bench": "bun run src/cache-benchmark.ts",
     "typecheck": "bunx tsc --noEmit",
-    "verify:v1": "bun run typecheck && bun test && bun run eval --provider fake && bun run cache:bench -- --provider simulated --suite real --quiet"
+    "verify:v1": "bun run typecheck && bun test && bun run eval --provider fake && bun run cache:bench -- --provider simulated --suite real --quiet",
+    "build": "bun build --compile ./src/cli.ts --outfile dist/easycode",
+    "build:linux-x64": "bun build --compile --target bun-linux-x64 ./src/cli.ts --outfile dist/easycode-linux-x64",
+    "build:linux-arm64": "bun build --compile --target bun-linux-arm64 ./src/cli.ts --outfile dist/easycode-linux-arm64",
+    "build:darwin-x64": "bun build --compile --target bun-darwin-x64 ./src/cli.ts --outfile dist/easycode-darwin-x64",
+    "build:darwin-arm64": "bun build --compile --target bun-darwin-arm64 ./src/cli.ts --outfile dist/easycode-darwin-arm64",
+    "build:win-x64": "bun build --compile --target bun-windows-x64 ./src/cli.ts --outfile dist/easycode-win-x64.exe",
+    "release": "bash scripts/release.sh"
   },
   "dependencies": {
     "zod": "^4.1.8"

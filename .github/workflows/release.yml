@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - target: bun-linux-x64
+            os: ubuntu-latest
+            out: easycode-linux-x64
+          - target: bun-linux-arm64
+            os: ubuntu-latest
+            out: easycode-linux-arm64
+          - target: bun-darwin-x64
+            os: macos-latest
+            out: easycode-darwin-x64
+          - target: bun-darwin-arm64
+            os: macos-latest
+            out: easycode-darwin-arm64
+          - target: bun-windows-x64
+            os: windows-latest
+            out: easycode-win-x64.exe
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - run: bun build --compile --target ${{ matrix.target }} ./src/cli.ts --outfile dist/${{ matrix.out }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.out }}
+          path: dist/${{ matrix.out }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute checksums
+        run: |
+          cd artifacts
+          for f in easycode-*; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
