@@ -322,7 +322,7 @@ export function createBuiltinRegistry() {
     inputSchema: PlanExitInput,
     jsonSchema: objectSchema({ markdown: { type: "string" } }),
     permission: "plan_exit",
-    modes: ["plan", "build"],
+    modes: ["plan"],
     patterns: () => ["*"],
     execute: async (input) => {
       const params = PlanExitInput.parse(input)

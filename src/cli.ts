@@ -378,7 +378,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       activeAbort = undefined
       timeline.finish()
       await saveSession(activeRunner.context)
-      if (result.status === "completed" && hasProposedPlanText(result.text)) {
+      if (activeMode === "plan" && result.status === "completed" && hasProposedPlanText(result.text)) {
         savePlan(args.root, session, result.text).catch((err) => {
           emitLog(logger, { type: "error", name: "plan.save_failed", detail: { error: String(err) } })
           console.error("⚠️ Failed to save plan file:", err)
