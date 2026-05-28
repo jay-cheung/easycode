@@ -60,3 +60,20 @@
   - `bun test test/unit/tool.test.ts test/unit/permission.test.ts`: 43 pass, 0 fail after review fixes.
   - `bun run verify:v1`: pass; includes typecheck, 262 tests, fake eval, and cache benchmark.
   - `bun run build`: pass.
+
+## Step 4: LSP/AST Scope-Aware Indexing Slice
+
+- Scope: improve TypeScript semantic indexing where text search and regex indexing are weakest.
+- Advantage over current behavior:
+  - Same-name function parameters and local variables no longer count as references to imported or global symbols.
+  - Local indented declarations are not promoted to top-level symbols.
+  - Symbol/reference lookup becomes safer for rename planning and impact analysis than plain `grep`.
+- Code Complete review result:
+  - Correctness: targeted a real false-positive class instead of adding broad AST complexity.
+  - Complexity: kept AST logic isolated inside `code-index.ts` and preserved regex/non-TypeScript fallbacks.
+  - Verification: added a same-name collision test that fails under the previous text-style reference model.
+- Verification so far:
+  - `bun test test/unit/code-navigator.test.ts`: 17 pass, 0 fail.
+  - `bun run typecheck`: pass.
+  - `bun run verify:v1`: pass; includes typecheck, 263 tests, fake eval, and cache benchmark.
+  - `bun run build`: pass.

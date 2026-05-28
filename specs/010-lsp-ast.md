@@ -25,3 +25,10 @@ LSP/AST support improves EasyCode beyond text search by giving the agent code-st
 - Same-name symbols in different scopes are not conflated.
 - Symbol-aware edit proposals include affected files and references before writing.
 - Eval fixtures compare LSP/AST lookup against `grep` for same-name collision cases.
+
+## Current Slice
+
+- TypeScript AST parsing collects function/method parameter and local variable bindings.
+- Reference and call edges skip names shadowed by local bindings, preventing false cross-file references.
+- Indented local declarations are no longer promoted to top-level TypeScript symbols.
+- The index cache generator version is bumped so stale regex-only indexes are rebuilt.

@@ -187,7 +187,7 @@ describe("code navigator", () => {
     const authReferences = await navigator.findReferences({ symbol: "AuthService", language: "typescript" })
     const storeReferences = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
 
-    expect(index.generatorVersion).toBe("3")
+    expect(index.generatorVersion).toBe("4")
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "AuthService", line: 3 }))
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "tokenStore", line: 4 }))
     expect(authReferences).toEqual([
@@ -274,6 +274,42 @@ describe("code navigator", () => {
     expect(graph.nodes.map((node) => node.name).sort()).toEqual(["leaf", "main", "parent"])
     expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/parent.ts#parent", to: "src/leaf.ts#leaf", line: 3 }))
     expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/main.ts#main", to: "src/parent.ts#parent", line: 3 }))
+  })
+
+  test("AST local binding scope prevents same-name false references", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "store.ts"), [
+      "export const tokenStore = {",
+      "  get(user: string) {",
+      "    return user",
+      "  }",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "use-store.ts"), [
+      "import { tokenStore } from './store'",
+      "export function useLocal(tokenStore: string): string {",
+      "  const local = tokenStore",
+      "  return local",
+      "}",
+      "export function useImported(user: string): string {",
+      "  return tokenStore.get(user)",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      },
+    })
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+    const index = await Bun.file(path.join(root, ".easycode", "cache", "code-index", "index.json")).json()
+    const references = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
+
+    expect(index.symbols.map((symbol: { filePath: string; name: string }) => `${symbol.filePath}#${symbol.name}`)).not.toContain("src/use-store.ts#local")
+    expect(references).toEqual([
+      { filePath: "src/use-store.ts", line: 7, preview: "  return tokenStore.get(user)" },
+    ])
   })
 
   test("code index extracts symbols and call graph for non-TypeScript files", async () => {

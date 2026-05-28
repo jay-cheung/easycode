@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
+import * as ts from "typescript"
 import type { Sandbox } from "../../sandbox"
 import { codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
@@ -35,6 +36,13 @@ const excludedReferences = new Set([
   "of", "override", "private", "protected", "public", "readonly", "return", "static", "super", "switch", "this", "throw", "true", "try", "type",
   "typeof", "undefined", "var", "void", "while", "with", "yield",
 ])
+
+type LocalBindingScope = {
+  ownerID: string
+  startLine: number
+  endLine: number
+  names: Set<string>
+}
 
 export async function codeIndex(input: {
   sandbox: Sandbox
@@ -314,6 +322,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   }
 
   const symbols = withEndLines(declarations, lines.length)
+  const localBindingScopes = extractLocalBindingScopes(text, file.filePath, symbols)
   for (const [index, rawLine] of lines.entries()) {
     const lineNumber = index + 1
     if (parseImportLine(rawLine)) continue
@@ -325,6 +334,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       if (excludedCalls.has(name)) continue
       if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
       const owner = symbolAtLine(symbols, lineNumber)
+      if (owner && isLocalBindingReference(localBindingScopes, owner.id, name, lineNumber)) continue
       edges.push(rawEdge("calls", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine))
     }
     identifierPattern.lastIndex = 0
@@ -334,6 +344,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
       if (isPropertyAccess(line, match.index)) continue
       const owner = symbolAtLine(symbols, lineNumber)
+      if (owner && isLocalBindingReference(localBindingScopes, owner.id, name, lineNumber)) continue
       edges.push(rawEdge("references", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine))
     }
   }
@@ -356,7 +367,10 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
 function matchDeclaration(line: string, filePath: string) {
   const extension = path.extname(filePath)
   const ts = line.match(declarationPattern)
-  if (ts) return { kind: normalizeSymbolKind(ts[1] ?? ""), name: ts[2] ?? "", exported: /^\s*export\b/.test(line) }
+  if (ts) {
+    if (isTypeScriptLike(extension) && /^\s+/.test(line) && !/^\s*export\b/.test(line)) return undefined
+    return { kind: normalizeSymbolKind(ts[1] ?? ""), name: ts[2] ?? "", exported: /^\s*export\b/.test(line) }
+  }
   if (extension === ".py") {
     const py = line.match(pythonDeclarationPattern)
     if (py) return { kind: normalizeSymbolKind(py[1] ?? ""), name: py[2] ?? "", exported: true }
@@ -378,6 +392,76 @@ function matchDeclaration(line: string, filePath: string) {
     if (cLike) return { kind: "function", name: cLike[1] ?? "", exported: true }
   }
   return undefined
+}
+
+function isTypeScriptLike(extension: string) {
+  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(extension)
+}
+
+function extractLocalBindingScopes(text: string, filePath: string, symbols: CodeIndexSymbol[]): LocalBindingScope[] {
+  if (!isTypeScriptLike(path.extname(filePath))) return []
+  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKindFor(filePath))
+  const scopes: LocalBindingScope[] = []
+
+  const visit = (node: ts.Node) => {
+    if (isFunctionLikeWithBody(node)) {
+      const startLine = lineFor(source, node.getStart(source))
+      const endLine = lineFor(source, node.end)
+      const owner = symbols.find((symbol) => symbol.startLine <= startLine && startLine <= symbol.endLine)
+      if (owner) {
+        const names = new Set<string>()
+        for (const param of node.parameters) collectBindingNames(param.name, names)
+        collectBodyLocalBindings(node.body, names)
+        if (names.size > 0) scopes.push({ ownerID: owner.id, startLine, endLine, names })
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(source)
+  return scopes
+}
+
+function isFunctionLikeWithBody(node: ts.Node): node is ts.FunctionLikeDeclaration & { body: ts.ConciseBody } {
+  return (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isConstructorDeclaration(node)) && Boolean(node.body)
+}
+
+function collectBodyLocalBindings(body: ts.ConciseBody, names: Set<string>) {
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isImportClause(node)) {
+      const name = "name" in node ? node.name : undefined
+      if (name) collectBindingNames(name, names)
+    }
+    if (ts.isFunctionLike(node) && node !== body) return
+    ts.forEachChild(node, visit)
+  }
+  ts.forEachChild(body, visit)
+}
+
+function collectBindingNames(name: ts.BindingName | ts.Identifier | undefined, names: Set<string>) {
+  if (!name) return
+  if (ts.isIdentifier(name)) {
+    names.add(name.text)
+    return
+  }
+  for (const element of name.elements) {
+    if (ts.isBindingElement(element)) collectBindingNames(element.name, names)
+  }
+}
+
+function isLocalBindingReference(scopes: LocalBindingScope[], ownerID: string, name: string, line: number) {
+  return scopes.some((scope) => scope.ownerID === ownerID && scope.startLine <= line && line <= scope.endLine && scope.names.has(name))
+}
+
+function lineFor(source: ts.SourceFile, position: number) {
+  return source.getLineAndCharacterOfPosition(position).line + 1
+}
+
+function scriptKindFor(filePath: string) {
+  if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX
+  if (filePath.endsWith(".jsx")) return ts.ScriptKind.JSX
+  if (filePath.endsWith(".js") || filePath.endsWith(".mjs") || filePath.endsWith(".cjs")) return ts.ScriptKind.JS
+  return ts.ScriptKind.TS
 }
 
 function parseImportLine(line: string): { source: string; bindings: NonNullable<CodeIndexFile["importBindings"]> } | undefined {
