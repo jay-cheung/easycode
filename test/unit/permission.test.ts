@@ -105,6 +105,11 @@ describe("permission", () => {
     expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("build"))).toBe("deny")
   })
 
+  test("retrieval permissions separate local MCP from web search", () => {
+    expect(evaluatePermission("mcp", ".easycode/mcp.json", defaultPermissionRules("plan"))).toBe("allow")
+    expect(evaluatePermission("web_search", "web:Claude Code", defaultPermissionRules("plan"))).toBe("ask")
+  })
+
   test("auto reviewer approves repeat-safe readonly bash scopes", async () => {
     const service = new PermissionService(defaultPermissionRules("build"), () => {
       throw new Error("manual prompt should not be reached")

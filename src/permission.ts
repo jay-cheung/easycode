@@ -233,6 +233,8 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "bash", pattern: "*curl*|*bash*", action: "deny" },
     { permission: "sandbox_bypass", pattern: "*", action: "ask" },
     { permission: "skill", pattern: "*", action: "ask" },
+    { permission: "mcp", pattern: "*", action: "allow" },
+    { permission: "web_search", pattern: "*", action: "ask" },
     { permission: "plan_exit", pattern: "*", action: mode === "plan" ? "allow" : "deny" },
   ]
   if (mode === "build") return base

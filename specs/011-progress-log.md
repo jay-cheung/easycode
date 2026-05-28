@@ -38,3 +38,25 @@
 
 - Goal: add MCP and WebSearch as dual retrieval surfaces with shared permission, citation, logging, timeout, and eval contracts.
 - First implementation slice should be read-only and fixture-backed before any live network path becomes default.
+
+## Step 3: MCP + WebSearch Retrieval Slice
+
+- Scope: read-only MCP-style resources and WebSearch fixtures with shared source metadata.
+- External research used:
+  - OpenCode official docs and repository.
+  - Claude Code official overview and architecture docs.
+  - OpenAI Codex CLI official docs.
+- Implementation:
+  - `mcp_list_resources`
+  - `mcp_read_resource`
+  - `web_search`
+  - `.easycode/mcp.json` and `.easycode/websearch.json` fixture contracts.
+- Code Complete review result:
+  - Correctness: fixed duplicate MCP citation generation so `source` and `sources[0]` share one timestamp.
+  - Defensive behavior: added missing-fixture tests to prove retrieval tools return empty cited results instead of fabricated sources.
+- Verification so far:
+  - `bun test test/unit/tool.test.ts test/unit/permission.test.ts`: 42 pass, 0 fail before review fixes.
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/permission.test.ts`: 43 pass, 0 fail after review fixes.
+  - `bun run verify:v1`: pass; includes typecheck, 262 tests, fake eval, and cache benchmark.
+  - `bun run build`: pass.

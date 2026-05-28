@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { ConnectorService } from "../connector"
 import { ProjectMemoryStore } from "../memory"
+import { McpSourceService, WebSearchService, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, webCitation } from "../retrieval"
 import { CliCodeNavigator } from "./code-navigator"
 import { ToolRegistry } from "./registry"
 import { BashInput, bashApprovalForCommand, bashCwd, bashResultToToolResult, executeBashWithSandboxRecovery, scopedBashApproval } from "./bash"
@@ -19,6 +20,9 @@ const MemoryQueryInput = z.object({ query: z.string(), maxResults: z.number().nu
 const MemoryAddInput = z.object({ text: z.string(), tags: z.array(z.string()).nullish().transform((value) => value ?? []) })
 const ConnectorListInput = z.object({})
 const ConnectorCallInput = z.object({ name: z.string() })
+const McpListResourcesInput = z.object({ query: z.string().optional(), limit: z.number().nullish().transform((value) => value ?? 10) })
+const McpReadResourceInput = z.object({ uri: z.string(), server: z.string().optional() })
+const WebSearchInput = z.object({ query: z.string(), limit: z.number().nullish().transform((value) => value ?? 5) })
 
 export function createBuiltinRegistry() {
   const registry = new ToolRegistry()
@@ -471,6 +475,71 @@ export function createBuiltinRegistry() {
       const params = ConnectorCallInput.parse(input)
       const { tool, result } = await new ConnectorService(ctx.sandbox.root).call(params.name, ctx.sandbox, ctx.signal)
       return { title: tool.name, output: bashResultToToolResult(tool.command, result).output, metadata: { ...bashResultToToolResult(tool.command, result).metadata, connector: tool.name } }
+    },
+  })
+
+  registry.register({
+    name: "mcp_list_resources",
+    description: "List configured MCP-style resources from .easycode/mcp.json. Use before mcp_read_resource when source uri is unknown.",
+    inputSchema: McpListResourcesInput,
+    jsonSchema: objectSchema({ query: { type: "string" }, limit: { type: "number" } }, []),
+    permission: "mcp",
+    modes: ["build", "plan"],
+    patterns: () => [".easycode/mcp.json"],
+    execute: async (input, ctx) => {
+      const startedAt = Date.now()
+      const params = McpListResourcesInput.parse(input)
+      const resources = await new McpSourceService(ctx.sandbox.root).listResources(params.query, params.limit)
+      return {
+        title: "MCP resources",
+        output: formatMcpResources(resources),
+        metadata: { status: "succeeded", query: params.query, count: resources.length, elapsedMs: Date.now() - startedAt, sources: resources.map(mcpCitation) },
+      }
+    },
+  })
+
+  registry.register({
+    name: "mcp_read_resource",
+    description: "Read one configured MCP-style resource by URI with structured citation metadata.",
+    inputSchema: McpReadResourceInput,
+    jsonSchema: objectSchema({ uri: { type: "string" }, server: { type: "string" } }, ["uri"]),
+    permission: "mcp",
+    modes: ["build", "plan"],
+    patterns: (input) => {
+      const params = McpReadResourceInput.parse(input)
+      return [`.easycode/mcp.json`, `mcp:${params.server ?? "*"}:${params.uri}`]
+    },
+    execute: async (input, ctx) => {
+      const startedAt = Date.now()
+      const params = McpReadResourceInput.parse(input)
+      const resource = await new McpSourceService(ctx.sandbox.root).readResource(params.uri, params.server)
+      if (!resource) return { title: "MCP resource", output: `MCP resource not found: ${params.uri}`, metadata: { status: "failed", uri: params.uri } }
+      const citation = mcpCitation(resource)
+      return {
+        title: resource.title,
+        output: formatMcpResource(resource),
+        metadata: { status: "succeeded", elapsedMs: Date.now() - startedAt, source: citation, sources: [citation] },
+      }
+    },
+  })
+
+  registry.register({
+    name: "web_search",
+    description: "Search configured web evidence from .easycode/websearch.json and return cited results. Live network search is not enabled by default.",
+    inputSchema: WebSearchInput,
+    jsonSchema: objectSchema({ query: { type: "string" }, limit: { type: "number" } }),
+    permission: "web_search",
+    modes: ["build", "plan"],
+    patterns: (input) => [`web:${WebSearchInput.parse(input).query}`],
+    execute: async (input, ctx) => {
+      const startedAt = Date.now()
+      const params = WebSearchInput.parse(input)
+      const results = await new WebSearchService(ctx.sandbox.root).search(params.query, params.limit)
+      return {
+        title: params.query,
+        output: formatWebResults(results),
+        metadata: { status: "succeeded", query: params.query, count: results.length, elapsedMs: Date.now() - startedAt, sources: results.map(webCitation), live: false },
+      }
     },
   })
 

@@ -93,6 +93,35 @@ bun run src/cli.ts build --provider fake --tui
 /cancel                 cancel the active run
 ```
 
+## Retrieval Sources
+
+Third-party context starts as read-only configuration so permission, citation, and logging behavior can be tested before live integrations are enabled.
+
+```json
+{
+  "servers": [
+    {
+      "name": "docs",
+      "resources": [
+        { "uri": "doc://example", "title": "Example", "description": "short summary", "text": "full text" }
+      ]
+    }
+  ]
+}
+```
+
+Save this as `.easycode/mcp.json` and use `mcp_list_resources` or `mcp_read_resource`. Public web evidence can be saved to `.easycode/websearch.json`:
+
+```json
+{
+  "results": [
+    { "url": "https://example.com", "title": "Example", "snippet": "quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
+  ]
+}
+```
+
+`web_search` reads fixtures by default and does not perform live network requests by default.
+
 ## Verify
 
 ```bash

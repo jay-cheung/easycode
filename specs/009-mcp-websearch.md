@@ -31,3 +31,11 @@ MCP and WebSearch are complementary retrieval surfaces. MCP connects local, ente
 - MCP and WebSearch can both contribute cited evidence in one run.
 - A failed or unavailable source does not fabricate results.
 - Eval fixtures verify citation preservation, timeout handling, and no-source fallback behavior.
+
+## Current Slice
+
+- `mcp_list_resources` reads `.easycode/mcp.json` and returns cited resource summaries.
+- `mcp_read_resource` reads one `.easycode/mcp.json` resource by URI and returns citation metadata.
+- `web_search` reads `.easycode/websearch.json` and returns cited web evidence.
+- MCP reads are allowed by default because they are local configured resources.
+- WebSearch requires explicit permission by default even when using fixtures, preserving the boundary needed before live network search is enabled.

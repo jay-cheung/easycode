@@ -266,6 +266,66 @@ describe("tool", () => {
     expect(called.metadata.connector).toBe("docs")
   })
 
+  test("mcp and web search tools return cited fixture-backed evidence", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "mcp.json"), JSON.stringify({
+      servers: [
+        {
+          name: "local-docs",
+          resources: [
+            { uri: "doc://agent/tui", title: "TUI design", description: "Terminal UI contract", text: "The TUI reuses the existing CLI runner." },
+            { uri: "doc://agent/retrieval", title: "Retrieval design", description: "MCP and WebSearch share citations.", text: "Every source keeps a retrieved timestamp." },
+          ],
+        },
+      ],
+    }))
+    await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+      results: [
+        { url: "https://code.claude.com/docs", title: "Claude Code overview", snippet: "Claude Code is an agentic coding tool.", source: "Anthropic", retrievedAt: "2026-05-28T00:00:00.000Z" },
+        { url: "https://github.com/opencode-ai/opencode", title: "OpenCode", snippet: "A terminal AI coding agent.", source: "GitHub", retrievedAt: "2026-05-28T00:00:00.000Z" },
+      ],
+    }))
+    const ctx = toolContext(root)
+
+    const listed = await registry.run("mcp_list_resources", { query: "retrieval", limit: 2 }, ctx)
+    const read = await registry.run("mcp_read_resource", { uri: "doc://agent/retrieval", server: "local-docs" }, ctx)
+    const searched = await registry.run("web_search", { query: "Claude Code", limit: 1 }, ctx)
+
+    expect(listed.output).toContain("[mcp:1] Retrieval design")
+    expect(Array.isArray(listed.metadata.sources)).toBe(true)
+    expect(read.output).toContain("MCP and WebSearch share citations")
+    expect(read.metadata.source).toMatchObject({ type: "mcp", uri: "doc://agent/retrieval" })
+    expect(searched.output).toContain("[web:1] Claude Code overview")
+    expect(searched.metadata).toMatchObject({ status: "succeeded", live: false, count: 1 })
+    expect(searched.metadata.sources).toEqual([
+      {
+        type: "web",
+        id: "https://code.claude.com/docs",
+        title: "Claude Code overview",
+        url: "https://code.claude.com/docs",
+        retrievedAt: "2026-05-28T00:00:00.000Z",
+      },
+    ])
+  })
+
+  test("retrieval tools do not fabricate sources when fixtures are missing", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const ctx = toolContext(root)
+
+    const mcp = await registry.run("mcp_list_resources", { query: "missing" }, ctx)
+    const web = await registry.run("web_search", { query: "latest codex" }, ctx)
+
+    expect(mcp.output).toBe("No MCP resources found.")
+    expect(mcp.metadata).toMatchObject({ status: "succeeded", count: 0 })
+    expect(mcp.metadata.sources).toEqual([])
+    expect(web.output).toBe("No web search results found.")
+    expect(web.metadata).toMatchObject({ status: "succeeded", count: 0, live: false })
+    expect(web.metadata.sources).toEqual([])
+  })
+
   test("git workflow tools stage explicit files and reject unrelated staged commits", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
