@@ -25,6 +25,13 @@ export type EvalTask = {
   }
 }
 
+export type EvalResult = {
+  id: string
+  passed: boolean
+  skipped?: boolean
+  reason?: string
+}
+
 const emptyRegistry: ToolRegistryLike = {
   get: () => undefined,
   list: () => [],
@@ -67,14 +74,16 @@ async function snapshotFiles(root: string) {
 
 type EvalProvider = ProviderName
 
-export async function runEval(input: { provider: EvalProvider; root?: string; logger?: boolean }) {
+export async function runEval(input: { provider: EvalProvider; root?: string; logger?: boolean; ids?: string[] }) {
   const projectRoot = input.root ?? path.resolve(import.meta.dir, "..")
   await loadEnvFile(projectRoot)
   const taskDir = path.join(projectRoot, "evals", "tasks")
   const tasks = (await readdir(taskDir)).filter((file) => file.endsWith(".json")).sort((left, right) => left.localeCompare(right))
-  const results: { id: string; passed: boolean; skipped?: boolean; reason?: string }[] = []
+  const idFilter = input.ids ? new Set(input.ids) : undefined
+  const results: EvalResult[] = []
   for (const file of tasks) {
     const task = JSON.parse(await Bun.file(path.join(taskDir, file)).text()) as EvalTask
+    if (idFilter && !idFilter.has(task.id)) continue
     const providers = task.providers ?? ["fake", "openai", "deepseek"]
     if (!providers.includes(input.provider)) {
       results.push({ id: task.id, passed: true, skipped: true, reason: `not configured for provider ${input.provider}` })

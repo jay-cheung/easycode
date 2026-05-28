@@ -37,6 +37,14 @@ Tasks without `providers` are fake-provider deterministic evals. Real provider e
 - The benchmark measures the fixed every-step prompt strategy used by normal agent runs.
 - Effective benchmark cost is input-only by default: cache-miss input tokens plus cached input tokens multiplied by the cached-input discount. Output tokens are reported for visibility but do not affect `effective_input` unless explicitly overridden.
 
+## Provider Gate Contract
+- `bun run provider:gate` checks `openai` and `deepseek` by default.
+- `--provider <name>` narrows the gate to one provider; `--providers a,b` checks an explicit list.
+- Missing required credentials are recorded as `skipped` with the missing variable names, not as pass/fail.
+- Configured providers run a no-tool real smoke eval, a small deterministic APIx hard-gate subset, and the real cache benchmark unless disabled with `--no-apix` or `--no-cache`.
+- Each run writes machine-readable JSON and Markdown to `.easycode/reports/provider-gate` so provider readiness can be compared over time.
+- The process exits non-zero only when a configured provider check fails; an all-skipped run is allowed for local development without credentials.
+
 ## APIx Golden Dataset
 - `specs/007-apix-golden-dataset.md` defines the 100-case APIx dataset for layered context architecture.
 - APIx evals gate on resolution quality before comparing cost, cache, output length, latency, and stability.

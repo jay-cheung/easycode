@@ -4,6 +4,8 @@
 - `bun run verify:v1` passes.
 - `bun test` passes.
 - `bun run eval --provider fake` passes all local eval tasks.
+- `bun run provider:gate -- --provider <real-provider>` writes a JSON and Markdown report under `.easycode/reports/provider-gate`.
+- Provider gates skip explicitly when required credentials are missing instead of reporting fabricated real-provider results.
 - `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
 - `easycode build --once "..." --provider fake` can complete read -> edit -> bash.
 - `easycode build --provider fake` creates `default` when the project has no saved sessions.
