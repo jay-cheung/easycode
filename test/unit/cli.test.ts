@@ -63,6 +63,11 @@ describe("cli args", () => {
     expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 
+  test("tui flag enables the full interactive renderer without consuming prompt text", () => {
+    expect(parseArgs(["build", "--tui", "--provider", "fake", "--session", "demo"])).toMatchObject({ tui: true, once: false, session: "demo", prompt: "" })
+    expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--tui"])).toMatchObject({ tui: true, once: true, prompt: "hello" })
+  })
+
   test("session flag selects the interactive session id", () => {
     expect(parseArgs(["build", "--provider", "fake", "--session", "demo"])).toMatchObject({ once: false, session: "demo", prompt: "" })
   })
@@ -188,6 +193,33 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("tui session covers settings, sessions, and prompt rendering", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({ id: "alpha", messages: [{ id: "m1", role: "user", parts: [], createdAt: 1 }], updatedAt: 100 }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "sessions", "beta.json"), JSON.stringify({ id: "beta", messages: [], updatedAt: 200 }, null, 2))
+
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("1\n/settings\n/sessions\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("EasyCode TUI")
+    expect(stdout).toContain("/help /settings /sessions")
+    expect(stdout).toContain("[Settings]")
+    expect(stdout).toContain("provider: fake")
+    expect(stdout).toContain("[Sessions]")
+    expect(stdout).toContain("1. beta (current) - 0 messages")
+    expect(stdout).toContain("easycode> ")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("session continues after max steps", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })
@@ -265,6 +297,83 @@ describe("cli args", () => {
     expect(status).toBe(0)
     expect(stdout).toContain("Allow read for .env?")
     expect(stdout).not.toContain("SECRET=hidden")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("tui preserves permission prompts and cancellation path", async () => {
+    const root = await tmpdir()
+    await Bun.write(path.join(root, ".env"), "SECRET=hidden\n")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("Read env configuration\n/cancel\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("[Permission]")
+    expect(stdout).toContain("Allow read for .env?")
+    expect(stdout).toContain("TUI: cancelling current run...")
+    expect(stdout).not.toContain("SECRET=hidden")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("tui once mode renders the same run timeline", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plan", "--once", "plan a harmless change", "--provider", "fake", "--tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("EasyCode TUI")
+    expect(stdout).toContain("● Model")
+    expect(stdout).toContain("● Answer")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("tui plan mode keeps the approval prompt on the existing plan workflow", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plan", "--provider", "fake", "--tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("plan a harmless change\n")
+    await new Promise((resolve) => setTimeout(resolve, 180))
+    child.stdin.write("r\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("[Plan] [A]pprove & execute")
+    expect(stdout).toContain("[status] plan approval")
+    expect(stdout).toContain("<proposed_plan>")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("tui once mode remains compatible with session logs", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plan", "--once", "plan a harmless change", "--provider", "fake", "--tui", "--logger", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("EasyCode TUI")
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "once.jsonl")).text()
+    expect(logText).toContain("\"name\":\"provider.input\"")
+    expect(logText).toContain("\"name\":\"provider.output\"")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })

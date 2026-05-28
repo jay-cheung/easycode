@@ -61,6 +61,7 @@ OPENAI_COMPAT_MODEL=provider-model
 ```bash
 easycode build --provider deepseek
 easycode plan --provider deepseek
+easycode build --provider deepseek --tui
 ```
 
 单次任务：
@@ -75,6 +76,7 @@ easycode plan --once "给出最小安全改动方案" --provider deepseek
 ```bash
 bun run src/cli.ts build --provider fake
 bun run src/cli.ts plan --provider fake
+bun run src/cli.ts build --provider fake --tui
 ```
 
 ## 常用命令

@@ -1,0 +1,27 @@
+# LSP and AST Enhancement Spec
+
+## Objective
+
+LSP/AST support improves EasyCode beyond text search by giving the agent code-structure facts and safer edit boundaries.
+
+## Advantages Over Current Text Tools
+
+- Definition/reference lookup can distinguish same-name symbols across files and scopes.
+- Rename and signature-level changes can be constrained to semantic references instead of raw string matches.
+- Plans can cite affected symbols and call paths rather than only matching files.
+- Diff review can flag edits that cross symbol boundaries, public APIs, or generated-code regions.
+- Tests can target changed symbols and nearby references instead of relying only on broad command suggestions.
+
+## Scope
+
+- Start with TypeScript/JavaScript because the project is TypeScript and can use existing compiler APIs.
+- Build a symbol index for files, exported declarations, references, imports, and call-like relationships.
+- Expose read-only symbol lookup before enabling symbol-aware edits.
+- Keep text tools available as fallback when a language server or parser is unavailable.
+
+## Acceptance
+
+- Symbol lookup returns definitions and references for local TypeScript symbols.
+- Same-name symbols in different scopes are not conflated.
+- Symbol-aware edit proposals include affected files and references before writing.
+- Eval fixtures compare LSP/AST lookup against `grep` for same-name collision cases.

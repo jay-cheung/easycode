@@ -61,6 +61,7 @@ Interactive:
 ```bash
 easycode build --provider deepseek
 easycode plan --provider deepseek
+easycode build --provider deepseek --tui
 ```
 
 Single prompt:
@@ -75,6 +76,7 @@ Run from source during development:
 ```bash
 bun run src/cli.ts build --provider fake
 bun run src/cli.ts plan --provider fake
+bun run src/cli.ts build --provider fake --tui
 ```
 
 ## Common Commands

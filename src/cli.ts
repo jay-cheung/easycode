@@ -15,6 +15,7 @@ import { isReasoningEffort, normalizeSessionSettings, type SessionSettings } fro
 import { parseSlashCommand, slashHelpText, type SlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
+import { TuiRenderer } from "./ui/tui"
 
 type EnvTarget = {
   [key: string]: string | undefined
@@ -28,6 +29,11 @@ type LineWaiter = {
   resolve: (line: string) => void
   signal?: AbortSignal
   onAbort?: () => void
+}
+
+type RunRenderer = {
+  event(event: RunUiEvent): void
+  finish(): void
 }
 
 class LineReader {
@@ -104,6 +110,7 @@ export function parseArgs(argv: string[]) {
   const maxStepsIndex = normalizedArgv.indexOf("--max-steps")
   const once = normalizedArgv.includes("--once")
   const logger = normalizedArgv.includes("--logger")
+  const tui = normalizedArgv.includes("--tui")
   const providerExplicit = providerIndex !== -1
   const rawProvider = providerIndex === -1 ? "fake" : normalizedArgv[providerIndex + 1]
   if (!hasProvider(rawProvider)) throw new Error(`Unknown provider: ${rawProvider}. Available providers: ${listProviders().join(", ")}`)
@@ -120,7 +127,7 @@ export function parseArgs(argv: string[]) {
     return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once }
+  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once, tui }
 }
 
 function normalizeModeArgv(argv: string[]) {
@@ -130,7 +137,7 @@ function normalizeModeArgv(argv: string[]) {
 }
 
 function usage() {
-  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--session id]`
+  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--tui] [--session id]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {
@@ -347,11 +354,12 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
   const reader = new LineReader(createInterface({ input, output }))
   const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
-  const timeline = new TimelineRenderer(output)
+  const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: settings.provider, model: settings.model, session: args.session ?? "once", logger: args.logger }) : undefined
+  const timeline = tui ?? new TimelineRenderer(output)
   const onEvent = timelineEventHandler(timeline)
   try {
     const controller = new AbortController()
-    const permission = permissionService(args.mode, reader, () => controller.abort())
+    const permission = permissionService(args.mode, reader, () => controller.abort(), tui)
     const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent }).run(args.prompt, args.mode, { signal: controller.signal })
     timeline.finish()
     return result.status
@@ -363,9 +371,11 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
 async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   const store = new SessionStore(args.root)
   const reader = new LineReader(createInterface({ input, output }))
+  const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: args.provider, model: args.model, session: args.session, logger: args.logger }) : undefined
   try {
-    const session = await selectSession(args.session, store, reader)
+    const session = await selectSession(args.session, store, reader, tui)
     if (!session) return "completed"
+    tui?.startSession(session)
     const logger = args.logger ? createLogger({ root: args.root, session }) : undefined
     emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, once: args.once } })
     emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
@@ -380,7 +390,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let activeMode = args.mode
     let runner: ReturnType<typeof createRunner> | undefined
     let activeAbort: AbortController | undefined
-    const timeline = new TimelineRenderer(output)
+    tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
+    const timeline = tui ?? new TimelineRenderer(output)
     const onEvent = timelineEventHandler(timeline)
     let saveChain = Promise.resolve()
     const saveSession = (contextToSave: ContextManagerLike) => {
@@ -388,11 +399,11 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       return saveChain
     }
     const getRunner = () => {
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort()), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context) })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context) })
       return runner
     }
     while (true) {
-      const prompt = (queuedPrompts.shift() ?? await question(reader)).trim()
+      const prompt = (queuedPrompts.shift() ?? await question(reader, tui)).trim()
       if (prompt === eofPrompt) {
         await saveSession(runner?.context ?? context)
         return "completed"
@@ -404,9 +415,10 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       if (!prompt) continue
       const command = parseSlashCommand(prompt)
       if (command.type !== "prompt") {
-        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session })
+        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session, tui })
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
+        tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
         if (changed.resetRunner) runner = undefined
         await saveSession(runner?.context ?? context)
         continue
@@ -415,7 +427,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       const images = pendingImages
       pendingImages = []
       activeAbort = new AbortController()
-      const runInput = collectRunInput(reader, activeAbort, queuedPrompts)
+      const runInput = collectRunInput(reader, activeAbort, queuedPrompts, tui)
       const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
       runInput.stop()
       activeAbort = undefined
@@ -427,7 +439,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           console.error("⚠️ Failed to save plan file:", err)
         })
         const choice = (await reader.question(
-          `[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: `
+          tui?.planApprovalPrompt() ?? `[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: `
         )).trim().toLowerCase() || "a"
         if (choice === "r" || choice.startsWith("reject")) {
           // stay in plan mode
@@ -439,6 +451,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         } else {
           // default: approve
           activeMode = "build"
+          tui?.configure({ mode: activeMode }, "approved")
           runner = undefined
           queuedPrompts.push("Proceed with the approved plan.")
         }
@@ -450,85 +463,88 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
   }
 }
 
-async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader) {
+async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader, tui?: TuiRenderer) {
   if (explicitSession) return explicitSession
   const sessions = await store.list()
   if (sessions.length === 0) {
-    output.write("Starting new session: default\n")
+    writeCliText(tui, "Starting new session: default", "Session")
     return "default"
   }
-  output.write("Select a session:\n")
-  sessions.forEach((session, index) => {
-    output.write(`  ${index + 1}. ${session.id}${session.messageCount ? ` (${session.messageCount} messages)` : ""}\n`)
-  })
-  output.write("Press Enter for 1, enter a number, or type a new session id.\n")
+  const sessionLines = [
+    "Select a session:",
+    ...sessions.map((session, index) => `  ${index + 1}. ${session.id}${session.messageCount ? ` (${session.messageCount} messages)` : ""}`),
+    "Press Enter for 1, enter a number, or type a new session id.",
+  ]
+  writeCliText(tui, sessionLines.join("\n"), "Sessions")
   while (true) {
-    const answer = (await reader.question("session> ")).trim()
+    const answer = (await reader.question(tui?.sessionPrompt() ?? "session> ")).trim()
     if (answer === eofPrompt) return undefined
     if (!answer) return sessions[0].id
     const selectedIndex = Number(answer)
     if (Number.isInteger(selectedIndex)) {
       if (selectedIndex >= 1 && selectedIndex <= sessions.length) return sessions[selectedIndex - 1].id
-      output.write(`Choose 1-${sessions.length}, or type a non-numeric new session id.\n`)
+      writeCliText(tui, `Choose 1-${sessions.length}, or type a non-numeric new session id.`, "Sessions")
       continue
     }
     return answer
   }
 }
 
-async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService; sessions?: SessionStore; currentSession?: string }) {
+async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService; sessions?: SessionStore; currentSession?: string; tui?: TuiRenderer }) {
   const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
   let pendingImages = input.pendingImages
   let resetRunner = false
-  if (command.type === "help") output.write(`${slashHelpText()}\n`)
-  if (command.type === "settings") output.write(`${settingsText(next, pendingImages)}\n`)
-  if (command.type === "sessions") output.write(`${await sessionsText(input.sessions, input.currentSession)}\n`)
-  if (command.type === "unknown") output.write(`Unknown command: /${command.name}. Use /help.\n`)
-  if (command.type === "error") output.write(`${command.message}\n`)
+  input.tui?.slashCommand(command.type)
+  const write = (text: string, title = "Command") => writeCliText(input.tui, text, title)
+  if (command.type === "help") write(slashHelpText(), "Help")
+  if (command.type === "settings") write(settingsText(next, pendingImages), "Settings")
+  if (command.type === "sessions") write(await sessionsText(input.sessions, input.currentSession), "Sessions")
+  if (command.type === "unknown") write(`Unknown command: /${command.name}. Use /help.`, "Command")
+  if (command.type === "error") write(command.message, "Command")
   if (command.type === "model") {
-    if (!hasProvider(command.provider)) output.write(`Unknown provider: ${command.provider}. Available providers: ${listProviders().join(", ")}\n`)
+    if (!hasProvider(command.provider)) write(`Unknown provider: ${command.provider}. Available providers: ${listProviders().join(", ")}`, "Model")
     else {
       next.provider = command.provider
       next.model = command.model
       resetRunner = true
-      output.write(`Model set to ${next.provider}${next.model ? ` ${next.model}` : ""}\n`)
+      write(`Model set to ${next.provider}${next.model ? ` ${next.model}` : ""}`, "Model")
     }
   }
   if (command.type === "thinking") {
     const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-    if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) output.write(`Provider ${next.provider} does not support thinking controls.\n`)
+    if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) write(`Provider ${next.provider} does not support thinking controls.`, "Thinking")
     else {
       next.thinking = command.value === "on"
       resetRunner = true
-      output.write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.\n`)
+      write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.`, "Thinking")
     }
   }
   if (command.type === "effort") {
-    if (!isReasoningEffort(command.value)) output.write("/effort requires low, medium, high, or max\n")
+    if (!isReasoningEffort(command.value)) write("/effort requires low, medium, high, or max", "Effort")
     else {
       const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) output.write(`Provider ${next.provider} does not support effort controls.\n`)
+      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) write(`Provider ${next.provider} does not support effort controls.`, "Effort")
       else {
         next.effort = command.value
         resetRunner = true
-        output.write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.\n`)
+        write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.`, "Effort")
       }
     }
   }
   if (command.type === "image") {
     if (command.action === "clear") {
       pendingImages = []
-      output.write("Pending images cleared.\n")
+      write("Pending images cleared.", "Image")
     } else {
       const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) output.write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.\n`)
+      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.`, "Image")
       else {
         try {
           const part = await imagePartFromInput(command.value, input.root)
           pendingImages = [...pendingImages, part]
-          output.write(`Attached image: ${imageLabel(part.source)}\n`)
+          write(`Attached image: ${imageLabel(part.source)}`, "Image")
         } catch (error) {
-          output.write(`${error instanceof Error ? error.message : String(error)}\n`)
+          write(error instanceof Error ? error.message : String(error), "Image")
         }
       }
     }
@@ -536,36 +552,37 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
   if (command.type === "skill") {
     if (command.action === "list") {
       const skills = await input.skills.available()
+      const lines: string[] = []
       for (const skill of skills) {
-        output.write(`${skill.id}\n  name: ${skill.name} — ${skill.description}\n`)
+        lines.push(`${skill.id}\n  name: ${skill.name} — ${skill.description}`)
       }
-      if (skills.length === 0) output.write("No skills found.\n")
+      write(skills.length === 0 ? "No skills found." : lines.join("\n"), "Skills")
     }
     if (command.action === "clear") {
       next.selectedSkills = []
       next.pendingSkillLoads = []
       resetRunner = true
-      output.write("Active skills cleared.\n")
+      write("Active skills cleared.", "Skills")
     }
     if (command.action === "use") {
       const skill = await input.skills.load(command.name)
-      if (!skill) output.write(`Skill not found: ${command.name}\n`)
+      if (!skill) write(`Skill not found: ${command.name}`, "Skills")
       else {
         next.selectedSkills = [...new Set([...next.selectedSkills, skill.id])]
         next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.id])]
         resetRunner = true
-        output.write(`Skill active: ${skill.id}\n`)
+        write(`Skill active: ${skill.id}`, "Skills")
       }
     }
     if (command.action === "remove") {
       const removed = next.selectedSkills.filter((id) => id === command.name || id.endsWith(`/${command.name}`) || id.endsWith(`:${command.name}`))
       if (removed.length === 0) {
-        output.write(`No active skill found: ${command.name}\n`)
+        write(`No active skill found: ${command.name}`, "Skills")
       } else {
         next.selectedSkills = next.selectedSkills.filter((id) => !removed.includes(id))
         next.pendingSkillLoads = (next.pendingSkillLoads ?? []).filter((id) => !removed.includes(id))
         resetRunner = true
-        output.write(`Skill removed: ${removed.join(", ")}\n`)
+        write(`Skill removed: ${removed.join(", ")}`, "Skills")
       }
     }
   }
@@ -601,9 +618,18 @@ function settingsText(settings: SessionSettings, images: ImagePart[]) {
   ].join("\n")
 }
 
-function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[]) {
+function writeCliText(tui: TuiRenderer | undefined, text: string, title: string) {
+  if (tui) {
+    tui.panel(title, text)
+    return
+  }
+  output.write(text.endsWith("\n") ? text : `${text}\n`)
+}
+
+function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[], tui?: TuiRenderer) {
   const pumpAbort = new AbortController()
-  output.write("Type /cancel to stop this run; other input will run next.\n")
+  if (tui) tui.runInputHint()
+  else output.write("Type /cancel to stop this run; other input will run next.\n")
   const done = (async () => {
     while (!pumpAbort.signal.aborted) {
       const line = await reader.nextLine("background", pumpAbort.signal)
@@ -611,13 +637,15 @@ function collectRunInput(reader: LineReader, activeAbort: AbortController, queue
       const text = line.trim()
       if (!text) continue
       if (isCancelInput(text)) {
-        output.write("Cancelling current run...\n")
+        if (tui) tui.cancelling()
+        else output.write("Cancelling current run...\n")
         activeAbort.abort()
         pumpAbort.abort()
         break
       }
       queuedPrompts.push(text)
-      output.write(`Queued next input: ${shortPrompt(text)}\n`)
+      if (tui) tui.queued(shortPrompt(text))
+      else output.write(`Queued next input: ${shortPrompt(text)}\n`)
     }
   })()
   return {
@@ -628,17 +656,19 @@ function collectRunInput(reader: LineReader, activeAbort: AbortController, queue
   }
 }
 
-async function question(reader: LineReader) {
-  return reader.question("> ")
+async function question(reader: LineReader, tui?: TuiRenderer) {
+  return reader.question(tui?.inputPrompt() ?? "> ")
 }
 
-function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () => void) {
+function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () => void, tui?: TuiRenderer) {
   return new PermissionService(defaultPermissionRules(mode), async (request) => {
-    const answer = (await questionWithPrompt(reader, permissionPrompt(request))).trim().toLowerCase()
+    const basePrompt = permissionPrompt(request)
+    const answer = (await questionWithPrompt(reader, tui?.permissionPrompt(request, basePrompt) ?? basePrompt)).trim().toLowerCase()
     if (answer === eofPrompt) return "reject"
     if (isCancelInput(answer)) {
       cancelRun?.()
-      output.write("Cancelling current run...\n")
+      if (tui) tui.cancelling()
+      else output.write("Cancelling current run...\n")
       return "reject"
     }
     if (answer === "a" || answer === "always") return "always"
@@ -679,7 +709,7 @@ Allow sandbox bypass for this command? [Y]es/[a]lways/[n]o`
   return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
 }
 
-function timelineEventHandler(timeline: TimelineRenderer) {
+function timelineEventHandler(timeline: RunRenderer) {
   return (event: RunUiEvent) => {
     timeline.event(event)
   }

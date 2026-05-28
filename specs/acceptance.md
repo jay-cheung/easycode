@@ -11,6 +11,8 @@
 - `easycode build --provider fake` creates `default` when the project has no saved sessions.
 - `easycode build --provider fake` prompts for an existing or new session when saved sessions exist.
 - `easycode build --session demo --provider fake` starts the named interactive session.
+- `easycode build --provider fake --tui` provides the same interactive capabilities as the plain CLI: session selection, slash commands, queued input, cancellation, permission prompts, plan approval, timeline events, settings changes, image attachment, skills, and saved sessions.
+- `easycode build --once "..." --provider fake --tui` renders the TUI shell and the normal run timeline without changing runner behavior.
 - `/sessions` lists saved sessions and marks the active one in interactive mode.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.
@@ -20,6 +22,8 @@
 - `/skill use <name>` persists active skill selection and requires one first-use `skill` tool load.
 - Skills expose title/description before full content is requested.
 - Context compaction preserves summary plus the most recent two user turns.
+- MCP and WebSearch both use explicit permission boundaries, structured citations, logger events, and eval fixtures before they become default retrieval sources.
+- LSP/AST indexing demonstrates an advantage over text search by resolving definitions/references and constraining edits to symbols rather than same-name text matches.
 
 ## Safety
 - Writes outside the project root fail.
