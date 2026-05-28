@@ -87,6 +87,7 @@ bun run src/cli.ts plan --provider fake
 /thinking on|off        enable or disable model thinking
 /effort <level>         set effort: low, medium, high, max
 /settings               show session settings
+/sessions               list saved sessions
 /cancel                 cancel the active run
 ```
 

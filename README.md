@@ -87,6 +87,7 @@ bun run src/cli.ts plan --provider fake
 /thinking on|off        开启或关闭模型 thinking
 /effort <level>         设置思考强度：low、medium、high、max
 /settings               查看当前会话设置
+/sessions               查看已保存会话
 /cancel                 取消正在运行的任务
 ```
 

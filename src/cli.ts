@@ -404,7 +404,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       if (!prompt) continue
       const command = parseSlashCommand(prompt)
       if (command.type !== "prompt") {
-        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService })
+        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session })
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
         if (changed.resetRunner) runner = undefined
@@ -476,12 +476,13 @@ async function selectSession(explicitSession: string | undefined, store: Session
   }
 }
 
-async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService }) {
+async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService; sessions?: SessionStore; currentSession?: string }) {
   const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
   let pendingImages = input.pendingImages
   let resetRunner = false
   if (command.type === "help") output.write(`${slashHelpText()}\n`)
   if (command.type === "settings") output.write(`${settingsText(next, pendingImages)}\n`)
+  if (command.type === "sessions") output.write(`${await sessionsText(input.sessions, input.currentSession)}\n`)
   if (command.type === "unknown") output.write(`Unknown command: /${command.name}. Use /help.\n`)
   if (command.type === "error") output.write(`${command.message}\n`)
   if (command.type === "model") {
@@ -569,6 +570,20 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
     }
   }
   return { settings: next, pendingImages, resetRunner }
+}
+
+async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined) {
+  if (!store) return "No session store is active."
+  const sessions = await store.list()
+  if (sessions.length === 0) return "No saved sessions."
+  return [
+    "Saved sessions:",
+    ...sessions.map((session, index) => {
+      const current = session.id === currentSession ? " (current)" : ""
+      const messages = session.messageCount === 1 ? "1 message" : `${session.messageCount} messages`
+      return `  ${index + 1}. ${session.id}${current} - ${messages}`
+    }),
+  ].join("\n")
 }
 
 function settingsText(settings: SessionSettings, images: ImagePart[]) {

@@ -11,6 +11,7 @@
 - `easycode build --provider fake` creates `default` when the project has no saved sessions.
 - `easycode build --provider fake` prompts for an existing or new session when saved sessions exist.
 - `easycode build --session demo --provider fake` starts the named interactive session.
+- `/sessions` lists saved sessions and marks the active one in interactive mode.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.
 - `/image` attaches an image to the next prompt only when the active provider supports images.

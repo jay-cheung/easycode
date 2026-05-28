@@ -2,6 +2,7 @@ export type SlashCommand =
   | { type: "prompt"; text: string }
   | { type: "help" }
   | { type: "settings" }
+  | { type: "sessions" }
   | { type: "image"; action: "add"; value: string }
   | { type: "image"; action: "clear" }
   | { type: "skill"; action: "list" }
@@ -23,6 +24,7 @@ export function parseSlashCommand(input: string): SlashCommand {
   if (!name) return { type: "help" }
   if (name === "help") return { type: "help" }
   if (name === "settings") return { type: "settings" }
+  if (name === "sessions" || name === "session") return { type: "sessions" }
   if (name === "image") {
     if (args[0]?.toLowerCase() === "clear") return { type: "image", action: "clear" }
     const value = args.join(" ")
@@ -71,6 +73,7 @@ export function slashHelpText() {
     "  /effort <level>         set thinking strength: low, medium, high, max",
     "  /thinking on|off        enable or disable model thinking",
     "  /settings               show current session settings",
+    "  /sessions               list saved sessions",
     "  //text                  send /text as a normal prompt",
   ].join("\n")
 }

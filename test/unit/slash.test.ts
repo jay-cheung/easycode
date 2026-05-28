@@ -9,6 +9,7 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/skill use demo")).toEqual({ type: "skill", action: "use", name: "demo" })
     expect(parseSlashCommand("/model openai gpt-5-mini")).toEqual({ type: "model", provider: "openai", model: "gpt-5-mini" })
     expect(parseSlashCommand("/effort max")).toEqual({ type: "effort", value: "max" })
+    expect(parseSlashCommand("/sessions")).toEqual({ type: "sessions" })
   })
 
   test("accepts the thingking typo as a thinking alias", () => {
