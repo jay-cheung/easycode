@@ -536,7 +536,7 @@ function explorationSummaryStep(maxSteps: number) {
 
 function explorationSummaryReadinessMessage(step: number, maxSteps: number) {
   return {
-    role: "system" as const,
+    role: "user" as const,
     content: [
       `Exploration checkpoint reached at step ${step}/${maxSteps}.`,
       "Before calling another tool, decide whether the information already gathered is enough to answer the user's request.",
