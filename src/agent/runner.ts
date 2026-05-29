@@ -1,7 +1,7 @@
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ProviderInputMessage, type ToolCall } from "../message"
 import { defaultPermissionRules, PermissionService } from "../permission"
-import { createProvider, ProviderError, textToolProtocolOutputToProviderEvents, type Provider, type ProviderName } from "../provider"
+import { createProvider, ProviderError, StreamXmlFilter, textToolProtocolOutputToProviderEvents, type Provider, type ProviderName } from "../provider"
 import { Sandbox } from "../sandbox"
 import { SkillService, type SkillServiceLike } from "../skill"
 import { InstructionService, type InstructionServiceLike } from "../instruction"
@@ -212,6 +212,7 @@ export class AgentRunner {
     const metricCall = startProviderMetricCall(input.providerMetrics)
     const currentText = () => textChunks.join("")
     const currentReasoning = () => reasoningChunks.join("")
+    const xmlFilter = new StreamXmlFilter()
     try {
       for await (const event of this.provider.stream({ mode: input.agent.mode, prompt: input.prompt, messages: input.messages, providerMessages: input.providerMessages, tools, signal: input.signal })) {
         observeProviderMetricEvent(input.providerMetrics, metricCall, event)
@@ -228,8 +229,11 @@ export class AgentRunner {
           stopProviderProgress()
           textChunks.push(event.text)
           if (emitDeltas) {
-            this.onEvent?.({ type: "text_delta", text: event.text })
-            this.onTextDelta?.(event.text)
+            const safeText = xmlFilter.feed(event.text)
+            if (safeText) {
+              this.onEvent?.({ type: "text_delta", text: safeText })
+              this.onTextDelta?.(safeText)
+            }
           }
         }
         if (event.type === "failure") {
@@ -246,6 +250,11 @@ export class AgentRunner {
           if (emitDeltas) this.onEvent?.({ type: "tool_call", call: event.call })
         }
         if (event.type === "usage" && observeContextUsage) this.context.observeUsage(event)
+      }
+      const leftover = xmlFilter.flush()
+      if (emitDeltas && leftover) {
+        this.onEvent?.({ type: "text_delta", text: leftover })
+        this.onTextDelta?.(leftover)
       }
       return this.extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }, emitDeltas)
     } catch (error) {

@@ -215,3 +215,83 @@ function coerceParameterValue(value: string): unknown {
   if (/^-?\d+\.\d+$/.test(value)) return Number.parseFloat(value)
   return value
 }
+
+const openTagRegex = /^<(?:[|｜]{2}DSML[|｜]{2})?(easycode_tool_call|tool_calls|invoke)\b/i
+
+const targetPrefixes = [
+  "<easycode_tool_call",
+  "<tool_calls",
+  "<invoke",
+  "<||dsml||tool_calls",
+  "<||dsml||invoke",
+  "<||dsml||",
+  "<｜｜dsml｜｜tool_calls",
+  "<｜｜dsml｜｜invoke",
+  "<｜｜dsml｜｜"
+]
+
+function isPartialOpenTag(str: string): boolean {
+  const lower = str.toLowerCase()
+  return targetPrefixes.some(p => p.startsWith(lower))
+}
+
+export class StreamXmlFilter {
+  private buffer = ""
+
+  feed(chunk: string): string {
+    this.buffer += chunk
+    let safeText = ""
+
+    while (true) {
+      const openIndex = this.buffer.indexOf("<")
+      if (openIndex === -1) {
+        safeText += this.buffer
+        this.buffer = ""
+        break
+      }
+
+      if (openIndex > 0) {
+        safeText += this.buffer.slice(0, openIndex)
+        this.buffer = this.buffer.slice(openIndex)
+      }
+
+      const match = this.buffer.match(openTagRegex)
+      if (match) {
+        const matchedOpening = match[1].toLowerCase()
+        let closeRegex: RegExp
+        if (matchedOpening === "easycode_tool_call") {
+          closeRegex = /<\/easycode_tool_call>/i
+        } else if (matchedOpening === "tool_calls") {
+          closeRegex = /<\/(?:[|｜]{2}DSML[|｜]{2})?tool_calls>/i
+        } else {
+          closeRegex = /<\/(?:[|｜]{2}DSML[|｜]{2})?invoke>/i
+        }
+
+        const closeMatch = this.buffer.match(closeRegex)
+        if (closeMatch) {
+          const closeIndex = closeMatch.index!
+          const closeLen = closeMatch[0].length
+          this.buffer = this.buffer.slice(closeIndex + closeLen)
+          continue
+        } else {
+          break
+        }
+      }
+
+      if (isPartialOpenTag(this.buffer)) {
+        break
+      }
+
+      safeText += "<"
+      this.buffer = this.buffer.slice(1)
+    }
+
+    return safeText
+  }
+
+  flush(): string {
+    const leftover = this.buffer
+    this.buffer = ""
+    return leftover
+  }
+}
