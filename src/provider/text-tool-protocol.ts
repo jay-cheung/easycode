@@ -6,13 +6,13 @@ import type { ToolDef } from "../tool"
 const toolCallPattern = /<easycode_tool_call\b([^>]*)>([\s\S]*?)<\/easycode_tool_call>/gi
 
 // Anthropic/Claude-style: <invoke name="tool_name">...<parameter name="key">value</parameter>...</invoke>
-const invokePattern = /<invoke\s+name\s*=\s*["']([^"']+)["'](?:\s+id\s*=\s*["']([^"']+)["'])?\s*>([\s\S]*?)<\/invoke>/gi
+const invokePattern = /<(?:[|｜]{2}DSML[|｜]{2})?invoke\s+name\s*=\s*["']([^"']+)["'](?:\s+id\s*=\s*["']([^"']+)["'])?\s*>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?invoke>/gi
 
 // Outer wrapper that may contain multiple <invoke> blocks
-const toolCallsBlockPattern = /<tool_calls>([\s\S]*?)<\/tool_calls>/gi
+const toolCallsBlockPattern = /<(?:[|｜]{2}DSML[|｜]{2})?tool_calls>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?tool_calls>/gi
 
 // Individual <parameter name="key" ...>value</parameter> inside an <invoke> block
-const parameterPattern = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi
+const parameterPattern = /<(?:[|｜]{2}DSML[|｜]{2})?parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?parameter>/gi
 
 export class TextToolProtocolProvider implements Provider {
   readonly name: string

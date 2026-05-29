@@ -606,6 +606,22 @@ describe("provider", () => {
       { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "README.md" }, rawArguments: '{"filePath":"README.md"}' } },
     ])
   })
+
+  test("text tool protocol parses DSML-style wrapped XML", () => {
+    const input = '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="rg_search">\n<｜｜DSML｜｜parameter name="query" string="true">parseArgs\\("</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="dir" string="true">test/unit/cli.test.ts</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="maxResults" string="false">30</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "tool_call", call: { id: "call_text_1", name: "rg_search", input: { query: 'parseArgs\\("', dir: "test/unit/cli.test.ts", maxResults: 30 }, rawArguments: '{"query":"parseArgs\\\\(\\"","dir":"test/unit/cli.test.ts","maxResults":30}' } },
+    ])
+  })
+
+  test("text tool protocol parses DSML-style with half-width pipes", () => {
+    const input = '<||DSML||invoke name="read">\n<||DSML||parameter name="filePath">README.md</||DSML||parameter>\n</||DSML||invoke>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "tool_call", call: { id: "call_text_1", name: "read", input: { filePath: "README.md" }, rawArguments: '{"filePath":"README.md"}' } },
+    ])
+  })
 })
 
 function sseResponse(events: unknown[]) {

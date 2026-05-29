@@ -997,4 +997,31 @@ describe("agent integration", () => {
     expect(result.usedTools).toEqual(["list"])
     await rm(root, { recursive: true, force: true })
   })
+
+  test("extracts DSML-style XML tool calls from text fallback", async () => {
+    const root = await fixture()
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "text_delta",
+            text: '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="read">\n<｜｜DSML｜｜parameter name="filePath" string="true">src/add.ts</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>',
+          }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Read completed." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Read file", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read"])
+    expect(result.text).toBe("Read completed.")
+    await rm(root, { recursive: true, force: true })
+  })
 })
