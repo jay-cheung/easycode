@@ -86,6 +86,7 @@ bun run src/cli.ts build --provider fake --tui
 /image <path-or-url>    给下一轮 prompt 附加图片
 /skill list             查看可用技能
 /skill use <name>       启用技能
+/skill remove <name>    移除已启用的技能
 /thinking on|off        开启或关闭模型 thinking
 /effort <level>         设置思考强度：low、medium、high、max
 /settings               查看当前会话设置
@@ -93,9 +94,15 @@ bun run src/cli.ts build --provider fake --tui
 /cancel                 取消正在运行的任务
 ```
 
-## 检索源
+## 数据源配置
 
-第三方上下文先以只读配置进入工具系统，便于测试权限、引用和日志行为。
+数据源为 AI 提供额外的上下文（文档、代码规范、搜索结果、常用命令），以只读 JSON 文件配置在项目 `.easycode/` 目录下，**无需重启进程**即可生效。
+
+---
+
+### MCP（结构化知识源）
+
+`.easycode/mcp.json` —— 将常用文档、架构说明等预配为结构化条目，供对话中引用。
 
 ```json
 {
@@ -103,24 +110,176 @@ bun run src/cli.ts build --provider fake --tui
     {
       "name": "docs",
       "resources": [
-        { "uri": "doc://example", "title": "Example", "description": "short summary", "text": "full text" }
+        { "uri": "doc://api-guide", "title": "API 指南", "description": "项目 API 使用说明", "text": "详细的文档正文内容..." }
       ]
     }
   ]
 }
 ```
 
-保存为 `.easycode/mcp.json` 后可用 `mcp_list_resources` 和 `mcp_read_resource`。公开网页证据可保存到 `.easycode/websearch.json`：
+保存后可用以下工具：
+- **mcp_list_resources** — 列出所有配置的 MCP 资源
+- **mcp_read_resource** — 按 uri 和 server 读取某条资源正文
+
+---
+
+### Web Search（本地预置搜索结果）
+
+`.easycode/websearch.json` —— 把常见的搜索结果预配为静态数据，**不发起实时网络请求**。
 
 ```json
 {
   "results": [
-    { "url": "https://example.com", "title": "Example", "snippet": "quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
+    { "url": "https://example.com", "title": "Example", "snippet": "引用摘要", "retrievedAt": "2026-05-28T00:00:00.000Z" }
   ]
 }
 ```
 
-`web_search` 默认读取 fixture，不默认发起实时网络请求。
+保存后通过 `web_search` 工具按关键词匹配检索。结果按相关度排序返回，默认上限 5 条。
+
+---
+
+### Connector（本地命令封装）
+
+`.easycode/connectors.json` —— 把常用 shell 命令封装为工具，在对话中按需调用，每次执行需授权。
+
+```json
+{
+  "tools": [
+    {
+      "name": "lint",
+      "description": "运行 linter 检查代码",
+      "command": "bun run lint"
+    },
+    {
+      "name": "test",
+      "description": "运行测试",
+      "command": "bun test"
+    }
+  ]
+}
+```
+
+保存后可用以下工具：
+- **connector_list** — 列出所有可用的 connector
+- **connector_call <name>** — 执行指定的 shell 命令
+
+---
+
+### Skill（行为指令注入）
+
+Skill 是 markdown 文件，按以下优先级搜索（同名后面的覆盖前面的）：
+
+| 搜索目录 | 范围 |
+|---|---|
+| `.agent/skills/` | 项目级 |
+| `.easycode/skills/` | 项目级 |
+| `~/.agent/skills/` | 用户全局 |
+| `~/.easycode/skills/` | 用户全局 |
+
+每个 skill 文件格式如下（文件名为任意名称，支持子目录）：
+
+```markdown
+---
+name: code-review
+description: 代码审查规则和最佳实践
+---
+
+## 审查原则
+
+- 关注可维护性 > 性能优化
+- ...
+```
+
+保存后在交互模式下通过 slash 命令管理：
+- `/skill list` — 列出所有可用 skill
+- `/skill use code-review` — 在当前会话启用 skill
+- `/skill remove code-review` — 移除已启用的 skill
+- `/skill clear` — 清空所有已启用 skill
+
+启用后，skill 完整内容注入到对话上下文中，影响模型的回复风格和规则遵循。
+
+## CLI 命令与配置
+
+### 主命令
+
+| 命令 | 用途 |
+|---|---|
+| `easycode build [options]` | 执行模式：分析 → 改代码 → 验证 |
+| `easycode plan [options]` | 计划模式：只读分析，输出方案，不修改文件 |
+
+### 命令行选项
+
+| 选项 | 说明 |
+|---|---|
+| `--once <prompt>` | 单次任务模式，执行完成后退出 |
+| `--provider <name>` | 指定 AI provider（见下方列表） |
+| `--model <id>` | 指定模型 ID（覆盖 provider 默认模型） |
+| `--max-tokens <n>` | 每次 API 调用的最大 token 数（默认 32000） |
+| `--max-steps <n>` | 最大执行步数（默认 66） |
+| `--root <path>` | 项目根目录（默认当前目录） |
+| `--session <id>` | 加载指定 session |
+| `--logger` | 输出详细日志 |
+| `--tui` | 启动 TUI 交互界面 |
+
+**示例：**
+```bash
+easycode build --provider deepseek
+easycode plan --once "分析项目结构" --provider openai
+easycode build --provider deepseek --tui
+easycode build --once "修复失败的测试" --provider openai --max-steps 20
+```
+
+### 交互式 Slash 命令
+
+在交互模式下通过 `/` 前缀调用：
+
+| 命令 | 功能 |
+|---|---|
+| `/model <provider> [id]` | 切换 provider 或模型 |
+| `/image <path-or-url>` | 给下一轮 prompt 附加图片 |
+| `/image clear` | 清除待发送图片 |
+| `/skill list` | 列出可用技能 |
+| `/skill use <name>` | 启用指定技能 |
+| `/skill remove <name>` | 移除已启用的技能 |
+| `/skill clear` | 清空所有已启用技能 |
+| `/thinking on\|off` | 开启或关闭模型 thinking |
+| `/effort <level>` | 设置思考强度：`low`、`medium`、`high`、`max` |
+| `/settings` | 查看当前会话设置 |
+| `/sessions` | 查看已保存会话 |
+| `//text` | 将 `/text` 作为普通 prompt 发送 |
+
+### 环境变量 / `.env` 配置
+
+在项目根目录的 `.env` 文件中配置凭据，或通过 shell 环境变量提供（shell 变量优先级更高）。
+
+```env
+# Provider 选择（若不传 --provider 则读取此项）
+EASYCODE_PROVIDER=deepseek
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+# 默认模型：gpt-4o
+
+# DeepSeek
+DEEPSEEK_API_KEY=sk-...
+# 默认模型：deepseek-chat
+
+# OpenAI 兼容接口
+OPENAI_COMPAT_API_KEY=sk-...
+OPENAI_COMPAT_API_URL=https://your-provider.example/v1/chat/completions
+OPENAI_COMPAT_MODEL=your-model
+```
+
+### 可用 Provider
+
+| Provider 名称 | 说明 |
+|---|---|
+| `openai` | OpenAI API（默认模型 gpt-4o） |
+| `deepseek` | DeepSeek API（默认模型 deepseek-chat） |
+| `openai-compatible` | 任何 OpenAI 兼容接口 |
+| `fake` | 离线模拟（测试/开发用） |
+| `simulated` | 同 fake，模拟模式 |
 
 ## 验证
 

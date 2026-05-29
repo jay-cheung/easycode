@@ -86,6 +86,7 @@ bun run src/cli.ts build --provider fake --tui
 /image <path-or-url>    attach an image to the next prompt
 /skill list             list available skills
 /skill use <name>       enable a skill
+/skill remove <name>    remove an enabled skill
 /thinking on|off        enable or disable model thinking
 /effort <level>         set effort: low, medium, high, max
 /settings               show session settings
@@ -93,9 +94,15 @@ bun run src/cli.ts build --provider fake --tui
 /cancel                 cancel the active run
 ```
 
-## Retrieval Sources
+## Data Source Configuration
 
-Third-party context starts as read-only configuration so permission, citation, and logging behavior can be tested before live integrations are enabled.
+Data sources provide extra context (docs, code standards, search results, common commands) to the AI. They are configured as read-only JSON files under `.easycode/` in your project root. **No restart is required** — changes take effect immediately.
+
+---
+
+### MCP (Structured Knowledge Sources)
+
+`.easycode/mcp.json` — Bundle frequently-used documentation, architecture notes, or specs into structured resources for on-demand reference during conversations.
 
 ```json
 {
@@ -103,24 +110,177 @@ Third-party context starts as read-only configuration so permission, citation, a
     {
       "name": "docs",
       "resources": [
-        { "uri": "doc://example", "title": "Example", "description": "short summary", "text": "full text" }
+        { "uri": "doc://api-guide", "title": "API Guide", "description": "Project API usage", "text": "Full documentation text..." }
       ]
     }
   ]
 }
 ```
 
-Save this as `.easycode/mcp.json` and use `mcp_list_resources` or `mcp_read_resource`. Public web evidence can be saved to `.easycode/websearch.json`:
+Available tools:
+- **mcp_list_resources** — list all configured MCP resources
+- **mcp_read_resource** — read a resource by uri and server
+
+---
+
+### Web Search (Local Pre-baked Results)
+
+`.easycode/websearch.json` — Pre-populate search results as static fixtures. **Does not perform live network requests.**
 
 ```json
 {
   "results": [
-    { "url": "https://example.com", "title": "Example", "snippet": "quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
+    { "url": "https://example.com", "title": "Example", "snippet": "Quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
   ]
 }
 ```
 
-`web_search` reads fixtures by default and does not perform live network requests by default.
+Available tool:
+- **web_search** — keyword-matches against configured results, returns top-ranked (default limit: 5)
+
+---
+
+### Connector (Local Command Wrappers)
+
+`.easycode/connectors.json` — Wrap common shell commands as tools that can be invoked during conversation. Each execution requires approval.
+
+```json
+{
+  "tools": [
+    {
+      "name": "lint",
+      "description": "Run linter to check code",
+      "command": "bun run lint"
+    },
+    {
+      "name": "test",
+      "description": "Run tests",
+      "command": "bun test"
+    }
+  ]
+}
+```
+
+Available tools:
+- **connector_list** — list all configured connectors
+- **connector_call <name>** — execute the specified shell command
+
+---
+
+### Skill (Behavior Instruction Injection)
+
+Skills are markdown files searched in the following order (later directories override earlier ones):
+
+| Search path | Scope |
+|---|---|
+| `.agent/skills/` | Project |
+| `.easycode/skills/` | Project |
+| `~/.agent/skills/` | User global |
+| `~/.easycode/skills/` | User global |
+
+Each skill file follows this format (file name is arbitrary, subdirectories supported):
+
+```markdown
+---
+name: code-review
+description: Code review rules and best practices
+---
+
+## Review principles
+
+- Prefer maintainability over micro-optimizations
+- ...
+```
+
+Manage skills at runtime with slash commands:
+- `/skill list` — list all available skills
+- `/skill use code-review` — enable a skill for this session
+- `/skill remove code-review` — remove an enabled skill
+- `/skill clear` — disable all skills
+
+When enabled, the full skill content is injected into the conversation context, influencing the model's response style and rule adherence.
+
+## CLI Commands & Configuration
+
+### Main Commands
+
+| Command | Description |
+|---|---|
+| `easycode build [options]` | Build mode: analyze → edit → verify |
+| `easycode plan [options]` | Plan mode: read-only analysis, output plan, no file changes |
+
+### CLI Options
+
+| Option | Description |
+|---|---|
+| `--once <prompt>` | Single task mode, exits after completion |
+| `--provider <name>` | Specify AI provider (see list below) |
+| `--model <id>` | Specify model ID (overrides provider default) |
+| `--max-tokens <n>` | Max tokens per API call (default 32000) |
+| `--max-steps <n>` | Max execution steps (default 66) |
+| `--root <path>` | Project root directory (default: current dir) |
+| `--session <id>` | Load a specific session |
+| `--logger` | Output detailed logs |
+| `--tui` | Start TUI interactive interface |
+
+**Examples:**
+```bash
+easycode build --provider deepseek
+easycode plan --once "Analyze project structure" --provider openai
+easycode build --provider deepseek --tui
+easycode build --once "Fix failing tests" --provider openai --max-steps 20
+```
+
+### Interactive Slash Commands
+
+Type `/` in interactive mode:
+
+| Command | Description |
+|---|---|
+| `/model <provider> [id]` | Switch provider or model |
+| `/image <path-or-url>` | Attach an image to the next prompt |
+| `/image clear` | Clear pending images |
+| `/skill list` | List available skills |
+| `/skill use <name>` | Enable a skill |
+| `/skill remove <name>` | Remove an enabled skill |
+| `/skill clear` | Disable all skills |
+| `/thinking on\|off` | Enable or disable model thinking |
+| `/effort <level>` | Set effort: `low`, `medium`, `high`, `max` |
+| `/settings` | Show current session settings |
+| `/sessions` | List saved sessions |
+| `//text` | Send `/text` as a normal prompt |
+
+### Environment Variables / `.env`
+
+Configure credentials in `.env` at the project root, or via shell environment variables (shell takes precedence).
+
+```env
+# Provider selection (fallback if --provider not set)
+EASYCODE_PROVIDER=deepseek
+
+# OpenAI
+OPENAI_API_KEY=sk-...
+# Default model: gpt-4o
+
+# DeepSeek
+DEEPSEEK_API_KEY=sk-...
+# Default model: deepseek-chat
+
+# OpenAI-Compatible
+OPENAI_COMPAT_API_KEY=sk-...
+OPENAI_COMPAT_API_URL=https://your-provider.example/v1/chat/completions
+OPENAI_COMPAT_MODEL=your-model
+```
+
+### Available Providers
+
+| Provider | Description |
+|---|---|
+| `openai` | OpenAI API (default model gpt-4o) |
+| `deepseek` | DeepSeek API (default model deepseek-chat) |
+| `openai-compatible` | Any OpenAI-compatible API |
+| `fake` | Offline simulation (testing/development) |
+| `simulated` | Same as fake, simulation mode |
 
 ## Verify
 

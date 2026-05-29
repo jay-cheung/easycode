@@ -68,6 +68,7 @@ export function slashHelpText() {
     "  /image clear            clear pending images",
     "  /skill list             list available skills",
     "  /skill use <name>       keep a skill active for this session",
+    "  /skill remove <name>    remove one active skill",
     "  /skill clear            clear active skills",
     "  /model <provider> [id]  switch provider/model",
     "  /effort <level>         set thinking strength: low, medium, high, max",
