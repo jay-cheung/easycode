@@ -9,7 +9,8 @@ export type SlashCommand =
   | { type: "skill"; action: "use"; name: string }
   | { type: "skill"; action: "remove"; name: string }
   | { type: "skill"; action: "clear" }
-  | { type: "model"; provider: string; model?: string }
+  | { type: "model"; model: string }
+  | { type: "provider"; name: string }
   | { type: "effort"; value: string }
   | { type: "thinking"; value: "on" | "off"; aliasUsed?: boolean }
   | { type: "unknown"; name: string }
@@ -45,9 +46,14 @@ export function parseSlashCommand(input: string): SlashCommand {
     return { type: "skill", action: "use", name: args.join(" ") }
   }
   if (name === "model") {
+    const model = args.join(" ")
+    if (!model) return { type: "error", message: "/model requires a model name" }
+    return { type: "model", model }
+  }
+  if (name === "provider") {
     const provider = args[0]
-    if (!provider) return { type: "error", message: "/model requires a provider name" }
-    return { type: "model", provider, model: args[1] }
+    if (!provider) return { type: "error", message: "/provider requires a provider name" }
+    return { type: "provider", name: provider }
   }
   if (name === "effort") {
     const value = args[0]?.toLowerCase()
@@ -70,7 +76,8 @@ export function slashHelpText() {
     "  /skill use <name>       keep a skill active for this session",
     "  /skill remove <name>    remove one active skill",
     "  /skill clear            clear active skills",
-    "  /model <provider> [id]  switch provider/model",
+    "  /model <name>           switch model (e.g. gpt-4o)",
+    "  /provider <name>        switch provider (e.g. openai)",
     "  /effort <level>         set thinking strength: low, medium, high, max",
     "  /thinking on|off        enable or disable model thinking",
     "  /settings               show current session settings",

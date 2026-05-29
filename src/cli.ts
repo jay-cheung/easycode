@@ -515,94 +515,115 @@ async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt
   let resetRunner = false
   input.tui?.slashCommand(command.type)
   const write = (text: string, title = "Command") => writeCliText(input.tui, text, title)
-  if (command.type === "help") write(slashHelpText(), "Help")
-  if (command.type === "settings") write(settingsText(next, pendingImages), "Settings")
-  if (command.type === "sessions") write(await sessionsText(input.sessions, input.currentSession), "Sessions")
-  if (command.type === "unknown") write(`Unknown command: /${command.name}. Use /help.`, "Command")
-  if (command.type === "error") write(command.message, "Command")
-  if (command.type === "model") {
-    if (!hasProvider(command.provider)) write(`Unknown provider: ${command.provider}. Available providers: ${listProviders().join(", ")}`, "Model")
-    else {
-      next.provider = command.provider
+  switch (command.type) {
+    case "help":
+      write(slashHelpText(), "Help")
+      break
+    case "settings":
+      write(settingsText(next, pendingImages), "Settings")
+      break
+    case "sessions":
+      write(await sessionsText(input.sessions, input.currentSession), "Sessions")
+      break
+    case "unknown":
+      write(`Unknown command: /${command.name}. Use /help.`, "Command")
+      break
+    case "error":
+      write(command.message, "Command")
+      break
+    case "model":
       next.model = command.model
       resetRunner = true
-      write(`Model set to ${next.provider}${next.model ? ` ${next.model}` : ""}`, "Model")
-    }
-  }
-  if (command.type === "thinking") {
-    const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-    if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) write(`Provider ${next.provider} does not support thinking controls.`, "Thinking")
-    else {
-      next.thinking = command.value === "on"
-      resetRunner = true
-      write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.`, "Thinking")
-    }
-  }
-  if (command.type === "effort") {
-    if (!isReasoningEffort(command.value)) write("/effort requires low, medium, high, or max", "Effort")
-    else {
-      const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) write(`Provider ${next.provider} does not support effort controls.`, "Effort")
+      write(`Model set to ${next.model}`, "Model")
+      break
+    case "provider":
+      if (!hasProvider(command.name)) write(`Unknown provider: ${command.name}. Available providers: ${listProviders().join(", ")}`, "Provider")
       else {
-        next.effort = command.value
+        next.provider = command.name
+        next.model = undefined
         resetRunner = true
-        write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.`, "Effort")
+        write(`Provider set to ${next.provider}`, "Provider")
       }
-    }
-  }
-  if (command.type === "image") {
-    if (command.action === "clear") {
-      pendingImages = []
-      write("Pending images cleared.", "Image")
-    } else {
+      break
+    case "thinking": {
       const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.`, "Image")
+      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) write(`Provider ${next.provider} does not support thinking controls.`, "Thinking")
       else {
-        try {
-          const part = await imagePartFromInput(command.value, input.root)
-          pendingImages = [...pendingImages, part]
-          write(`Attached image: ${imageLabel(part.source)}`, "Image")
-        } catch (error) {
-          write(error instanceof Error ? error.message : String(error), "Image")
+        next.thinking = command.value === "on"
+        resetRunner = true
+        write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.`, "Thinking")
+      }
+      break
+    }
+    case "effort": {
+      if (!isReasoningEffort(command.value)) write("/effort requires low, medium, high, or max", "Effort")
+      else {
+        const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
+        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) write(`Provider ${next.provider} does not support effort controls.`, "Effort")
+        else {
+          next.effort = command.value
+          resetRunner = true
+          write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.`, "Effort")
         }
       }
+      break
     }
-  }
-  if (command.type === "skill") {
-    if (command.action === "list") {
-      const skills = await input.skills.available()
-      const lines: string[] = []
-      for (const skill of skills) {
-        lines.push(`${skill.id}\n  name: ${skill.name} — ${skill.description}`)
-      }
-      write(skills.length === 0 ? "No skills found." : lines.join("\n"), "Skills")
-    }
-    if (command.action === "clear") {
-      next.selectedSkills = []
-      next.pendingSkillLoads = []
-      resetRunner = true
-      write("Active skills cleared.", "Skills")
-    }
-    if (command.action === "use") {
-      const skill = await input.skills.load(command.name)
-      if (!skill) write(`Skill not found: ${command.name}`, "Skills")
-      else {
-        next.selectedSkills = [...new Set([...next.selectedSkills, skill.id])]
-        next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.id])]
-        resetRunner = true
-        write(`Skill active: ${skill.id}`, "Skills")
-      }
-    }
-    if (command.action === "remove") {
-      const removed = next.selectedSkills.filter((id) => id === command.name || id.endsWith(`/${command.name}`) || id.endsWith(`:${command.name}`))
-      if (removed.length === 0) {
-        write(`No active skill found: ${command.name}`, "Skills")
+    case "image": {
+      if (command.action === "clear") {
+        pendingImages = []
+        write("Pending images cleared.", "Image")
       } else {
-        next.selectedSkills = next.selectedSkills.filter((id) => !removed.includes(id))
-        next.pendingSkillLoads = (next.pendingSkillLoads ?? []).filter((id) => !removed.includes(id))
-        resetRunner = true
-        write(`Skill removed: ${removed.join(", ")}`, "Skills")
+        const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
+        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.`, "Image")
+        else {
+          try {
+            const part = await imagePartFromInput(command.value, input.root)
+            pendingImages = [...pendingImages, part]
+            write(`Attached image: ${imageLabel(part.source)}`, "Image")
+          } catch (error) {
+            write(error instanceof Error ? error.message : String(error), "Image")
+          }
+        }
       }
+      break
+    }
+    case "skill": {
+      if (command.action === "list") {
+        const skills = await input.skills.available()
+        const lines: string[] = []
+        for (const skill of skills) {
+          lines.push(`${skill.id}\n  name: ${skill.name} — ${skill.description}`)
+        }
+        write(skills.length === 0 ? "No skills found." : lines.join("\n"), "Skills")
+      }
+      if (command.action === "clear") {
+        next.selectedSkills = []
+        next.pendingSkillLoads = []
+        resetRunner = true
+        write("Active skills cleared.", "Skills")
+      }
+      if (command.action === "use") {
+        const skill = await input.skills.load(command.name)
+        if (!skill) write(`Skill not found: ${command.name}`, "Skills")
+        else {
+          next.selectedSkills = [...new Set([...next.selectedSkills, skill.id])]
+          next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.id])]
+          resetRunner = true
+          write(`Skill active: ${skill.id}`, "Skills")
+        }
+      }
+      if (command.action === "remove") {
+        const removed = next.selectedSkills.filter((id) => id === command.name || id.endsWith(`/${command.name}`) || id.endsWith(`:${command.name}`))
+        if (removed.length === 0) {
+          write(`No active skill found: ${command.name}`, "Skills")
+        } else {
+          next.selectedSkills = next.selectedSkills.filter((id) => !removed.includes(id))
+          next.pendingSkillLoads = (next.pendingSkillLoads ?? []).filter((id) => !removed.includes(id))
+          resetRunner = true
+          write(`Skill removed: ${removed.join(", ")}`, "Skills")
+        }
+      }
+      break
     }
   }
   return { settings: next, pendingImages, resetRunner }

@@ -7,9 +7,16 @@ describe("slash commands", () => {
     expect(parseSlashCommand("//help")).toEqual({ type: "prompt", text: "/help" })
     expect(parseSlashCommand("/image screenshot.png")).toEqual({ type: "image", action: "add", value: "screenshot.png" })
     expect(parseSlashCommand("/skill use demo")).toEqual({ type: "skill", action: "use", name: "demo" })
-    expect(parseSlashCommand("/model openai gpt-5-mini")).toEqual({ type: "model", provider: "openai", model: "gpt-5-mini" })
+    expect(parseSlashCommand("/model gpt-5-mini")).toEqual({ type: "model", model: "gpt-5-mini" })
+    expect(parseSlashCommand("/model gpt-4o with spaces")).toEqual({ type: "model", model: "gpt-4o with spaces" })
+    expect(parseSlashCommand("/provider openai")).toEqual({ type: "provider", name: "openai" })
     expect(parseSlashCommand("/effort max")).toEqual({ type: "effort", value: "max" })
     expect(parseSlashCommand("/sessions")).toEqual({ type: "sessions" })
+  })
+
+  test("returns error for model and provider with no args", () => {
+    expect(parseSlashCommand("/model")).toEqual({ type: "error", message: "/model requires a model name" })
+    expect(parseSlashCommand("/provider")).toEqual({ type: "error", message: "/provider requires a provider name" })
   })
 
   test("accepts the thingking typo as a thinking alias", () => {
