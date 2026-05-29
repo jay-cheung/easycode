@@ -1,10 +1,11 @@
 import path from "node:path"
 import { mkdirSync, readdirSync, unlinkSync } from "node:fs"
+import { easycodeDir } from "./easycode-path"
 
 const MAX_PLANS_PER_SESSION = 20
 
 export function planStoreDir(root: string, sessionId: string): string {
-  return path.join(root, ".easycode", "plans", safePlanSegment(sessionId))
+  return path.join(easycodeDir(root), "plans", safePlanSegment(sessionId))
 }
 
 export function safePlanSegment(input: string): string {

@@ -1,5 +1,6 @@
 import path from "node:path"
 import { appendFileSync, mkdirSync } from "node:fs"
+import { easycodeDir } from "./easycode-path"
 
 export type LogEventType = "state" | "data" | "context" | "provider" | "tool" | "error"
 
@@ -25,7 +26,7 @@ export function emitLog(logger: Logger | undefined, event: Omit<LogEvent, "at">)
 export function createLogger(options: LoggerOptions = {}): Logger {
   const root = options.root ?? process.cwd()
   const session = safeLogSegment(options.session ?? "default")
-  const dir = path.join(root, ".easycode", "logs", "sessions")
+  const dir = path.join(easycodeDir(root), "logs", "sessions")
   const filePath = path.join(dir, `${session}.jsonl`)
   const transcriptFilePath = path.join(dir, `${session}.txt`)
   mkdirSync(dir, { recursive: true })

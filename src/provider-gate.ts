@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
+import { easycodeDir } from "./easycode-path"
 import { runCacheBenchmark } from "./cache-benchmark"
 import { loadEnvFile, missingProviderEnv } from "./cli"
 import { runEval, type EvalResult } from "./eval"
@@ -68,7 +69,7 @@ export async function runProviderGate(options: ProviderGateOptions = {}) {
     providers: providerResults,
   }
 
-  const reportDir = path.resolve(root, options.reportDir ?? ".easycode/reports/provider-gate")
+  const reportDir = path.resolve(root, options.reportDir ?? path.join(easycodeDir(root), "reports/provider-gate"))
   const paths = options.writeReport === false ? undefined : await writeGateReport(report, reportDir)
   return { report, paths }
 }

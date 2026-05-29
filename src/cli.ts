@@ -110,6 +110,9 @@ export function parseArgs(argv: string[]) {
   const maxStepsIndex = normalizedArgv.indexOf("--max-steps")
   const once = normalizedArgv.includes("--once")
   const logger = normalizedArgv.includes("--logger")
+  if (logger) {
+    process.env.EASYCODE_LOGGER = "true"
+  }
   const tui = normalizedArgv.includes("--tui")
   const providerExplicit = providerIndex !== -1
   const rawProvider = providerIndex === -1 ? "fake" : normalizedArgv[providerIndex + 1]

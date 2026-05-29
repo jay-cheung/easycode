@@ -1,6 +1,7 @@
 import path from "node:path"
 import os from "node:os"
 import { readdir } from "node:fs/promises"
+import { easycodeDir } from "./easycode-path"
 
 export type SkillInfo = {
   id: string
@@ -55,7 +56,7 @@ export class SkillService implements SkillServiceLike {
     this.projectRoot = projectRoot
     this.roots = roots ?? [
       path.join(projectRoot, ".agent", "skills"),
-      path.join(projectRoot, ".easycode", "skills"),
+      path.join(easycodeDir(projectRoot), "skills"),
       path.join(os.homedir(), ".agent", "skills"),
       path.join(os.homedir(), ".easycode", "skills"),
     ]

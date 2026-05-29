@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
+import { easycodeDir } from "./easycode-path"
 
 export type ProjectMemoryRecord = {
   id: string
@@ -18,7 +19,7 @@ export class ProjectMemoryStore {
   readonly filePath: string
 
   constructor(root: string) {
-    this.filePath = path.join(root, ".easycode", "memory.json")
+    this.filePath = path.join(easycodeDir(root), "memory.json")
   }
 
   async list() {

@@ -3,6 +3,7 @@ import { mkdir, readdir, stat } from "node:fs/promises"
 import type { Sandbox } from "../../sandbox"
 import { clampInt } from "../../utils/math"
 import { defaultReadLineLimit, ignoredDirs, repoMapCachePath, repoMapGeneratorVersion } from "./constants"
+import { easycodeDir } from "../../easycode-path"
 import { defaultRunner, firstLine, getRgPath } from "./commands"
 import { definitionPatterns, escapeRegExp, extensionsForLanguage, fileTypeArgs, languageToFileType, normalizeMaxResults } from "./language"
 import { parseAstGrepJson, parseRgJson, uniqueSortedResults } from "./parsing"
@@ -107,8 +108,9 @@ export class CliCodeNavigator implements CodeNavigator {
   async repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean; query?: string }) {
     const dir = this.relativeDir(input.dir)
     const maxFiles = clampInt(input.maxFiles ?? 200, 1, 2_000)
-    const cachePath = this.sandbox.resolve(repoMapCachePath)
-    const cacheIgnored = await projectIgnoresEasyCode(this.sandbox.root)
+    const cachePath = path.join(easycodeDir(this.sandbox.root), "cache", "repo-map.json")
+    const resolvedEasycodeDir = easycodeDir(this.sandbox.root)
+    const cacheIgnored = !resolvedEasycodeDir.startsWith(this.sandbox.root) || (await projectIgnoresEasyCode(this.sandbox.root))
     const toolVersions = await this.toolVersions()
     const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
     const index = await this.codeIndexFromFingerprint({ dir, files: fingerprint.files, toolVersions, useCache: input.useCache, gitIgnored: cacheIgnored })
@@ -146,7 +148,8 @@ export class CliCodeNavigator implements CodeNavigator {
   private async codeIndex(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean }): Promise<CodeIndexResult> {
     const dir = this.relativeDir(input.dir)
     const maxFiles = clampInt(input.maxFiles ?? 200, 1, 2_000)
-    const cacheIgnored = await projectIgnoresEasyCode(this.sandbox.root)
+    const resolvedEasycodeDir = easycodeDir(this.sandbox.root)
+    const cacheIgnored = !resolvedEasycodeDir.startsWith(this.sandbox.root) || (await projectIgnoresEasyCode(this.sandbox.root))
     const toolVersions = await this.toolVersions()
     const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
     return this.codeIndexFromFingerprint({ dir, files: fingerprint.files, toolVersions, useCache: input.useCache, gitIgnored: cacheIgnored })

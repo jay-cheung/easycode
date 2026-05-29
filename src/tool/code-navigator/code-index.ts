@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises"
 import * as ts from "typescript"
 import type { Sandbox } from "../../sandbox"
 import { codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
+import { easycodeDir } from "../../easycode-path"
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
 import { uniqueSortedResults } from "./parsing"
 import type { CallGraphDirection, CallGraphResult, CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
@@ -52,7 +53,7 @@ export async function codeIndex(input: {
   useCache?: boolean
   gitIgnored: boolean
 }) {
-  const cachePath = input.sandbox.resolve(codeIndexCachePath)
+  const cachePath = path.join(easycodeDir(input.sandbox.root), "cache", "code-index", "index.json")
   const cached = input.useCache === false ? undefined : await readCachedCodeIndex(cachePath)
   if (input.useCache !== false) {
     if (cached && codeIndexCacheValid(cached, {

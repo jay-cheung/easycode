@@ -1,6 +1,7 @@
 import path from "node:path"
 import { z } from "zod"
 import type { Sandbox } from "./sandbox"
+import { easycodeDir } from "./easycode-path"
 
 const ConnectorTool = z.object({
   name: z.string(),
@@ -18,7 +19,7 @@ export class ConnectorService {
   readonly configPath: string
 
   constructor(root: string) {
-    this.configPath = path.join(root, ".easycode", "connectors.json")
+    this.configPath = path.join(easycodeDir(root), "connectors.json")
   }
 
   async list() {

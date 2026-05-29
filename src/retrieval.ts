@@ -1,5 +1,6 @@
 import path from "node:path"
 import { z } from "zod"
+import { easycodeDir } from "./easycode-path"
 
 const McpResource = z.object({
   uri: z.string(),
@@ -45,7 +46,7 @@ export class McpSourceService {
   readonly configPath: string
 
   constructor(root: string) {
-    this.configPath = path.join(root, ".easycode", "mcp.json")
+    this.configPath = path.join(easycodeDir(root), "mcp.json")
   }
 
   async listResources(query?: string, limit = 10) {
@@ -70,7 +71,7 @@ export class WebSearchService {
   readonly configPath: string
 
   constructor(root: string) {
-    this.configPath = path.join(root, ".easycode", "websearch.json")
+    this.configPath = path.join(easycodeDir(root), "websearch.json")
   }
 
   async search(query: string, limit = 5) {

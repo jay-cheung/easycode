@@ -1,5 +1,6 @@
 import path from "node:path"
 import { mkdir, readdir } from "node:fs/promises"
+import { easycodeDir } from "./easycode-path"
 import { ContextManager, recentProviderMessageSuffix, recentUserTurnMessages, type ContextLedger, type ContextManagerLike } from "./context"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "./message"
 import { normalizeSessionSettings, type SessionSettings } from "./settings"
@@ -24,7 +25,7 @@ export class SessionStore {
   readonly dir: string
 
   constructor(root: string) {
-    this.dir = path.join(root, ".easycode", "sessions")
+    this.dir = path.join(easycodeDir(root), "sessions")
   }
 
   async load(id: string) {
