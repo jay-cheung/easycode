@@ -1,7 +1,7 @@
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ProviderInputMessage, type ToolCall } from "../message"
 import { defaultPermissionRules, PermissionService } from "../permission"
-import { createProvider, ProviderError, type Provider, type ProviderName } from "../provider"
+import { createProvider, ProviderError, textToolProtocolOutputToProviderEvents, type Provider, type ProviderName } from "../provider"
 import { Sandbox } from "../sandbox"
 import { SkillService, type SkillServiceLike } from "../skill"
 import { InstructionService, type InstructionServiceLike } from "../instruction"
@@ -247,7 +247,7 @@ export class AgentRunner {
         }
         if (event.type === "usage" && observeContextUsage) this.context.observeUsage(event)
       }
-      return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }
+      return this.extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }, emitDeltas)
     } catch (error) {
       if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user.") }
       if (!(error instanceof ProviderError)) throw error
@@ -258,6 +258,18 @@ export class AgentRunner {
       finishProviderMetricCall(input.providerMetrics, metricCall)
       stopProviderProgress()
     }
+  }
+
+  private extractFallbackToolCalls(result: ProviderTurnResult, emitDeltas: boolean): ProviderTurnResult {
+    if (result.toolCalls.length > 0 || !result.text || result.failureText || result.cancelledOutput) return result
+    const events = textToolProtocolOutputToProviderEvents(result.text)
+    const extractedCalls = events.filter((e): e is { type: "tool_call"; call: ToolCall } => e.type === "tool_call").map((e) => e.call)
+    if (extractedCalls.length === 0) return result
+    const textParts = events.filter((e): e is { type: "text_delta"; text: string } => e.type === "text_delta").map((e) => e.text)
+    if (emitDeltas) {
+      for (const call of extractedCalls) this.onEvent?.({ type: "tool_call", call })
+    }
+    return { ...result, text: textParts.join(""), toolCalls: extractedCalls }
   }
 
   private async runTool(call: ToolCall, mode: AgentMode, signal?: AbortSignal) {

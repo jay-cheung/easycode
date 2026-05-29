@@ -556,6 +556,56 @@ describe("provider", () => {
     expect(events).toContainEqual({ type: "usage", inputTokens: 5, outputTokens: 2 })
     expect(events.at(-1)).toEqual({ type: "done" })
   })
+
+  test("text tool protocol parses Anthropic-style wrapped tool_calls XML", () => {
+    const input = 'Let me check.\n<tool_calls>\n<invoke name="read_lines">\n<parameter name="filePath">src/cli.ts</parameter>\n<parameter name="startLine">45</parameter>\n<parameter name="endLine">65</parameter>\n</invoke>\n</tool_calls>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "text_delta", text: "Let me check.\n" },
+      { type: "tool_call", call: { id: "call_text_1", name: "read_lines", input: { filePath: "src/cli.ts", startLine: 45, endLine: 65 }, rawArguments: '{"filePath":"src/cli.ts","startLine":45,"endLine":65}' } },
+    ])
+  })
+
+  test("text tool protocol parses Anthropic-style bare invoke XML", () => {
+    const input = '<invoke name="bash">\n<parameter name="command">ls -la</parameter>\n</invoke>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "tool_call", call: { id: "call_text_1", name: "bash", input: { command: "ls -la" }, rawArguments: '{"command":"ls -la"}' } },
+    ])
+  })
+
+  test("text tool protocol parses multiple Anthropic-style invoke blocks", () => {
+    const input = '<tool_calls>\n<invoke name="read_lines">\n<parameter name="filePath">a.ts</parameter>\n<parameter name="startLine">1</parameter>\n<parameter name="endLine">10</parameter>\n</invoke>\n<invoke name="read_lines">\n<parameter name="filePath">b.ts</parameter>\n<parameter name="startLine">20</parameter>\n<parameter name="endLine">30</parameter>\n</invoke>\n</tool_calls>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events.filter((e) => e.type === "tool_call")).toHaveLength(2)
+    expect(events[0]).toMatchObject({ type: "tool_call", call: { name: "read_lines", input: { filePath: "a.ts", startLine: 1, endLine: 10 } } })
+    expect(events[1]).toMatchObject({ type: "tool_call", call: { name: "read_lines", input: { filePath: "b.ts", startLine: 20, endLine: 30 } } })
+  })
+
+  test("text tool protocol coerces Anthropic-style parameter types", () => {
+    const input = '<invoke name="test_tool">\n<parameter name="flag">true</parameter>\n<parameter name="count">42</parameter>\n<parameter name="ratio">3.14</parameter>\n<parameter name="empty">null</parameter>\n<parameter name="text">hello world</parameter>\n</invoke>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events[0]).toMatchObject({
+      type: "tool_call",
+      call: { name: "test_tool", input: { flag: true, count: 42, ratio: 3.14, empty: null, text: "hello world" } },
+    })
+  })
+
+  test("text tool protocol handles Anthropic-style with extra string attribute on parameter", () => {
+    const input = '<tool_calls>\n<invoke name="read_lines">\n<parameter name="filePath" string="true">src/tool/code-nav.ts</parameter>\n<parameter name="startLine" string="false">100</parameter>\n<parameter name="endLine" string="false">125</parameter>\n</invoke>\n</tool_calls>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "tool_call", call: { id: "call_text_1", name: "read_lines", input: { filePath: "src/tool/code-nav.ts", startLine: 100, endLine: 125 }, rawArguments: '{"filePath":"src/tool/code-nav.ts","startLine":100,"endLine":125}' } },
+    ])
+  })
+
+  test("text tool protocol prefers easycode format over Anthropic format", () => {
+    const input = '<easycode_tool_call name="read" id="call_1">{"filePath":"README.md"}</easycode_tool_call>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "tool_call", call: { id: "call_1", name: "read", input: { filePath: "README.md" }, rawArguments: '{"filePath":"README.md"}' } },
+    ])
+  })
 })
 
 function sseResponse(events: unknown[]) {

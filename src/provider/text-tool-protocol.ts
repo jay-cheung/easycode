@@ -5,6 +5,15 @@ import type { ToolDef } from "../tool"
 
 const toolCallPattern = /<easycode_tool_call\b([^>]*)>([\s\S]*?)<\/easycode_tool_call>/gi
 
+// Anthropic/Claude-style: <invoke name="tool_name">...<parameter name="key">value</parameter>...</invoke>
+const invokePattern = /<invoke\s+name\s*=\s*["']([^"']+)["'](?:\s+id\s*=\s*["']([^"']+)["'])?\s*>([\s\S]*?)<\/invoke>/gi
+
+// Outer wrapper that may contain multiple <invoke> blocks
+const toolCallsBlockPattern = /<tool_calls>([\s\S]*?)<\/tool_calls>/gi
+
+// Individual <parameter name="key" ...>value</parameter> inside an <invoke> block
+const parameterPattern = /<parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/parameter>/gi
+
 export class TextToolProtocolProvider implements Provider {
   readonly name: string
   readonly model?: string
@@ -57,21 +66,17 @@ export function textToolProtocolInput(input: ProviderInput): ProviderInput {
 }
 
 export function textToolProtocolOutputToProviderEvents(text: string): ProviderEvent[] {
-  const events: ProviderEvent[] = []
-  let cursor = 0
-  let index = 0
-  for (const match of text.matchAll(toolCallPattern)) {
-    const start = match.index ?? 0
-    const before = text.slice(cursor, start)
-    if (before) events.push({ type: "text_delta", text: before })
-    index += 1
-    events.push({ type: "tool_call", call: toolCallFromTextProtocol(match[1] ?? "", match[2] ?? "", index) })
-    cursor = start + match[0].length
-  }
-  const tail = text.slice(cursor)
-  if (tail) events.push({ type: "text_delta", text: tail })
-  if (events.length === 0 && text) events.push({ type: "text_delta", text })
-  return events.filter((event) => event.type !== "text_delta" || event.text.length > 0)
+  // Try easycode format first
+  const easycodeEvents = parseEasycodeToolCalls(text)
+  if (easycodeEvents.some((event) => event.type === "tool_call")) return easycodeEvents
+
+  // Fall back to Anthropic-style XML format (<tool_calls>/<invoke>/<parameter>)
+  const anthropicEvents = parseAnthropicToolCalls(text)
+  if (anthropicEvents.some((event) => event.type === "tool_call")) return anthropicEvents
+
+  // No tool calls found, return as plain text
+  if (text) return [{ type: "text_delta", text }]
+  return []
 }
 
 function textToolProtocolPrompt(tools: ToolDef[]): ProviderInputMessage {
@@ -102,4 +107,111 @@ function toolCallFromTextProtocol(attributes: string, rawArguments: string, inde
 function attributeValue(attributes: string, name: string) {
   const match = attributes.match(new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`, "i"))
   return match?.[1]
+}
+
+function parseEasycodeToolCalls(text: string): ProviderEvent[] {
+  const events: ProviderEvent[] = []
+  let cursor = 0
+  let index = 0
+  for (const match of text.matchAll(toolCallPattern)) {
+    const start = match.index ?? 0
+    const before = text.slice(cursor, start)
+    if (before) events.push({ type: "text_delta", text: before })
+    index += 1
+    events.push({ type: "tool_call", call: toolCallFromTextProtocol(match[1] ?? "", match[2] ?? "", index) })
+    cursor = start + match[0].length
+  }
+  const tail = text.slice(cursor)
+  if (tail) events.push({ type: "text_delta", text: tail })
+  return events.filter((event) => event.type !== "text_delta" || event.text.length > 0)
+}
+
+function parseAnthropicToolCalls(text: string): ProviderEvent[] {
+  // Try <tool_calls> wrapper first, then bare <invoke> blocks
+  const hasWrapper = toolCallsBlockPattern.test(text)
+  toolCallsBlockPattern.lastIndex = 0
+
+  if (hasWrapper) {
+    return parseAnthropicWithWrapper(text)
+  }
+
+  // Bare <invoke> blocks without <tool_calls> wrapper
+  return parseAnthropicBareInvokes(text)
+}
+
+function parseAnthropicWithWrapper(text: string): ProviderEvent[] {
+  const events: ProviderEvent[] = []
+  let cursor = 0
+  let index = 0
+  for (const blockMatch of text.matchAll(toolCallsBlockPattern)) {
+    const start = blockMatch.index ?? 0
+    const before = text.slice(cursor, start)
+    if (before) events.push({ type: "text_delta", text: before })
+    const blockContent = blockMatch[1] ?? ""
+    for (const call of parseInvokeBlocks(blockContent, index)) {
+      events.push({ type: "tool_call", call })
+      index += 1
+    }
+    cursor = start + blockMatch[0].length
+  }
+  const tail = text.slice(cursor)
+  if (tail) events.push({ type: "text_delta", text: tail })
+  return events.filter((event) => event.type !== "text_delta" || event.text.length > 0)
+}
+
+function parseAnthropicBareInvokes(text: string): ProviderEvent[] {
+  const events: ProviderEvent[] = []
+  let cursor = 0
+  let index = 0
+  for (const match of text.matchAll(invokePattern)) {
+    const start = match.index ?? 0
+    const before = text.slice(cursor, start)
+    if (before) events.push({ type: "text_delta", text: before })
+    const name = match[1] ?? "unknown"
+    const id = match[2] ?? `call_text_${index + 1}`
+    const body = match[3] ?? ""
+    const argumentsText = parseParametersToArguments(body)
+    const parsed = parseProviderToolArguments(argumentsText, name, id)
+    events.push({ type: "tool_call", call: { id, name, input: parsed.input, rawArguments: argumentsText } })
+    index += 1
+    cursor = start + match[0].length
+  }
+  const tail = text.slice(cursor)
+  if (tail) events.push({ type: "text_delta", text: tail })
+  return events.filter((event) => event.type !== "text_delta" || event.text.length > 0)
+}
+
+function parseInvokeBlocks(blockContent: string, startIndex: number): ToolCall[] {
+  const calls: ToolCall[] = []
+  let index = startIndex
+  for (const match of blockContent.matchAll(invokePattern)) {
+    index += 1
+    const name = match[1] ?? "unknown"
+    const id = match[2] ?? `call_text_${index}`
+    const body = match[3] ?? ""
+    const argumentsText = parseParametersToArguments(body)
+    const parsed = parseProviderToolArguments(argumentsText, name, id)
+    calls.push({ id, name, input: parsed.input, rawArguments: argumentsText })
+  }
+  return calls
+}
+
+function parseParametersToArguments(invokeBody: string): string {
+  const params: Record<string, unknown> = {}
+  for (const match of invokeBody.matchAll(parameterPattern)) {
+    const key = match[1] ?? ""
+    const rawValue = (match[2] ?? "").trim()
+    if (!key) continue
+    params[key] = coerceParameterValue(rawValue)
+  }
+  return Object.keys(params).length > 0 ? JSON.stringify(params) : "{}"
+}
+
+function coerceParameterValue(value: string): unknown {
+  if (value === "true") return true
+  if (value === "false") return false
+  if (value === "null") return null
+  if (/^-?\d+$/.test(value)) return Number.parseInt(value, 10)
+  if (/^-?\d+\.\d+$/.test(value)) return Number.parseFloat(value)
+  return value
 }

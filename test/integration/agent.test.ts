@@ -945,4 +945,56 @@ describe("agent integration", () => {
     expect(toolResults(result.messages).some((part) => part.metadata.timedOut === true)).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
+  test("extracts tool calls from text when provider returns XML instead of native tool_calls", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          // Simulate model outputting Anthropic-style XML tool calls in content instead of native tool_calls
+          yield { type: "text_delta", text: 'Let me check the file.\n<tool_calls>\n<invoke name="read">\n<parameter name="filePath">src/add.ts</parameter>\n</invoke>\n</tool_calls>' }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Fixed." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event), settings: defaultSessionSettings("test-provider") }).run("Fix the bug", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read"])
+    expect(result.text).toBe("Fixed.")
+    // Verify tool_call events were emitted for the extracted calls
+    expect(events.some((event) => event.type === "tool_call" && event.call.name === "read")).toBe(true)
+    // Verify tool_result events were emitted
+    expect(events.some((event) => event.type === "tool_result" && event.toolName === "read" && event.status === "succeeded")).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("extracts bare invoke XML tool calls from text fallback", async () => {
+    const root = await fixture()
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield { type: "text_delta", text: '<invoke name="list">\n<parameter name="dirPath">src</parameter>\n</invoke>' }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Listed." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("List files", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["list"])
+    await rm(root, { recursive: true, force: true })
+  })
 })
