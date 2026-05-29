@@ -63,9 +63,10 @@ describe("cli args", () => {
     expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 
-  test("tui flag enables the full interactive renderer without consuming prompt text", () => {
-    expect(parseArgs(["build", "--tui", "--provider", "fake", "--session", "demo"])).toMatchObject({ tui: true, once: false, session: "demo", prompt: "" })
-    expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--tui"])).toMatchObject({ tui: true, once: true, prompt: "hello" })
+  test("tui is enabled by default, --no-tui disables it", () => {
+    expect(parseArgs(["build", "--provider", "fake", "--session", "demo"])).toMatchObject({ tui: true, once: false, session: "demo", prompt: "" })
+    expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ tui: true, once: true, prompt: "hello" })
+    expect(parseArgs(["build", "--no-tui", "--provider", "fake", "--session", "demo"])).toMatchObject({ tui: false, once: false, session: "demo", prompt: "" })
   })
 
   test("session flag selects the interactive session id", () => {

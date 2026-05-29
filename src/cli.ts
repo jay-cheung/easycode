@@ -114,7 +114,7 @@ export function parseArgs(argv: string[]) {
   if (logger) {
     process.env.EASYCODE_LOGGER = "true"
   }
-  const tui = normalizedArgv.includes("--tui")
+  const tui = !normalizedArgv.includes("--no-tui")
   const providerExplicit = providerIndex !== -1
   const rawProvider = providerIndex === -1 ? "fake" : normalizedArgv[providerIndex + 1]
   if (!hasProvider(rawProvider)) throw new Error(`Unknown provider: ${rawProvider}. Available providers: ${listProviders().join(", ")}`)
@@ -141,7 +141,7 @@ function normalizeModeArgv(argv: string[]) {
 }
 
 function usage() {
-  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--tui] [--session id]`
+  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {
