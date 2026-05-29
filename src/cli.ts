@@ -11,11 +11,12 @@ import type { AgentMode, ImagePart } from "./message"
 import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders } from "./provider"
 import { savePlan } from "./plans"
-import { SessionStore } from "./session"
+import { SessionStore, type SessionTokenUsage } from "./session"
 import { isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
 import { parseSlashCommand, slashHelpText, type SlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
+import type { ProviderRunMetrics } from "./ui/timeline"
 import { TuiRenderer } from "./ui/tui"
 
 type EnvTarget = {
@@ -178,17 +179,19 @@ export function parseEnvFile(text: string) {
 }
 
 export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
-  const globalPath = path.join(os.homedir(), ".easycode", ".env")
   const localPath = path.join(root, ".env")
   let loaded = 0
 
-  // 1. Load global .env
-  const globalFile = Bun.file(globalPath)
-  if (await globalFile.exists()) {
-    for (const [key, value] of parseEnvFile(await globalFile.text())) {
-      if (env[key] !== undefined) continue
-      env[key] = value
-      loaded += 1
+  // 1. Load global .env (skip in test environment to preserve test isolation)
+  if (process.env.NODE_ENV !== "test") {
+    const globalPath = path.join(os.homedir(), ".easycode", ".env")
+    const globalFile = Bun.file(globalPath)
+    if (await globalFile.exists()) {
+      for (const [key, value] of parseEnvFile(await globalFile.text())) {
+        if (env[key] !== undefined) continue
+        env[key] = value
+        loaded += 1
+      }
     }
   }
 
@@ -401,6 +404,14 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
     const context = await store.context(session)
     const storedSettings = await store.settings(session, args.provider)
+    const sessionData = await store.load(session)
+    let sessionTokenUsage: SessionTokenUsage = sessionData?.tokenUsage ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      calls: 0
+    }
+    tui?.setSessionTokenUsage(sessionTokenUsage)
+
     let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
     if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
     const skillService = new SkillService(args.root)
@@ -411,10 +422,18 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let activeAbort: AbortController | undefined
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
     const timeline = tui ?? new TimelineRenderer(output)
-    const onEvent = timelineEventHandler(timeline)
+    
+    let runMetrics: ProviderRunMetrics | undefined = undefined
+    const onEvent = (event: RunUiEvent) => {
+      if (event.type === "provider_metrics") {
+        runMetrics = event.metrics
+      }
+      timeline.event(event)
+    }
+
     let saveChain = Promise.resolve()
     const saveSession = (contextToSave: ContextManagerLike) => {
-      saveChain = saveChain.then(() => store.save(session, contextToSave, activeSettings))
+      saveChain = saveChain.then(() => store.save(session, contextToSave, activeSettings, sessionTokenUsage))
       return saveChain
     }
     const getRunner = () => {
@@ -451,6 +470,15 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runInput.stop()
       activeAbort = undefined
       timeline.finish()
+      if (runMetrics) {
+        sessionTokenUsage = {
+          inputTokens: sessionTokenUsage.inputTokens + runMetrics.inputTokens,
+          outputTokens: sessionTokenUsage.outputTokens + runMetrics.outputTokens,
+          calls: sessionTokenUsage.calls + runMetrics.calls
+        }
+        tui?.setSessionTokenUsage(sessionTokenUsage)
+      }
+      runMetrics = undefined
       await saveSession(activeRunner.context)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlanText(result.text)) {
         savePlan(args.root, session, result.text).catch((err) => {
@@ -460,6 +488,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         const choice = (await reader.question(
           tui?.planApprovalPrompt() ?? `[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: `
         )).trim().toLowerCase() || "a"
+        tui?.resumeAfterPrompt()
         if (choice === "r" || choice.startsWith("reject")) {
           // stay in plan mode
         } else if (choice === "e" || choice.startsWith("edit")) {
@@ -704,6 +733,7 @@ function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () =
   return new PermissionService(defaultPermissionRules(mode), async (request) => {
     const basePrompt = permissionPrompt(request)
     const answer = (await questionWithPrompt(reader, tui?.permissionPrompt(request, basePrompt) ?? basePrompt)).trim().toLowerCase()
+    tui?.resumeAfterPrompt()
     if (answer === eofPrompt) return "reject"
     if (isCancelInput(answer)) {
       cancelRun?.()

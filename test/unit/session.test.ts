@@ -53,6 +53,18 @@ describe("session store", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("saves and restores session token usage", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.add(textMessage("user", "hello"))
+    await store.save("demo", context, undefined, { inputTokens: 1230, outputTokens: 456, calls: 5 })
+
+    const saved = await store.load("demo")
+    expect(saved?.tokenUsage).toMatchObject({ inputTokens: 1230, outputTokens: 456, calls: 5 })
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("saves and restores context ledger", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)

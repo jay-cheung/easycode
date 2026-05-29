@@ -5,12 +5,19 @@ import { ContextManager, recentProviderMessageSuffix, recentUserTurnMessages, ty
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "./message"
 import { normalizeSessionSettings, type SessionSettings } from "./settings"
 
+export type SessionTokenUsage = {
+  inputTokens: number
+  outputTokens: number
+  calls: number
+}
+
 export type SessionData = {
   id: string
   messages: Message[]
   summary?: string
   ledger?: ContextLedger
   settings?: SessionSettings
+  tokenUsage?: SessionTokenUsage
   updatedAt: number
 }
 
@@ -61,7 +68,7 @@ export class SessionStore {
     return sessions.sort((a, b) => b.updatedAt - a.updatedAt || a.id.localeCompare(b.id))
   }
 
-  async save(id: string, context: ContextManagerLike, settings?: SessionSettings) {
+  async save(id: string, context: ContextManagerLike, settings?: SessionSettings, tokenUsage?: SessionTokenUsage) {
     await mkdir(this.dir, { recursive: true })
     const messages = context.state.summary ? recentProviderMessageSuffix(recentUserTurnMessages(context.state.messages, context.preserveRecentUserTurns), context.compactPreserveTokens) : context.state.messages
     const data: SessionData = {
@@ -70,6 +77,7 @@ export class SessionStore {
       summary: context.state.summary,
       ledger: context.state.ledger,
       ...(settings ? { settings: normalizeSessionSettings(settings, settings.provider) } : {}),
+      ...(tokenUsage ? { tokenUsage } : {}),
       updatedAt: Date.now(),
     }
     await Bun.write(this.filePath(id), `${JSON.stringify(data, null, 2)}\n`)
