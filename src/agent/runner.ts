@@ -530,7 +530,8 @@ function providerFailureText(error: ProviderError) {
 }
 
 function explorationSummaryStep(maxSteps: number) {
-  return Math.max(1, Math.ceil(maxSteps * 0.7))
+  const defaultExplorationSteps = 12;
+  return Math.min(defaultExplorationSteps, Math.ceil(maxSteps * 0.7))
 }
 
 function explorationSummaryReadinessMessage(step: number, maxSteps: number) {

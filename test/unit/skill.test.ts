@@ -26,32 +26,13 @@ describe("skill", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("loads project .agent skills with lowercase skill file", async () => {
-    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-skill-"))
-    const dir = path.join(root, ".agent", "skills", "demo")
-    await mkdir(dir, { recursive: true })
-    const skillFile = path.join(dir, "skill.md")
-    await Bun.write(skillFile, "---\nname: demo\ndescription: Agent skill\n---\nAgent prompt")
-    const service = new SkillService(root)
-    const expected = {
-      id: normalizePath(path.relative(root, skillFile)),
-      name: "demo",
-      description: "Agent skill",
-      location: skillFile,
-      content: undefined,
-    }
-    expect(await service.available()).toEqual([expected])
-    expect((await service.load("demo"))?.content).toBe("Agent prompt")
-    await rm(root, { recursive: true, force: true })
-  })
-
   test("generates unique id per location and deduplicates by id", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easycode-skill-"))
-    // Two skills with same name in different root directories
+    // Two skills with same name in different subdirectories
     await mkdir(path.join(root, ".easycode", "skills", "alpha"), { recursive: true })
-    await mkdir(path.join(root, ".agent", "skills", "alpha"), { recursive: true })
-    await Bun.write(path.join(root, ".easycode", "skills", "alpha", "skill.md"), "---\nname: dup\ndescription: Easycode version\n---\nEasycode content")
-    await Bun.write(path.join(root, ".agent", "skills", "alpha", "skill.md"), "---\nname: dup\ndescription: Agent version\n---\nAgent content")
+    await mkdir(path.join(root, ".easycode", "skills", "beta"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "alpha", "skill.md"), "---\nname: dup\ndescription: Alpha version\n---\nAlpha content")
+    await Bun.write(path.join(root, ".easycode", "skills", "beta", "skill.md"), "---\nname: dup\ndescription: Beta version\n---\nBeta content")
     const service = new SkillService(root)
     const available = await service.available()
     expect(available).toHaveLength(2)

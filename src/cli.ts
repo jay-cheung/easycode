@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import path from "node:path"
+import os from "node:os"
 import { createInterface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner, hasProposedPlanText } from "./agent"
@@ -177,15 +178,30 @@ export function parseEnvFile(text: string) {
 }
 
 export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
-  const filePath = path.join(root, ".env")
-  const file = Bun.file(filePath)
-  if (!(await file.exists())) return 0
+  const globalPath = path.join(os.homedir(), ".easycode", ".env")
+  const localPath = path.join(root, ".env")
   let loaded = 0
-  for (const [key, value] of parseEnvFile(await file.text())) {
-    if (env[key] !== undefined) continue
-    env[key] = value
-    loaded += 1
+
+  // 1. Load global .env
+  const globalFile = Bun.file(globalPath)
+  if (await globalFile.exists()) {
+    for (const [key, value] of parseEnvFile(await globalFile.text())) {
+      if (env[key] !== undefined) continue
+      env[key] = value
+      loaded += 1
+    }
   }
+
+  // 2. Load local .env (backward compatibility)
+  const localFile = Bun.file(localPath)
+  if (await localFile.exists()) {
+    for (const [key, value] of parseEnvFile(await localFile.text())) {
+      if (env[key] !== undefined) continue
+      env[key] = value
+      loaded += 1
+    }
+  }
+
   return loaded
 }
 
@@ -337,7 +353,7 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
       }
     }
 
-    const envPath = path.join(root, ".env")
+    const envPath = path.join(os.homedir(), ".easycode", ".env")
     const existing = await Bun.file(envPath).text().catch(() => "# easycode configuration\n")
     await Bun.write(envPath, mergeEnvText(existing, entries))
     output.write(`\n✅ Configuration saved to ${envPath}\n`)

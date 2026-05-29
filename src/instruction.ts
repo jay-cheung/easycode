@@ -26,7 +26,6 @@ function defaultGlobalFiles() {
     path.join(home, ".easycode", "easycode.md"),
     path.join(home, ".easycode", "EASYCODE.md"),
     path.join(home, ".easycode", "AGENTS.md"),
-    path.join(home, ".agent", "AGENTS.md"),
     path.join(home, ".claude", "CLAUDE.md"),
   ]
 }

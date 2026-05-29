@@ -55,9 +55,7 @@ export class SkillService implements SkillServiceLike {
   constructor(projectRoot: string, roots?: string[]) {
     this.projectRoot = projectRoot
     this.roots = roots ?? [
-      path.join(projectRoot, ".agent", "skills"),
       path.join(easycodeDir(projectRoot), "skills"),
-      path.join(os.homedir(), ".agent", "skills"),
       path.join(os.homedir(), ".easycode", "skills"),
     ]
   }

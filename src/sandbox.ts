@@ -238,11 +238,36 @@ export class Sandbox {
       stderr: "pipe",
       signal: controller.signal,
     })
-    const [stdoutRaw, stderrRaw] = await Promise.all([
+    // When cancelled, race pipe reads + exit code against a 3-second kill-grace timeout
+    const pipePromise = Promise.all([
       new Response(proc.stdout).text().catch((error: unknown) => (error instanceof Error ? error.message : String(error))),
       new Response(proc.stderr).text().catch((error: unknown) => (error instanceof Error ? error.message : String(error))),
     ])
-    const exitCode = await proc.exited.catch(() => null)
+    const exitPromise = proc.exited.catch(() => null)
+
+    let stdoutRaw: string
+    let stderrRaw: string
+    let exitCode: number | null
+    let killGraceExpired = false
+
+    if (cancelled) {
+      const grace = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("kill grace")), 3000),
+      )
+      try {
+        ;[stdoutRaw, stderrRaw] = await Promise.race([pipePromise, grace])
+        exitCode = await Promise.race([exitPromise, grace])
+      } catch {
+        killGraceExpired = true
+        timedOut = true
+        stdoutRaw = ""
+        stderrRaw = "Command did not terminate within 3 seconds of cancel signal."
+        exitCode = null
+      }
+    } else {
+      ;[stdoutRaw, stderrRaw] = await pipePromise
+      exitCode = await exitPromise
+    }
     clearTimeout(timer)
     options.signal?.removeEventListener("abort", onAbort)
     const stdout = truncateBytes(redactSensitiveEnvValues(stdoutRaw), this.maxOutputBytes)
