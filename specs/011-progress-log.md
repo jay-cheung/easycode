@@ -77,3 +77,28 @@
   - `bun run typecheck`: pass.
   - `bun run verify:v1`: pass; includes typecheck, 263 tests, fake eval, and cache benchmark.
   - `bun run build`: pass.
+
+## Step 5: Live WebSearch Engine Configuration
+
+- Scope: replace fixture-only WebSearch with real search engine support while preserving deterministic fixtures.
+- External source check:
+  - Brave Search API requires `X-Subscription-Token` and uses `https://api.search.brave.com/res/v1/web/search`.
+  - Tavily Search API uses `POST https://api.tavily.com/search` with `Authorization: Bearer <api-key>`.
+- Implementation:
+  - Built-in `brave` engine with endpoint, auth header, query parameter, limit parameter, and response mapping defaults.
+  - Built-in `tavily` engine with endpoint, bearer auth, JSON body, max-results, and response mapping defaults.
+  - `custom` JSON engine configuration for user-provided search APIs.
+  - `web_search` tool accepts `engine` and `live`; fixtures remain available with `live: false`.
+- Code Complete review result:
+  - Correctness: live search is config-driven and keeps fixture mode for stable tests.
+  - Correctness fix: explicit unknown engines and `live: true` without an engine now fail clearly instead of silently falling back to local fixtures.
+  - Resource hygiene: live request timeout timers are cleaned up after fetch completion.
+  - Security: API keys are designed to come from environment variables; docs discourage committing secrets.
+  - Verification: added mocked live-engine tests for Brave and custom engines, fixture fallback, missing-engine errors, and explicit live-without-engine errors.
+- Verification:
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/permission.test.ts`: 48 pass, 0 fail.
+  - `bun run typecheck`: pass after fixing callback metrics typing in `src/cli.ts`.
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/provider.test.ts test/integration/agent.test.ts`: 117 pass, 0 fail.
+  - `bun run build`: pass.
+  - `bun test`: 282 pass, 2 skip, 0 fail.
+  - `bun run verify:v1`: pass; includes typecheck, 282 tests, fake eval, and cache benchmark.

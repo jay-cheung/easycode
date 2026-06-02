@@ -26,12 +26,47 @@ const WebSearchResult = z.object({
   retrievedAt: z.string().optional(),
 })
 
+const SearchPrimitive = z.union([z.string(), z.number(), z.boolean()])
+
+const WebSearchEngine = z.object({
+  name: z.string(),
+  type: z.enum(["brave", "tavily", "custom"]).default("custom"),
+  endpoint: z.string().optional(),
+  method: z.enum(["GET", "POST"]).optional(),
+  apiKeyEnv: z.string().optional(),
+  apiKey: z.string().optional(),
+  apiKeyHeader: z.string().optional(),
+  apiKeyPrefix: z.string().optional(),
+  headers: z.record(z.string(), z.string()).default({}),
+  queryParam: z.string().optional(),
+  limitParam: z.string().optional(),
+  resultsPath: z.string().optional(),
+  titlePath: z.string().optional(),
+  urlPath: z.string().optional(),
+  snippetPath: z.string().optional(),
+  sourcePath: z.string().optional(),
+  extraParams: z.record(z.string(), SearchPrimitive).default({}),
+  timeoutMs: z.number().optional(),
+})
+
 const WebSearchConfig = z.object({
+  defaultEngine: z.string().optional(),
+  engines: z.array(WebSearchEngine).default([]),
   results: z.array(WebSearchResult).default([]),
 })
 
 export type McpResource = z.infer<typeof McpResource> & { server: string }
 export type WebSearchResult = z.infer<typeof WebSearchResult>
+export type WebSearchEngine = z.infer<typeof WebSearchEngine>
+
+export type WebSearchResponse = {
+  results: WebSearchResult[]
+  live: boolean
+  engine?: string
+  warning?: string
+}
+
+type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
 export type CitedSource = {
   type: "mcp" | "web"
@@ -70,15 +105,47 @@ export class McpSourceService {
 export class WebSearchService {
   readonly configPath: string
 
-  constructor(root: string) {
+  constructor(
+    root: string,
+    private readonly options: { fetch?: FetchLike; env?: Record<string, string | undefined> } = {},
+  ) {
     this.configPath = path.join(easycodeDir(root), "websearch.json")
   }
 
-  async search(query: string, limit = 5) {
+  async search(query: string, limit = 5, options: { engine?: string; live?: boolean; signal?: AbortSignal } = {}): Promise<WebSearchResponse> {
     const file = Bun.file(this.configPath)
-    if (!(await file.exists())) return [] as WebSearchResult[]
-    const config = WebSearchConfig.parse(JSON.parse(await file.text()))
-    return rankWebResults(config.results, query).slice(0, clampLimit(limit))
+    const config = (await file.exists()) ? WebSearchConfig.parse(JSON.parse(await file.text())) : WebSearchConfig.parse({})
+    const selectedEngineName = options.engine ?? config.defaultEngine
+    const engine = selectEngine(config.engines, selectedEngineName)
+    if (options.engine && !engine) throw new Error(`web search engine not found: ${options.engine}`)
+    if (config.defaultEngine && !engine && options.live !== false) throw new Error(`web search default engine not found: ${config.defaultEngine}`)
+    if (options.live === true && !engine) throw new Error("live web search requires a configured engine")
+    const shouldSearchLive = options.live ?? Boolean(engine && selectedEngineName)
+    if (engine && shouldSearchLive) {
+      return { results: await this.searchLive(engine, query, limit, options.signal), live: true, engine: engine.name }
+    }
+    return {
+      results: rankWebResults(config.results, query).slice(0, clampLimit(limit)),
+      live: false,
+      engine: engine?.name,
+      warning: engine && !shouldSearchLive ? "live search disabled by request" : undefined,
+    }
+  }
+
+  private async searchLive(engine: WebSearchEngine, query: string, limit: number, signal?: AbortSignal) {
+    const normalized = normalizeEngine(engine)
+    const apiKey = apiKeyFor(normalized, this.options.env ?? process.env)
+    const headers = headersFor(normalized, apiKey)
+    const request = requestFor(normalized, query, clampLimit(limit), headers, signal)
+    const fetcher = this.options.fetch ?? fetch
+    try {
+      const response = await fetcher(request.url, request.init)
+      if (!response.ok) throw new Error(`web search ${normalized.name} failed: HTTP ${response.status}`)
+      const payload = await response.json() as unknown
+      return parseEngineResults(payload, normalized).slice(0, clampLimit(limit))
+    } finally {
+      request.cleanup()
+    }
   }
 }
 
@@ -140,6 +207,135 @@ function rankWebResults(results: WebSearchResult[], query: string) {
     .filter((item) => item.score > 0)
     .sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title))
     .map((item) => item.result)
+}
+
+function selectEngine(engines: WebSearchEngine[], name: string | undefined) {
+  if (!name) return undefined
+  return engines.find((engine) => engine.name === name)
+}
+
+function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine, "name" | "type" | "method" | "endpoint" | "queryParam" | "limitParam" | "resultsPath" | "titlePath" | "urlPath" | "snippetPath">> & WebSearchEngine {
+  if (engine.type === "brave") {
+    return {
+      ...engine,
+      endpoint: engine.endpoint ?? "https://api.search.brave.com/res/v1/web/search",
+      method: engine.method ?? "GET",
+      queryParam: engine.queryParam ?? "q",
+      limitParam: engine.limitParam ?? "count",
+      resultsPath: engine.resultsPath ?? "web.results",
+      titlePath: engine.titlePath ?? "title",
+      urlPath: engine.urlPath ?? "url",
+      snippetPath: engine.snippetPath ?? "description",
+    }
+  }
+  if (engine.type === "tavily") {
+    return {
+      ...engine,
+      endpoint: engine.endpoint ?? "https://api.tavily.com/search",
+      method: engine.method ?? "POST",
+      queryParam: engine.queryParam ?? "query",
+      limitParam: engine.limitParam ?? "max_results",
+      resultsPath: engine.resultsPath ?? "results",
+      titlePath: engine.titlePath ?? "title",
+      urlPath: engine.urlPath ?? "url",
+      snippetPath: engine.snippetPath ?? "content",
+    }
+  }
+  if (!engine.endpoint) throw new Error(`custom web search engine ${engine.name} requires endpoint`)
+  return {
+    ...engine,
+    endpoint: engine.endpoint,
+    method: engine.method ?? "GET",
+    queryParam: engine.queryParam ?? "q",
+    limitParam: engine.limitParam ?? "limit",
+    resultsPath: engine.resultsPath ?? "results",
+    titlePath: engine.titlePath ?? "title",
+    urlPath: engine.urlPath ?? "url",
+    snippetPath: engine.snippetPath ?? "snippet",
+  }
+}
+
+function apiKeyFor(engine: WebSearchEngine, env: Record<string, string | undefined>) {
+  if (engine.apiKey) return engine.apiKey
+  if (!engine.apiKeyEnv) return undefined
+  const value = env[engine.apiKeyEnv]
+  if (!value) throw new Error(`web search engine ${engine.name} requires ${engine.apiKeyEnv}`)
+  return value
+}
+
+function headersFor(engine: WebSearchEngine, apiKey: string | undefined) {
+  const headers: Record<string, string> = { Accept: "application/json", ...engine.headers }
+  if (!apiKey) return substituteHeaderTokens(headers, "")
+  const headerName = engine.apiKeyHeader ?? (engine.type === "brave" ? "X-Subscription-Token" : engine.type === "tavily" ? "Authorization" : undefined)
+  if (headerName) headers[headerName] = `${engine.apiKeyPrefix ?? (engine.type === "tavily" ? "Bearer " : "")}${apiKey}`
+  return substituteHeaderTokens(headers, apiKey)
+}
+
+function substituteHeaderTokens(headers: Record<string, string>, apiKey: string) {
+  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, value.replaceAll("${API_KEY}", apiKey)]))
+}
+
+function requestFor(engine: ReturnType<typeof normalizeEngine>, query: string, limit: number, headers: Record<string, string>, signal: AbortSignal | undefined) {
+  const params = { ...engine.extraParams, [engine.queryParam]: query, [engine.limitParam]: limit }
+  const timeout = timeoutSignal(signal, engine.timeoutMs)
+  if (engine.method === "POST") {
+    return {
+      url: engine.endpoint,
+      init: { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(params), signal: timeout.signal },
+      cleanup: timeout.cleanup,
+    }
+  }
+  const url = new URL(engine.endpoint)
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value))
+  return { url, init: { method: "GET", headers, signal: timeout.signal }, cleanup: timeout.cleanup }
+}
+
+function parseEngineResults(payload: unknown, engine: ReturnType<typeof normalizeEngine>) {
+  const rawResults = readPath(payload, engine.resultsPath)
+  if (!Array.isArray(rawResults)) return [] as WebSearchResult[]
+  const retrievedAt = new Date().toISOString()
+  return rawResults.flatMap((item) => {
+    const title = stringAt(item, engine.titlePath)
+    const url = stringAt(item, engine.urlPath)
+    const snippet = stringAt(item, engine.snippetPath)
+    if (!title || !url || !snippet) return []
+    const source = engine.sourcePath ? stringAt(item, engine.sourcePath) : hostnameFor(url)
+    return [{ title, url, snippet, source, retrievedAt }]
+  })
+}
+
+function readPath(value: unknown, dottedPath: string): unknown {
+  return dottedPath.split(".").reduce<unknown>((current, segment) => {
+    if (!current || typeof current !== "object") return undefined
+    return (current as Record<string, unknown>)[segment]
+  }, value)
+}
+
+function stringAt(value: unknown, dottedPath: string) {
+  const found = readPath(value, dottedPath)
+  return typeof found === "string" && found.trim() ? found : undefined
+}
+
+function hostnameFor(url: string) {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return undefined
+  }
+}
+
+function timeoutSignal(signal: AbortSignal | undefined, timeoutMs: number | undefined) {
+  if (!timeoutMs) return { signal, cleanup: () => {} }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const abort = () => controller.abort()
+  const cleanup = () => {
+    clearTimeout(timer)
+    signal?.removeEventListener("abort", abort)
+  }
+  signal?.addEventListener("abort", abort, { once: true })
+  controller.signal.addEventListener("abort", cleanup, { once: true })
+  return { signal: controller.signal, cleanup }
 }
 
 function queryTerms(query: string) {

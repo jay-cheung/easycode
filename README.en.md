@@ -123,20 +123,73 @@ Available tools:
 
 ---
 
-### Web Search (Local Pre-baked Results)
+### Web Search (Live Search + Fixtures)
 
-`.easycode/websearch.json` — Pre-populate search results as static fixtures. **Does not perform live network requests.**
+`.easycode/websearch.json` supports two modes:
+
+- Set `defaultEngine`, or pass `engine` to the tool: run live search.
+- Omit search engines, or pass `live: false`: read local `results` fixtures for deterministic tests.
+
+Brave Search example:
 
 ```json
 {
+  "defaultEngine": "brave",
+  "engines": [
+    {
+      "name": "brave",
+      "type": "brave",
+      "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
+      "extraParams": { "country": "US" }
+    }
+  ],
   "results": [
     { "url": "https://example.com", "title": "Example", "snippet": "Quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
   ]
 }
 ```
 
-Available tool:
-- **web_search** — keyword-matches against configured results, returns top-ranked (default limit: 5)
+Tavily example:
+
+```json
+{
+  "defaultEngine": "tavily",
+  "engines": [
+    {
+      "name": "tavily",
+      "type": "tavily",
+      "apiKeyEnv": "TAVILY_API_KEY",
+      "extraParams": { "search_depth": "basic", "topic": "general" }
+    }
+  ]
+}
+```
+
+Custom JSON search engine example:
+
+```json
+{
+  "engines": [
+    {
+      "name": "internal-search",
+      "type": "custom",
+      "endpoint": "https://search.example.com/query",
+      "method": "POST",
+      "apiKeyEnv": "INTERNAL_SEARCH_TOKEN",
+      "apiKeyHeader": "X-API-Key",
+      "queryParam": "text",
+      "limitParam": "size",
+      "resultsPath": "data.items",
+      "titlePath": "headline",
+      "urlPath": "link",
+      "snippetPath": "summary",
+      "sourcePath": "publisher"
+    }
+  ]
+}
+```
+
+`web_search` parameters: `query`, `limit`, `engine`, and `live`. Prefer environment variables for API keys instead of committing secrets.
 
 ---
 

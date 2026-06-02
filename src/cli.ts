@@ -423,10 +423,10 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
     const timeline = tui ?? new TimelineRenderer(output)
     
-    let runMetrics: ProviderRunMetrics | undefined = undefined
+    const runMetrics: { current?: ProviderRunMetrics } = {}
     const onEvent = (event: RunUiEvent) => {
       if (event.type === "provider_metrics") {
-        runMetrics = event.metrics
+        runMetrics.current = event.metrics
       }
       timeline.event(event)
     }
@@ -470,15 +470,16 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runInput.stop()
       activeAbort = undefined
       timeline.finish()
-      if (runMetrics) {
+      const metrics = runMetrics.current
+      if (metrics) {
         sessionTokenUsage = {
-          inputTokens: sessionTokenUsage.inputTokens + runMetrics.inputTokens,
-          outputTokens: sessionTokenUsage.outputTokens + runMetrics.outputTokens,
-          calls: sessionTokenUsage.calls + runMetrics.calls
+          inputTokens: sessionTokenUsage.inputTokens + metrics.inputTokens,
+          outputTokens: sessionTokenUsage.outputTokens + metrics.outputTokens,
+          calls: sessionTokenUsage.calls + metrics.calls
         }
         tui?.setSessionTokenUsage(sessionTokenUsage)
       }
-      runMetrics = undefined
+      runMetrics.current = undefined
       await saveSession(activeRunner.context)
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlanText(result.text)) {
         savePlan(args.root, session, result.text).catch((err) => {

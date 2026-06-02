@@ -1,12 +1,12 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
-import * as ts from "typescript"
 import type { Sandbox } from "../../sandbox"
 import { codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
 import { easycodeDir } from "../../easycode-path"
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
 import { uniqueSortedResults } from "./parsing"
 import type { CallGraphDirection, CallGraphResult, CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
+import { extractLocalBindingScopes, isTypeScriptLike, type LocalBindingScope } from "./ast"
 
 type FileFingerprint = { filePath: string; mtimeMs: number; size: number }
 
@@ -20,7 +20,9 @@ const pythonDeclarationPattern = /^\s*(class|def|async\s+def)\s+([A-Za-z_][\w]*)
 const pythonImportPattern = /^\s*(?:from\s+([\w.]+)\s+import\s+(.+)|import\s+(.+))/
 const goDeclarationPattern = /^\s*(func|type|var|const)\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\b/
 const rustDeclarationPattern = /^\s*(?:pub\s+)?(?:async\s+)?(fn|struct|enum|trait|type|const|static)\s+([A-Za-z_]\w*)\b/
-const javaLikeDeclarationPattern = /^\s*(?:(?:public|private|protected|static|final|abstract|open|override|internal|class|data|sealed)\s+)*(class|interface|enum|record|fun|void|[A-Z][\w<>]*)\s+([A-Za-z_]\w*)\s*(?:[({:=]|$)/
+const javaLikeTypeDeclarationPattern = /^\s*(?:(?:public|private|protected|static|final|abstract|open|override|internal|data|sealed)\s+)*(class|interface|enum|record)\s+([A-Za-z_]\w*)\b/
+const javaLikeFunctionDeclarationPattern = /^\s*(?:(?:public|private|protected|static|final|abstract|open|override|internal|suspend)\s+)*(fun|func)\s+([A-Za-z_]\w*)\s*\(/
+const javaLikeMethodDeclarationPattern = /^\s*(?!return\b)(?:(?:public|private|protected|static|final|abstract|open|override|internal|synchronized|native|async)\s+)*(?:<[^>]+>\s*)?(?:[A-Za-z_$][\w$<>,.[\]?]*|void)\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:[{;]|$)/
 const cLikeDeclarationPattern = /^\s*(?:[A-Za-z_][\w:*<>,\s]+\s+)+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{?\s*$/
 const goImportPattern = /^\s*import\s+(?:\(\s*)?["']([^"']+)["']/
 const rustUsePattern = /^\s*use\s+(.+);/
@@ -37,13 +39,6 @@ const excludedReferences = new Set([
   "of", "override", "private", "protected", "public", "readonly", "return", "static", "super", "switch", "this", "throw", "true", "try", "type",
   "typeof", "undefined", "var", "void", "while", "with", "yield",
 ])
-
-type LocalBindingScope = {
-  ownerID: string
-  startLine: number
-  endLine: number
-  names: Set<string>
-}
 
 export async function codeIndex(input: {
   sandbox: Sandbox
@@ -302,7 +297,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       continue
     }
 
-    const method = line.match(methodPattern)
+    const method = isTypeScriptLike(path.extname(file.filePath)) ? line.match(methodPattern) : undefined
     if (method && !excludedMethods.has(method[1] ?? "")) {
       declarations.push(symbolFor(file.filePath, method[1] ?? "", "method", lineNumber, line))
     }
@@ -367,9 +362,10 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
 
 function matchDeclaration(line: string, filePath: string) {
   const extension = path.extname(filePath)
-  const ts = line.match(declarationPattern)
-  if (ts) {
-    if (isTypeScriptLike(extension) && /^\s+/.test(line) && !/^\s*export\b/.test(line)) return undefined
+  if (isTypeScriptLike(extension)) {
+    const ts = line.match(declarationPattern)
+    if (!ts) return undefined
+    if (/^\s+/.test(line) && !/^\s*export\b/.test(line)) return undefined
     return { kind: normalizeSymbolKind(ts[1] ?? ""), name: ts[2] ?? "", exported: /^\s*export\b/.test(line) }
   }
   if (extension === ".py") {
@@ -385,8 +381,12 @@ function matchDeclaration(line: string, filePath: string) {
     if (rust) return { kind: normalizeSymbolKind(rust[1] ?? ""), name: rust[2] ?? "", exported: /^\s*pub\b/.test(line) }
   }
   if ([".java", ".kt", ".kts", ".swift", ".cs"].includes(extension)) {
-    const javaLike = line.match(javaLikeDeclarationPattern)
-    if (javaLike) return { kind: normalizeSymbolKind(javaLike[1] ?? ""), name: javaLike[2] ?? "", exported: /\b(public|open)\b/.test(line) }
+    const type = line.match(javaLikeTypeDeclarationPattern)
+    if (type) return { kind: normalizeSymbolKind(type[1] ?? ""), name: type[2] ?? "", exported: /\b(public|open)\b/.test(line) }
+    const functionLike = line.match(javaLikeFunctionDeclarationPattern)
+    if (functionLike) return { kind: "method", name: functionLike[2] ?? "", exported: /\b(public|open)\b/.test(line) }
+    const method = line.match(javaLikeMethodDeclarationPattern)
+    if (method) return { kind: "method", name: method[1] ?? "", exported: /\b(public|open)\b/.test(line) }
   }
   if ([".c", ".h", ".cpp", ".cc", ".hpp", ".php", ".rb"].includes(extension)) {
     const cLike = line.match(cLikeDeclarationPattern)
@@ -395,74 +395,8 @@ function matchDeclaration(line: string, filePath: string) {
   return undefined
 }
 
-function isTypeScriptLike(extension: string) {
-  return [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"].includes(extension)
-}
-
-function extractLocalBindingScopes(text: string, filePath: string, symbols: CodeIndexSymbol[]): LocalBindingScope[] {
-  if (!isTypeScriptLike(path.extname(filePath))) return []
-  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKindFor(filePath))
-  const scopes: LocalBindingScope[] = []
-
-  const visit = (node: ts.Node) => {
-    if (isFunctionLikeWithBody(node)) {
-      const startLine = lineFor(source, node.getStart(source))
-      const endLine = lineFor(source, node.end)
-      const owner = symbols.find((symbol) => symbol.startLine <= startLine && startLine <= symbol.endLine)
-      if (owner) {
-        const names = new Set<string>()
-        for (const param of node.parameters) collectBindingNames(param.name, names)
-        collectBodyLocalBindings(node.body, names)
-        if (names.size > 0) scopes.push({ ownerID: owner.id, startLine, endLine, names })
-      }
-    }
-    ts.forEachChild(node, visit)
-  }
-
-  visit(source)
-  return scopes
-}
-
-function isFunctionLikeWithBody(node: ts.Node): node is ts.FunctionLikeDeclaration & { body: ts.ConciseBody } {
-  return (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isConstructorDeclaration(node)) && Boolean(node.body)
-}
-
-function collectBodyLocalBindings(body: ts.ConciseBody, names: Set<string>) {
-  const visit = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isImportClause(node)) {
-      const name = "name" in node ? node.name : undefined
-      if (name) collectBindingNames(name, names)
-    }
-    if (ts.isFunctionLike(node) && node !== body) return
-    ts.forEachChild(node, visit)
-  }
-  ts.forEachChild(body, visit)
-}
-
-function collectBindingNames(name: ts.BindingName | ts.Identifier | undefined, names: Set<string>) {
-  if (!name) return
-  if (ts.isIdentifier(name)) {
-    names.add(name.text)
-    return
-  }
-  for (const element of name.elements) {
-    if (ts.isBindingElement(element)) collectBindingNames(element.name, names)
-  }
-}
-
 function isLocalBindingReference(scopes: LocalBindingScope[], ownerID: string, name: string, line: number) {
   return scopes.some((scope) => scope.ownerID === ownerID && scope.startLine <= line && line <= scope.endLine && scope.names.has(name))
-}
-
-function lineFor(source: ts.SourceFile, position: number) {
-  return source.getLineAndCharacterOfPosition(position).line + 1
-}
-
-function scriptKindFor(filePath: string) {
-  if (filePath.endsWith(".tsx")) return ts.ScriptKind.TSX
-  if (filePath.endsWith(".jsx")) return ts.ScriptKind.JSX
-  if (filePath.endsWith(".js") || filePath.endsWith(".mjs") || filePath.endsWith(".cjs")) return ts.ScriptKind.JS
-  return ts.ScriptKind.TS
 }
 
 function parseImportLine(line: string): { source: string; bindings: NonNullable<CodeIndexFile["importBindings"]> } | undefined {

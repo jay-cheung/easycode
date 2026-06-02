@@ -1,0 +1,158 @@
+import { describe, expect, test } from "bun:test"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import path from "node:path"
+import os from "node:os"
+import { WebSearchService } from "../../src/retrieval"
+
+async function tmpdir() {
+  return mkdtemp(path.join(os.tmpdir(), "easycode-retrieval-"))
+}
+
+describe("web retrieval", () => {
+  test("uses configured Brave Search engine for live web search", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        defaultEngine: "brave",
+        engines: [{ name: "brave", type: "brave", apiKeyEnv: "BRAVE_SEARCH_API_KEY", extraParams: { country: "US" } }],
+      }))
+      const requests: Array<{ url: string; headers: Headers }> = []
+      const service = new WebSearchService(root, {
+        env: { BRAVE_SEARCH_API_KEY: "brave-token" },
+        fetch: async (input, init) => {
+          requests.push({ url: String(input), headers: new Headers(init?.headers) })
+          return Response.json({
+            web: {
+              results: [
+                { title: "OpenAI Codex CLI", url: "https://developers.openai.com/codex/cli", description: "Local coding agent docs." },
+              ],
+            },
+          })
+        },
+      })
+
+      const response = await service.search("codex cli", 3)
+
+      expect(response).toMatchObject({ live: true, engine: "brave" })
+      expect(response.results).toEqual([
+        expect.objectContaining({ title: "OpenAI Codex CLI", url: "https://developers.openai.com/codex/cli", snippet: "Local coding agent docs.", source: "developers.openai.com" }),
+      ])
+      expect(requests[0]?.url).toContain("https://api.search.brave.com/res/v1/web/search")
+      expect(requests[0]?.url).toContain("q=codex+cli")
+      expect(requests[0]?.url).toContain("count=3")
+      expect(requests[0]?.url).toContain("country=US")
+      expect(requests[0]?.headers.get("X-Subscription-Token")).toBe("brave-token")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("supports custom configured search engines", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        engines: [
+          {
+            name: "internal-search",
+            type: "custom",
+            endpoint: "https://search.example.test/query",
+            method: "POST",
+            apiKeyEnv: "INTERNAL_SEARCH_TOKEN",
+            apiKeyHeader: "X-API-Key",
+            queryParam: "text",
+            limitParam: "size",
+            resultsPath: "data.items",
+            titlePath: "headline",
+            urlPath: "link",
+            snippetPath: "summary",
+            sourcePath: "publisher",
+            extraParams: { freshness: "week" },
+          },
+        ],
+      }))
+      const bodies: string[] = []
+      const service = new WebSearchService(root, {
+        env: { INTERNAL_SEARCH_TOKEN: "internal-token" },
+        fetch: async (_input, init) => {
+          bodies.push(String(init?.body))
+          expect(new Headers(init?.headers).get("X-API-Key")).toBe("internal-token")
+          return Response.json({
+            data: {
+              items: [
+                { headline: "Custom result", link: "https://example.test/a", summary: "Custom snippet", publisher: "Example Search" },
+              ],
+            },
+          })
+        },
+      })
+
+      const response = await service.search("custom query", 2, { engine: "internal-search" })
+
+      expect(JSON.parse(bodies[0] ?? "{}")).toEqual({ freshness: "week", text: "custom query", size: 2 })
+      expect(response).toMatchObject({ live: true, engine: "internal-search" })
+      expect(response.results).toEqual([
+        expect.objectContaining({ title: "Custom result", url: "https://example.test/a", snippet: "Custom snippet", source: "Example Search" }),
+      ])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("can explicitly use fixtures even when a live engine is configured", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        defaultEngine: "brave",
+        engines: [{ name: "brave", type: "brave", apiKeyEnv: "BRAVE_SEARCH_API_KEY" }],
+        results: [{ title: "Fixture result", url: "https://fixture.test", snippet: "fixture snippet" }],
+      }))
+      const service = new WebSearchService(root, {
+        env: { BRAVE_SEARCH_API_KEY: "brave-token" },
+        fetch: async () => {
+          throw new Error("live fetch should not be called")
+        },
+      })
+
+      const response = await service.search("fixture", 5, { live: false })
+
+      expect(response.live).toBe(false)
+      expect(response.warning).toBe("live search disabled by request")
+      expect(response.results).toEqual([expect.objectContaining({ title: "Fixture result" })])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("fails when a requested live engine is not configured", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        engines: [{ name: "brave", type: "brave", apiKeyEnv: "BRAVE_SEARCH_API_KEY" }],
+      }))
+      const service = new WebSearchService(root, { env: { BRAVE_SEARCH_API_KEY: "brave-token" } })
+
+      await expect(service.search("codex", 5, { engine: "missing" })).rejects.toThrow("web search engine not found: missing")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("requires a configured engine when live search is explicitly requested", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        results: [{ title: "Fixture result", url: "https://fixture.test", snippet: "fixture snippet" }],
+      }))
+      const service = new WebSearchService(root)
+
+      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+})

@@ -187,7 +187,7 @@ describe("code navigator", () => {
     const authReferences = await navigator.findReferences({ symbol: "AuthService", language: "typescript" })
     const storeReferences = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
 
-    expect(index.generatorVersion).toBe("4")
+    expect(index.generatorVersion).toBe("5")
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "AuthService", line: 3 }))
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "tokenStore", line: 4 }))
     expect(authReferences).toEqual([
@@ -329,6 +329,162 @@ describe("code navigator", () => {
 
     expect(definitions).toEqual([{ filePath: "pkg/service.py", line: 4, preview: "def parent():" }])
     expect(graph.edges).toContainEqual(expect.objectContaining({ from: "pkg/service.py#parent", to: "pkg/service.py#leaf", line: 5 }))
+  })
+
+  test("generic AST local binding scope prevents non-TypeScript false references", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "pkg"), { recursive: true })
+    await Bun.write(path.join(root, "pkg", "service.py"), [
+      "def token_store():",
+      "    return 1",
+      "",
+      "def use_local(token_store):",
+      "    local = token_store",
+      "    return local",
+      "",
+      "def use_global():",
+      "    return token_store()",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      },
+    })
+
+    await navigator.repoMap({ dir: "pkg", language: "python" })
+    const references = await navigator.findReferences({ symbol: "token_store", language: "python" })
+
+    expect(references).toEqual([
+      { filePath: "pkg/service.py", line: 9, preview: "    return token_store()" },
+    ])
+  })
+
+  test("generic AST local binding scope covers Java-like, Rust, Go, and C++ files", async () => {
+    const cases = [
+      {
+        language: "java",
+        filePath: "src/Service.java",
+        symbol: "tokenStore",
+        expectedLine: 10,
+        expectedPreview: "    return tokenStore();",
+        source: [
+          "public class Service {",
+          "  public static int tokenStore() {",
+          "    return 1;",
+          "  }",
+          "  public int useLocal(int tokenStore) {",
+          "    int local = tokenStore;",
+          "    return local;",
+          "  }",
+          "  public int useGlobal() {",
+          "    return tokenStore();",
+          "  }",
+          "}",
+        ],
+      },
+      {
+        language: "kotlin",
+        filePath: "src/service.kt",
+        symbol: "tokenStore",
+        expectedLine: 11,
+        expectedPreview: "    return tokenStore()",
+        source: [
+          "fun tokenStore(): Int {",
+          "    return 1",
+          "}",
+          "",
+          "fun useLocal(tokenStore: Int): Int {",
+          "    val local = tokenStore",
+          "    return local",
+          "}",
+          "",
+          "fun useGlobal(): Int {",
+          "    return tokenStore()",
+          "}",
+        ],
+      },
+      {
+        language: "rust",
+        filePath: "src/service.rs",
+        symbol: "token_store",
+        expectedLine: 11,
+        expectedPreview: "    token_store()",
+        source: [
+          "fn token_store() -> i32 {",
+          "    1",
+          "}",
+          "",
+          "fn use_local(token_store: i32) -> i32 {",
+          "    let local = token_store;",
+          "    local",
+          "}",
+          "",
+          "fn use_global() -> i32 {",
+          "    token_store()",
+          "}",
+        ],
+      },
+      {
+        language: "go",
+        filePath: "src/service.go",
+        symbol: "tokenStore",
+        expectedLine: 11,
+        expectedPreview: "    return tokenStore()",
+        source: [
+          "func tokenStore() int {",
+          "    return 1",
+          "}",
+          "",
+          "func useLocal(tokenStore int) int {",
+          "    local := tokenStore",
+          "    return local",
+          "}",
+          "",
+          "func useGlobal() int {",
+          "    return tokenStore()",
+          "}",
+        ],
+      },
+      {
+        language: "cpp",
+        filePath: "src/service.cpp",
+        symbol: "token_store",
+        expectedLine: 11,
+        expectedPreview: "    return token_store();",
+        source: [
+          "int token_store() {",
+          "    return 1;",
+          "}",
+          "",
+          "int use_local(int token_store) {",
+          "    int local = token_store;",
+          "    return local;",
+          "}",
+          "",
+          "int use_global() {",
+          "    return token_store();",
+          "}",
+        ],
+      },
+    ]
+
+    for (const item of cases) {
+      const root = await tmpdir()
+      await mkdir(path.join(root, "src"), { recursive: true })
+      await Bun.write(path.join(root, item.filePath), item.source.join("\n"))
+      const navigator = new CliCodeNavigator(new Sandbox(root), {
+        runner: async () => {
+          throw new Error("ENOENT")
+        },
+      })
+
+      await navigator.repoMap({ dir: "src", language: item.language })
+      const references = await navigator.findReferences({ symbol: item.symbol, language: item.language })
+
+      expect(references).toEqual([
+        { filePath: item.filePath, line: item.expectedLine, preview: item.expectedPreview },
+      ])
+    }
   })
 
   test("pure JS rgSearch fallback scans files and matches query regex", async () => {

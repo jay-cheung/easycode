@@ -123,19 +123,73 @@ bun run src/cli.ts build --provider fake --tui
 
 ---
 
-### Web Search（本地预置搜索结果）
+### Web Search（真实搜索 + 本地 fixture）
 
-`.easycode/websearch.json` —— 把常见的搜索结果预配为静态数据，**不发起实时网络请求**。
+`.easycode/websearch.json` 支持两种模式：
+
+- 配置 `defaultEngine` 或调用工具时传 `engine`：发起真实搜索。
+- 不配置搜索引擎或显式 `live: false`：读取本地 `results` fixture，便于离线测试。
+
+Brave Search 示例：
 
 ```json
 {
+  "defaultEngine": "brave",
+  "engines": [
+    {
+      "name": "brave",
+      "type": "brave",
+      "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
+      "extraParams": { "country": "US" }
+    }
+  ],
   "results": [
     { "url": "https://example.com", "title": "Example", "snippet": "引用摘要", "retrievedAt": "2026-05-28T00:00:00.000Z" }
   ]
 }
 ```
 
-保存后通过 `web_search` 工具按关键词匹配检索。结果按相关度排序返回，默认上限 5 条。
+Tavily 示例：
+
+```json
+{
+  "defaultEngine": "tavily",
+  "engines": [
+    {
+      "name": "tavily",
+      "type": "tavily",
+      "apiKeyEnv": "TAVILY_API_KEY",
+      "extraParams": { "search_depth": "basic", "topic": "general" }
+    }
+  ]
+}
+```
+
+自定义 JSON 搜索引擎示例：
+
+```json
+{
+  "engines": [
+    {
+      "name": "internal-search",
+      "type": "custom",
+      "endpoint": "https://search.example.com/query",
+      "method": "POST",
+      "apiKeyEnv": "INTERNAL_SEARCH_TOKEN",
+      "apiKeyHeader": "X-API-Key",
+      "queryParam": "text",
+      "limitParam": "size",
+      "resultsPath": "data.items",
+      "titlePath": "headline",
+      "urlPath": "link",
+      "snippetPath": "summary",
+      "sourcePath": "publisher"
+    }
+  ]
+}
+```
+
+`web_search` 参数：`query`、`limit`、`engine`、`live`。API key 建议只通过环境变量提供，不要写入仓库。
 
 ---
 

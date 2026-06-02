@@ -22,7 +22,7 @@ const ConnectorListInput = z.object({})
 const ConnectorCallInput = z.object({ name: z.string() })
 const McpListResourcesInput = z.object({ query: z.string().optional(), limit: z.number().nullish().transform((value) => value ?? 10) })
 const McpReadResourceInput = z.object({ uri: z.string(), server: z.string().optional() })
-const WebSearchInput = z.object({ query: z.string(), limit: z.number().nullish().transform((value) => value ?? 5) })
+const WebSearchInput = z.object({ query: z.string(), limit: z.number().nullish().transform((value) => value ?? 5), engine: z.string().optional(), live: z.boolean().optional() })
 
 export function createBuiltinRegistry() {
   const registry = new ToolRegistry()
@@ -525,20 +525,20 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "web_search",
-    description: "Search configured web evidence from .easycode/websearch.json and return cited results. Live network search is not enabled by default.",
+    description: "Search web evidence. Uses configured live search engines from .easycode/websearch.json when engine/defaultEngine is set, otherwise searches fixture results.",
     inputSchema: WebSearchInput,
-    jsonSchema: objectSchema({ query: { type: "string" }, limit: { type: "number" } }),
+    jsonSchema: objectSchema({ query: { type: "string" }, limit: { type: "number" }, engine: { type: "string" }, live: { type: "boolean" } }, ["query"]),
     permission: "web_search",
     modes: ["build", "plan"],
     patterns: (input) => [`web:${WebSearchInput.parse(input).query}`],
     execute: async (input, ctx) => {
       const startedAt = Date.now()
       const params = WebSearchInput.parse(input)
-      const results = await new WebSearchService(ctx.sandbox.root).search(params.query, params.limit)
+      const response = await new WebSearchService(ctx.sandbox.root).search(params.query, params.limit, { engine: params.engine, live: params.live, signal: ctx.signal })
       return {
         title: params.query,
-        output: formatWebResults(results),
-        metadata: { status: "succeeded", query: params.query, count: results.length, elapsedMs: Date.now() - startedAt, sources: results.map(webCitation), live: false },
+        output: formatWebResults(response.results),
+        metadata: { status: "succeeded", query: params.query, engine: response.engine, count: response.results.length, elapsedMs: Date.now() - startedAt, sources: response.results.map(webCitation), live: response.live, warning: response.warning },
       }
     },
   })
