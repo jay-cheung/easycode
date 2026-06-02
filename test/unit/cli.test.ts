@@ -124,11 +124,14 @@ describe("cli args", () => {
 
   test("session startup creates default when no project sessions exist", async () => {
     const root = await tmpdir()
+    const cleanEnv = { ...process.env }
+    cleanEnv.TAVILY_API_KEY = ""
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      env: cleanEnv,
     })
     child.stdin.write(":exit\n")
     child.stdin.end()
@@ -167,11 +170,14 @@ describe("cli args", () => {
       defaultEngine: "tavily",
       engines: [{ name: "tavily", type: "tavily", apiKey: "tvly-inline" }],
     }))
+    const cleanEnv = { ...process.env }
+    cleanEnv.TAVILY_API_KEY = ""
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      env: cleanEnv,
     })
     child.stdin.write(":exit\n")
     child.stdin.end()

@@ -88,7 +88,7 @@ describe("web retrieval", () => {
       await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
         results: [{ title: "Fixture result", url: "https://fixture.test", snippet: "fixture snippet" }],
       }))
-      const service = new WebSearchService(root)
+      const service = new WebSearchService(root, { env: {} })
 
       await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine. Configure Tavily with TAVILY_API_KEY. Set it in the repo root .env or your shell environment.")
     } finally {

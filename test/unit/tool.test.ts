@@ -9,6 +9,8 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 
+delete process.env.TAVILY_API_KEY
+
 const tempRoots: string[] = []
 
 async function tmpdir() {
