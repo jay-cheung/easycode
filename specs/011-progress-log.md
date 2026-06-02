@@ -102,3 +102,23 @@
   - `bun run build`: pass.
   - `bun test`: 282 pass, 2 skip, 0 fail.
   - `bun run verify:v1`: pass; includes typecheck, 282 tests, fake eval, and cache benchmark.
+
+## Step 6: Default WebSearch Engine Switched to Google
+
+- Scope: add a built-in `google` engine and make Google the default documented live-search configuration.
+- External source check:
+  - Google Programmable Search JSON API uses `GET https://customsearch.googleapis.com/customsearch/v1`.
+  - The request requires `q` and `cx`; API key is passed as `key`.
+- Implementation:
+  - Added built-in `google` engine defaults for endpoint, `q`, `num`, `items[].title`, `items[].link`, and `items[].snippet`.
+  - Added generic `apiKeyParam` support so engines can send auth as a query parameter instead of an HTTP header.
+  - Updated docs so the default `websearch.json` live example uses Google.
+- Code Complete review result:
+  - Correctness: `google` fails fast when `extraParams.cx` is missing, instead of issuing an invalid live request.
+  - Maintainability: query-param auth is implemented generically rather than special-casing Google in the request path.
+  - Verification: added live Google request coverage and the missing-`cx` error path.
+- Verification:
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/permission.test.ts`: 50 pass, 0 fail.
+  - `bun run typecheck`: pass.
+  - `bun run build`: pass.
+  - `bun run verify:v1`: pass; includes typecheck, 284 tests, fake eval, and cache benchmark.

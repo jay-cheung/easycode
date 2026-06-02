@@ -130,6 +130,30 @@ Available tools:
 - Set `defaultEngine`, or pass `engine` to the tool: run live search.
 - Omit search engines, or pass `live: false`: read local `results` fixtures for deterministic tests.
 
+Google Programmable Search example:
+
+```json
+{
+  "defaultEngine": "google",
+  "engines": [
+    {
+      "name": "google",
+      "type": "google",
+      "apiKeyEnv": "GOOGLE_SEARCH_API_KEY",
+      "extraParams": {
+        "cx": "your-programmable-search-engine-id",
+        "hl": "en"
+      }
+    }
+  ],
+  "results": [
+    { "url": "https://example.com", "title": "Example", "snippet": "Quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
+  ]
+}
+```
+
+The built-in `google` engine uses the Google Programmable Search JSON API and requires `extraParams.cx`.
+
 Brave Search example:
 
 ```json
@@ -142,9 +166,6 @@ Brave Search example:
       "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
       "extraParams": { "country": "US" }
     }
-  ],
-  "results": [
-    { "url": "https://example.com", "title": "Example", "snippet": "Quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
   ]
 }
 ```

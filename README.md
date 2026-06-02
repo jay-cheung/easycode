@@ -130,6 +130,30 @@ bun run src/cli.ts build --provider fake --tui
 - 配置 `defaultEngine` 或调用工具时传 `engine`：发起真实搜索。
 - 不配置搜索引擎或显式 `live: false`：读取本地 `results` fixture，便于离线测试。
 
+Google Programmable Search 示例：
+
+```json
+{
+  "defaultEngine": "google",
+  "engines": [
+    {
+      "name": "google",
+      "type": "google",
+      "apiKeyEnv": "GOOGLE_SEARCH_API_KEY",
+      "extraParams": {
+        "cx": "your-programmable-search-engine-id",
+        "hl": "zh-CN"
+      }
+    }
+  ],
+  "results": [
+    { "url": "https://example.com", "title": "Example", "snippet": "引用摘要", "retrievedAt": "2026-05-28T00:00:00.000Z" }
+  ]
+}
+```
+
+`google` 内建引擎使用 Google Programmable Search JSON API，请配置 `extraParams.cx`。
+
 Brave Search 示例：
 
 ```json
@@ -142,9 +166,6 @@ Brave Search 示例：
       "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
       "extraParams": { "country": "US" }
     }
-  ],
-  "results": [
-    { "url": "https://example.com", "title": "Example", "snippet": "引用摘要", "retrievedAt": "2026-05-28T00:00:00.000Z" }
   ]
 }
 ```

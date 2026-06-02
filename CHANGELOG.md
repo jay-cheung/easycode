@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- Add live `web_search` engine support with built-in Brave/Tavily adapters and configurable custom JSON search engines.
+- Add live `web_search` engine support with built-in Google/Brave/Tavily adapters and configurable custom JSON search engines.
 - Add TypeScript AST scope binding to code navigation so local same-name variables do not produce false symbol references.
 - Add fixture-backed `mcp_list_resources`, `mcp_read_resource`, and `web_search` tools with citation metadata and explicit retrieval permissions.
 - Add opt-in `--tui` mode that reuses the existing CLI session, slash command, permission, cancellation, plan approval, timeline, and logger paths.

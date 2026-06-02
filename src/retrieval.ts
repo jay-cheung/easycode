@@ -30,12 +30,13 @@ const SearchPrimitive = z.union([z.string(), z.number(), z.boolean()])
 
 const WebSearchEngine = z.object({
   name: z.string(),
-  type: z.enum(["brave", "tavily", "custom"]).default("custom"),
+  type: z.enum(["brave", "google", "tavily", "custom"]).default("custom"),
   endpoint: z.string().optional(),
   method: z.enum(["GET", "POST"]).optional(),
   apiKeyEnv: z.string().optional(),
   apiKey: z.string().optional(),
   apiKeyHeader: z.string().optional(),
+  apiKeyParam: z.string().optional(),
   apiKeyPrefix: z.string().optional(),
   headers: z.record(z.string(), z.string()).default({}),
   queryParam: z.string().optional(),
@@ -136,7 +137,7 @@ export class WebSearchService {
     const normalized = normalizeEngine(engine)
     const apiKey = apiKeyFor(normalized, this.options.env ?? process.env)
     const headers = headersFor(normalized, apiKey)
-    const request = requestFor(normalized, query, clampLimit(limit), headers, signal)
+    const request = requestFor(normalized, query, clampLimit(limit), headers, apiKey, signal)
     const fetcher = this.options.fetch ?? fetch
     try {
       const response = await fetcher(request.url, request.init)
@@ -228,6 +229,21 @@ function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine
       snippetPath: engine.snippetPath ?? "description",
     }
   }
+  if (engine.type === "google") {
+    if (!("cx" in engine.extraParams)) throw new Error(`google web search engine ${engine.name} requires extraParams.cx`)
+    return {
+      ...engine,
+      endpoint: engine.endpoint ?? "https://customsearch.googleapis.com/customsearch/v1",
+      method: engine.method ?? "GET",
+      apiKeyParam: engine.apiKeyParam ?? "key",
+      queryParam: engine.queryParam ?? "q",
+      limitParam: engine.limitParam ?? "num",
+      resultsPath: engine.resultsPath ?? "items",
+      titlePath: engine.titlePath ?? "title",
+      urlPath: engine.urlPath ?? "link",
+      snippetPath: engine.snippetPath ?? "snippet",
+    }
+  }
   if (engine.type === "tavily") {
     return {
       ...engine,
@@ -275,8 +291,9 @@ function substituteHeaderTokens(headers: Record<string, string>, apiKey: string)
   return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, value.replaceAll("${API_KEY}", apiKey)]))
 }
 
-function requestFor(engine: ReturnType<typeof normalizeEngine>, query: string, limit: number, headers: Record<string, string>, signal: AbortSignal | undefined) {
+function requestFor(engine: ReturnType<typeof normalizeEngine>, query: string, limit: number, headers: Record<string, string>, apiKey: string | undefined, signal: AbortSignal | undefined) {
   const params = { ...engine.extraParams, [engine.queryParam]: query, [engine.limitParam]: limit }
+  if (engine.apiKeyParam && apiKey) params[engine.apiKeyParam] = apiKey
   const timeout = timeoutSignal(signal, engine.timeoutMs)
   if (engine.method === "POST") {
     return {
