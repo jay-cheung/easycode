@@ -5,3 +5,4 @@ bun.lock
 .easycode
 .DS_Store
 dist/
+package-lock.json
