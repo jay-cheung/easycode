@@ -82,6 +82,28 @@ describe("cli args", () => {
     expect(() => parseArgs(["build", "--max-steps", "nope"])).toThrow("--max-steps requires a positive number")
   })
 
+  test("parses --insecure and -k flags", () => {
+    const originalValue = process.env.NODE_TLS_REJECT_UNAUTHORIZED
+    try {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      const args = parseArgs(["build", "--once", "hello", "--provider", "fake", "--insecure"])
+      expect(args.insecure).toBe(true)
+      expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED as any).toBe("0")
+
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      const argsShort = parseArgs(["build", "--once", "hello", "--provider", "fake", "-k"])
+      expect(argsShort.insecure).toBe(true)
+      expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED as any).toBe("0")
+      expect(argsShort.prompt).toBe("hello")
+    } finally {
+      if (originalValue === undefined) {
+        delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      } else {
+        process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalValue
+      }
+    }
+  })
+
   test("session startup waits for input before running provider", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "deepseek", "--logger", "--session", "startup", "--root", root], {

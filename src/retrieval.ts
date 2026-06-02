@@ -1,6 +1,7 @@
 import path from "node:path"
 import { z } from "zod"
 import { easycodeDir } from "./easycode-path"
+import { getTlsConfig } from "./tls-config"
 
 const webSearchEnvHint = "Set it in the repo root .env or your shell environment."
 
@@ -144,6 +145,12 @@ export class WebSearchService {
     const headers = headersFor(normalized, apiKey)
     const request = requestFor(normalized, query, clampLimit(limit), headers, apiKey, signal)
     const fetcher = this.options.fetch ?? fetch
+
+    const tlsConfig = getTlsConfig()
+    if (tlsConfig && !this.options.fetch) {
+      (request.init as any).tls = tlsConfig
+    }
+
     try {
       const response = await fetcher(request.url, request.init)
       if (!response.ok) throw new Error(`web search ${normalized.name} failed: HTTP ${response.status}`)

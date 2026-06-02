@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun run src/cli.ts",
-    "dev": "bun run src/cli.ts build --provider deepseek --logger",
+    "dev": "bun run src/cli.ts build --provider deepseek --logger -k",
     "dev:openai": "bun run src/cli.ts build --provider openai --logger",
     "dev:plan": "bun run src/cli.ts plan --provider deepseek --logger",
     "gate": "bun run dev/quality/quality-gate.ts",

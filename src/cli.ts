@@ -115,6 +115,10 @@ export function parseArgs(argv: string[]) {
   if (logger) {
     process.env.EASYCODE_LOGGER = "true"
   }
+  const insecure = normalizedArgv.includes("--insecure") || normalizedArgv.includes("-k")
+  if (insecure) {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+  }
   const tui = !normalizedArgv.includes("--no-tui")
   const providerExplicit = providerIndex !== -1
   const rawProvider = providerIndex === -1 ? "fake" : normalizedArgv[providerIndex + 1]
@@ -129,10 +133,10 @@ export function parseArgs(argv: string[]) {
   const maxSteps = numericFlag(normalizedArgv, maxStepsIndex, "--max-steps")
   const prompt = normalizedArgv.slice(1).filter((arg, index, items) => {
     const realIndex = index + 1
-    return !arg.startsWith("--") && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
+    return !arg.startsWith("--") && arg !== "-k" && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once, tui }
+  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once, tui, insecure }
 }
 
 function normalizeModeArgv(argv: string[]) {
@@ -142,7 +146,7 @@ function normalizeModeArgv(argv: string[]) {
 }
 
 function usage() {
-  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id]`
+  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id] [--insecure|-k]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {

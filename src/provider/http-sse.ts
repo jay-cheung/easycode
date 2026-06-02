@@ -1,5 +1,6 @@
 import { Provider, ProviderError, ProviderEvent, ProviderInput } from "./types"
 import type { ProviderCapabilities, ProviderOptions } from "./types"
+import { getTlsConfig } from "../tls-config"
 
 export type HttpSSEProviderOptions = {
   name: string
@@ -39,12 +40,19 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
     if (!apiKey) throw new ProviderError(this.missingApiKeyMessage)
     const body = this.buildRequestBody(input)
     yield { type: "request", request: { url: this.url, method: "POST", body } }
-    const response = await fetch(this.url, {
+
+    const tlsConfig = getTlsConfig()
+    const fetchOptions: RequestInit & { tls?: unknown } = {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
       signal: input.signal,
-    })
+    }
+    if (tlsConfig) {
+      fetchOptions.tls = tlsConfig
+    }
+
+    const response = await fetch(this.url, fetchOptions)
     if (!response.ok || !response.body) {
       const output = await response.text().catch(() => "")
       yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), body: output } }
