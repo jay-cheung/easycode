@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { ContextManager, estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, type LedgerKind, type LedgerRecord, type LedgerStatus } from "../../src/context"
+import { ContextManager, estimateMessages, estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix, type LedgerKind, type LedgerRecord, type LedgerStatus } from "../../src/context"
 import { toolCallMessage, toolResultMessage, textMessage } from "../../src/message"
 import { createAgent } from "../../src/agent"
 import { createBuiltinRegistry } from "../../src/tool"
@@ -97,6 +97,33 @@ describe("context", () => {
     ], 10)
 
     expect(suffix).toEqual([])
+  })
+
+  test("recent provider suffix keeps the latest user turn instead of an assistant-only tail", () => {
+    const user = textMessage("user", "recent user " + "x".repeat(300))
+    const assistant = textMessage("assistant", "recent assistant")
+    const budget = estimateMessages([user])
+
+    expect(estimateMessages([user, assistant])).toBeGreaterThan(budget)
+
+    const suffix = recentProviderMessageSuffix([user, assistant], budget)
+    expect(suffix.map((message) => message.role)).toEqual(["user"])
+  })
+
+  test("compact keeps the latest user turn when the latest full turn exceeds the preserve budget", () => {
+    const latestUserText = "recent user " + "x".repeat(300)
+    const latestUser = textMessage("user", latestUserText)
+    const latestAssistant = textMessage("assistant", "recent assistant")
+    const context = new ContextManager({ maxTokens: 100, compactAt: 0.5, preserveRecentUserTurns: 1, compactPreserveTokens: estimateMessages([latestUser]) })
+
+    context.add(textMessage("user", "older user with enough content"))
+    context.add(textMessage("assistant", "older assistant"))
+    context.add(latestUser)
+    context.add(latestAssistant)
+
+    expect(context.compact("model summary")).toBe(true)
+    expect(context.state.messages.map((message) => message.role)).toEqual(["user"])
+    expect(context.state.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
   })
 
   test("compose after summary emits only paired Responses tool history", () => {

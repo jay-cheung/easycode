@@ -28,18 +28,24 @@ export function recentUserTurnMessages(messages: Message[], preserveRecentUserTu
  * Trim a recent suffix to the token budget without leaving orphan tool results
  * or unmatched tool calls in provider history.
  */
-export function recentProviderMessageSuffix(messages: Message[], maxTokens = 1_000) {
-  const suffix: Message[] = []
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const candidate = validProviderMessageSuffix([messages[index], ...suffix])
-    if (candidate.length === 0) {
-      if (messages[index].role === "tool") suffix.unshift(messages[index])
-      continue
-    }
-    if (estimateMessages(candidate) > maxTokens && suffix.length > 0) break
-    suffix.unshift(messages[index])
+export function recentProviderMessageSuffix(messages: Message[], maxTokens = 3_000) {
+  const userTurnStarts = messages.flatMap((message, index) => (message.role === "user" ? [index] : []))
+  if (userTurnStarts.length === 0) return greedyProviderMessageSuffix(messages, maxTokens)
+
+  const latestTurnStart = userTurnStarts[userTurnStarts.length - 1]
+  const latestTurn = validProviderMessageSuffix(messages.slice(latestTurnStart))
+
+  // Prefer preserving the latest user turn instead of leaving only an
+  // assistant tail after compaction or session pruning.
+  if (estimateMessages(latestTurn) > maxTokens) return validProviderMessageSuffix([messages[latestTurnStart]])
+
+  let preserved = latestTurn
+  for (let index = userTurnStarts.length - 2; index >= 0; index -= 1) {
+    const candidate = validProviderMessageSuffix(messages.slice(userTurnStarts[index]))
+    if (estimateMessages(candidate) > maxTokens) break
+    preserved = candidate
   }
-  return validProviderMessageSuffix(suffix)
+  return preserved
 }
 
 /** Split history into compacted turns and the recent active window by user turns. */
@@ -68,4 +74,18 @@ function isCJK(char: string) {
 /** Estimate tokens for messages after the same text conversion used for provider input. */
 export function estimateMessages(messages: Message[]) {
   return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
+}
+
+function greedyProviderMessageSuffix(messages: Message[], maxTokens: number) {
+  const suffix: Message[] = []
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const candidate = validProviderMessageSuffix([messages[index], ...suffix])
+    if (candidate.length === 0) {
+      if (messages[index].role === "tool") suffix.unshift(messages[index])
+      continue
+    }
+    if (estimateMessages(candidate) > maxTokens && suffix.length > 0) break
+    suffix.unshift(messages[index])
+  }
+  return validProviderMessageSuffix(suffix)
 }

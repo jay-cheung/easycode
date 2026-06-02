@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { ContextManager, type LedgerRecord } from "../../src/context"
+import { ContextManager, estimateMessages, type LedgerRecord } from "../../src/context"
 import { textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
 import { safeSessionID, SessionStore } from "../../src/session"
 
@@ -196,6 +196,31 @@ describe("session store", () => {
     const restored = await store.context("demo")
     expect(restored.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
     expect(restored.state.tokenEstimate).toBeLessThan(80)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("saves and restores the latest user turn instead of an assistant-only tail", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const latestUserText = "recent user " + "x".repeat(300)
+    const latestUser = textMessage("user", latestUserText)
+    const latestAssistant = textMessage("assistant", "recent assistant")
+    const context = new ContextManager({ preserveRecentUserTurns: 1, compactPreserveTokens: estimateMessages([latestUser]) })
+
+    context.add(textMessage("user", "older user"))
+    context.add(textMessage("assistant", "older assistant"))
+    context.add(latestUser)
+    context.add(latestAssistant)
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.messages.map((message) => message.role)).toEqual(["user"])
+    expect(saved?.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
+
+    const restored = await store.context("demo")
+    expect(restored.state.messages.map((message) => message.role)).toEqual(["user"])
+    expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
     await rm(root, { recursive: true, force: true })
   })
 

@@ -42,7 +42,7 @@ export class ContextManager implements ContextManagerLike {
     this.contextWindowTokens = options.contextWindowTokens ?? maxTokens
     this.responseReserveTokens = options.responseReserveTokens ?? Math.max(2_000, Math.min(8_000, Math.floor(maxTokens * 0.2)))
     this.pricing = options.pricing ?? defaultCachePricing()
-    this.compactPreserveTokens = options.compactPreserveTokens ?? 1_000
+    this.compactPreserveTokens = options.compactPreserveTokens ?? 3_000
     this.safetyMultiplier = clampNumber(options.tokenEstimateSafetyMultiplier ?? defaultSafetyMultiplier, minSafetyMultiplier, maxSafetyMultiplier)
     this._strategyState = {
       maxTokens,
