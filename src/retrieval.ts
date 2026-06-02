@@ -4,6 +4,7 @@ import { easycodeDir } from "./easycode-path"
 import { getTlsConfig } from "./tls-config"
 
 const webSearchEnvHint = "Set it in the repo root .env or your shell environment."
+const tavilySetupHint = `Configure Tavily with TAVILY_API_KEY. ${webSearchEnvHint}`
 
 const McpResource = z.object({
   uri: z.string(),
@@ -119,13 +120,13 @@ export class WebSearchService {
   async search(query: string, limit = 5, options: { engine?: string; live?: boolean; signal?: AbortSignal } = {}): Promise<WebSearchResponse> {
     const file = Bun.file(this.configPath)
     const loaded = (await file.exists()) ? WebSearchConfig.parse(JSON.parse(await file.text())) : WebSearchConfig.parse({})
-    const config = withImplicitGoogleDefaults(loaded, this.options.env ?? process.env)
+    const config = withImplicitDefaults(loaded, this.options.env ?? process.env)
     const selectedEngineName = options.engine ?? config.defaultEngine
     const engine = selectEngine(config.engines, selectedEngineName)
     if (options.engine && !engine) throw new Error(`web search engine not found: ${options.engine}`)
     if (config.defaultEngine && !engine && options.live !== false) throw new Error(`web search default engine not found: ${config.defaultEngine}`)
     if (options.live === true && !engine) {
-      throw new Error(`live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX. ${webSearchEnvHint}`)
+      throw new Error(`live web search requires a configured engine. ${tavilySetupHint}`)
     }
     const shouldSearchLive = options.live ?? Boolean(engine && selectedEngineName)
     if (engine && shouldSearchLive) {
@@ -227,13 +228,22 @@ function selectEngine(engines: WebSearchEngine[], name: string | undefined) {
   return engines.find((engine) => engine.name === name)
 }
 
-function withImplicitGoogleDefaults(config: z.infer<typeof WebSearchConfig>, env: Record<string, string | undefined>) {
+function withImplicitDefaults(config: z.infer<typeof WebSearchConfig>, env: Record<string, string | undefined>) {
+  const tavilyConfigured = Boolean(env.TAVILY_API_KEY)
   const cx = env.GOOGLE_SEARCH_CX ?? env.GOOGLE_SEARCH_ENGINE_ID
   const existingGoogle = config.engines.find((engine) => engine.name === "google")
+  const existingTavily = config.engines.find((engine) => engine.name === "tavily")
   const engines = config.engines.map((engine) => {
     if (engine.name !== "google" || "cx" in engine.extraParams || !cx) return engine
     return { ...engine, extraParams: { ...engine.extraParams, cx } }
   })
+  if (!existingTavily && tavilyConfigured) {
+    engines.push(WebSearchEngine.parse({
+      name: "tavily",
+      type: "tavily",
+      apiKeyEnv: "TAVILY_API_KEY",
+    }))
+  }
   if (!existingGoogle && (env.GOOGLE_SEARCH_API_KEY || cx)) {
     engines.push(WebSearchEngine.parse({
       name: "google",
@@ -244,7 +254,11 @@ function withImplicitGoogleDefaults(config: z.infer<typeof WebSearchConfig>, env
   }
   return {
     ...config,
-    defaultEngine: config.defaultEngine ?? (engines.some((engine) => engine.name === "google") ? "google" : undefined),
+    defaultEngine: config.defaultEngine ?? (
+      engines.some((engine) => engine.name === "tavily") ? "tavily" :
+      engines.some((engine) => engine.name === "google") ? "google" :
+      undefined
+    ),
     engines,
   }
 }

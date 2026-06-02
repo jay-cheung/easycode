@@ -9,7 +9,38 @@ async function tmpdir() {
 }
 
 describe("web retrieval", () => {
-  test("uses implicit Google default engine from environment without config file", async () => {
+  test("uses implicit Tavily default engine from environment without config file", async () => {
+    const root = await tmpdir()
+    try {
+      const requests: Array<{ body: string; headers: Headers }> = []
+      const service = new WebSearchService(root, {
+        env: {
+          TAVILY_API_KEY: "tavily-token",
+        },
+        fetch: async (_input, init) => {
+          requests.push({ body: String(init?.body), headers: new Headers(init?.headers) })
+          return Response.json({
+            results: [
+              { title: "Implicit Tavily", url: "https://example.com/tavily", content: "Implicit Tavily default result." },
+            ],
+          })
+        },
+      })
+
+      const response = await service.search("easycode", 3)
+
+      expect(response).toMatchObject({ live: true, engine: "tavily" })
+      expect(response.results).toEqual([
+        expect.objectContaining({ title: "Implicit Tavily", url: "https://example.com/tavily", snippet: "Implicit Tavily default result." }),
+      ])
+      expect(JSON.parse(requests[0]?.body ?? "{}")).toEqual({ query: "easycode", max_results: 3 })
+      expect(requests[0]?.headers.get("Authorization")).toBe("Bearer tavily-token")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("uses implicit Google fallback when Tavily is not configured", async () => {
     const root = await tmpdir()
     try {
       const requests: Array<{ url: string; headers: Headers }> = []
@@ -228,7 +259,7 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root)
 
-      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX. Set it in the repo root .env or your shell environment.")
+      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine. Configure Tavily with TAVILY_API_KEY. Set it in the repo root .env or your shell environment.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
