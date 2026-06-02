@@ -1,7 +1,7 @@
 import path from "node:path"
-import type { Agent } from "../../agent"
-import { type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "../../context"
-import { textMessage, type Message } from "../../message"
+import type { Agent } from "../../../src/agent"
+import { type ContextLedger, type LedgerKind, type LedgerRecord, type LedgerScope } from "../../../src/context"
+import { textMessage, type Message } from "../../../src/message"
 import type { APIxCase, APIxOptions, APIxTrust } from "./types"
 
 export async function loadFixture(root: string, task: APIxCase) {

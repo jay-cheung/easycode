@@ -1,7 +1,9 @@
 # Changelog
 
 ## Unreleased
+- Add a unified quality-gate runner plus `gate`, `verify:full`, and `verify:provider` scripts, and make `verify:v1` the default post-change gate for tests, evals, APIx subset, and cache benchmark.
 - Add live `web_search` engine support with built-in Google/Brave/Tavily adapters and configurable custom JSON search engines.
+- Default runtime `web_search` to implicit Google when `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX` or `GOOGLE_SEARCH_ENGINE_ID` are configured.
 - Add TypeScript AST scope binding to code navigation so local same-name variables do not produce false symbol references.
 - Add fixture-backed `mcp_list_resources`, `mcp_read_resource`, and `web_search` tools with citation metadata and explicit retrieval permissions.
 - Add opt-in `--tui` mode that reuses the existing CLI session, slash command, permission, cancellation, plan approval, timeline, and logger paths.

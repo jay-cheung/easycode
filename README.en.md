@@ -129,6 +129,7 @@ Available tools:
 
 - Set `defaultEngine`, or pass `engine` to the tool: run live search.
 - Omit search engines, or pass `live: false`: read local `results` fixtures for deterministic tests.
+- If `.easycode/websearch.json` is absent but `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX` (or `GOOGLE_SEARCH_ENGINE_ID`) are present in the environment, runtime falls back to `google` as the default live engine.
 
 Google Programmable Search example:
 

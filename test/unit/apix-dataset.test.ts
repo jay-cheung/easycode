@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
-import { runAPIxEval } from "../../src/evals/apix"
-import { contextLedgerForCase } from "../../src/evals/apix/case"
-import { validateCase } from "../../src/evals/apix/validation"
+import { runAPIxEval } from "../../dev/quality/apix"
+import { contextLedgerForCase } from "../../dev/quality/apix/case"
+import { validateCase } from "../../dev/quality/apix/validation"
 
 type APIxCase = {
   id: string
@@ -93,7 +93,7 @@ describe("APIx golden dataset manifest", () => {
   })
 
   test("does not allow case-specific APIx prompt specializations", async () => {
-    const caseSource = await Bun.file(path.resolve(import.meta.dir, "../../src/evals/apix/case.ts")).text()
+    const caseSource = await Bun.file(path.resolve(import.meta.dir, "../../dev/quality/apix/case.ts")).text()
     expect(caseSource).not.toMatch(/task\.id\s*={2,3}\s*["']APIX-\d{3}["']/)
   })
 

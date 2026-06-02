@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import path from "node:path"
-import { runCacheBenchmark } from "../../src/cache-benchmark"
+import { runCacheBenchmark } from "../../dev/quality/cache-benchmark"
 
 describe("cache benchmark", () => {
   test("simulates cache hit rate and effective token cost for fixed every-step profile", async () => {

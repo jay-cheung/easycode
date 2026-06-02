@@ -1,4 +1,4 @@
-import type { ProviderEvent } from "../../provider"
+import type { ProviderEvent } from "../../../src/provider"
 import type { APIxUsage, CacheEvaluation, APIxCase } from "./types"
 
 export function emptyUsage(): APIxUsage {
@@ -28,4 +28,3 @@ export function cacheEvaluationForCase(task: APIxCase, minPrefixTokens: number |
   }
   return { requiredRatio, eligible: true, staticPrefixTokens, ...(minPrefixTokens !== undefined ? { minPrefixTokens } : {}) }
 }
-

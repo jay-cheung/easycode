@@ -1,15 +1,15 @@
 import path from "node:path"
 import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
-import { AgentRunner } from "./agent"
-import { defaultCachePricing } from "./cache-policy"
-import { ContextManager, estimateTextTokens, type ContextStrategyState } from "./context"
-import { loadEnvFile } from "./cli"
-import type { AgentMode, Message } from "./message"
-import { defaultPermissionRules, PermissionService } from "./permission"
-import { createProvider, defaultProviderCapabilities, hasProvider, listProviders, type Provider, type ProviderCapabilities, type ProviderEvent, type ProviderInput, type ProviderName } from "./provider"
-import { normalizeSessionSettings, type SessionSettings } from "./settings"
-import { createBuiltinRegistry, type ToolContext, type ToolRegistryLike, type ToolResult } from "./tool"
+import { AgentRunner } from "../../src/agent"
+import { defaultCachePricing } from "../../src/cache-policy"
+import { ContextManager, estimateTextTokens, type ContextStrategyState } from "../../src/context"
+import { loadEnvFile } from "../../src/cli"
+import type { AgentMode, Message } from "../../src/message"
+import { defaultPermissionRules, PermissionService } from "../../src/permission"
+import { createProvider, defaultProviderCapabilities, hasProvider, listProviders, type Provider, type ProviderCapabilities, type ProviderEvent, type ProviderInput, type ProviderName } from "../../src/provider"
+import { normalizeSessionSettings, type SessionSettings } from "../../src/settings"
+import { createBuiltinRegistry, type ToolContext, type ToolRegistryLike, type ToolResult } from "../../src/tool"
 
 type CacheBenchmarkProfile = "every-step"
 type BenchmarkProviderName = ProviderName | "simulated"
@@ -252,7 +252,7 @@ class RecordingProvider implements Provider {
 }
 
 export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
-  const projectRoot = options.root ?? path.resolve(import.meta.dir, "..")
+  const projectRoot = options.root ?? path.resolve(import.meta.dir, "../..")
   await loadEnvFile(projectRoot)
   const provider = options.provider ?? "deepseek"
   const suite = options.suite ?? "real"

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import os from "node:os"
 import path from "node:path"
 import { mkdtemp, rm } from "node:fs/promises"
-import { formatProviderGateReport, runProviderGate } from "../../src/provider-gate"
+import { formatProviderGateReport, runProviderGate } from "../../dev/quality/provider-gate"
 
 describe("provider gate", () => {
   test("records missing provider environment as an explicit skip", async () => {

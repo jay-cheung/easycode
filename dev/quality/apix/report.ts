@@ -1,4 +1,4 @@
-import { defaultCachePricing } from "../../cache-policy"
+import { defaultCachePricing } from "../../../src/cache-policy"
 import type { APIxOptions, APIxResult } from "./types"
 import { optimizationForCause } from "./validation"
 

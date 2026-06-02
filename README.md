@@ -129,6 +129,7 @@ bun run src/cli.ts build --provider fake --tui
 
 - 配置 `defaultEngine` 或调用工具时传 `engine`：发起真实搜索。
 - 不配置搜索引擎或显式 `live: false`：读取本地 `results` fixture，便于离线测试。
+- 如果未配置 `.easycode/websearch.json`，但环境里存在 `GOOGLE_SEARCH_API_KEY` 和 `GOOGLE_SEARCH_CX`（或 `GOOGLE_SEARCH_ENGINE_ID`），运行时会自动使用 `google` 作为默认 live 引擎。
 
 Google Programmable Search 示例：
 
@@ -359,14 +360,29 @@ OPENAI_COMPAT_MODEL=your-model
 ## 验证
 
 ```bash
+bun run gate
 bun run verify:v1
+bun run verify:full
+bun run verify:provider -- --provider deepseek
+```
+
+统一 gate 分层如下：
+
+- `bun run gate` / `bun run verify:v1`：日常开发 gate。依次跑 `typecheck`、`bun test`、`fake eval`、经过校准的本地 `APIx` hard-gate 子集、`cache benchmark`。每次新需求开发完成后默认需要通过这一层。
+- `bun run verify:full`：更重的本地 gate。在开发 gate 基础上追加 `build`；当前默认仍使用同一组稳定 APIx gate 用例，完整数据集继续保留给单独的 `apix:eval` 做能力盘点。
+- `bun run verify:provider -- --provider <name>`：真实 provider 就绪性 gate，会串起 smoke eval、APIx 子集、cache benchmark，并把报告写到 `.easycode/reports/quality-gate`。
+
+如果只想单独跑某一类验证，现有命令仍然保留：
+
+```bash
 bun test
 bun run eval --provider fake
 bun run apix:eval --provider simulated --table
 bun run cache:bench -- --provider simulated --suite real --quiet
+bun run provider:gate -- --provider deepseek
 ```
 
-真实 provider 验证需要显式启用：
+真实 provider 单项验证也可以显式启用：
 
 ```bash
 EASYCODE_TEST_PROVIDER=deepseek bun run test:real

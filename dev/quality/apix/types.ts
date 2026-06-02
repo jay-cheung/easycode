@@ -1,4 +1,4 @@
-import type { ProviderName } from "../../provider"
+import type { ProviderName } from "../../../src/provider"
 
 export type APIxManifest = {
   cases: APIxCase[]

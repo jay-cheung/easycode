@@ -1,5 +1,5 @@
 import path from "node:path"
-import { hasProvider, listProviders } from "../../provider"
+import { hasProvider, listProviders } from "../../../src/provider"
 import { formatReport } from "./report"
 import { runAPIxEval } from "./runner"
 import type { APIxCase, APIxOptions } from "./types"
@@ -41,4 +41,3 @@ export async function runAPIxEvalCli(argv = process.argv.slice(2)) {
   if (report.results.some((result) => !result.scoreOnly && !result.passed)) process.exit(1)
   return report
 }
-

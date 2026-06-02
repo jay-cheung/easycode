@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 6: Unified Test And Eval Gate
+
+- Scope: consolidate typecheck, tests, fake evals, APIx, cache benchmark, build, and provider readiness behind one reportable gate entrypoint.
+- Implementation:
+  - Added `dev/quality/quality-gate.ts` as the shared gate runner and reporter.
+  - Added `bun run gate`, `bun run verify:full`, and `bun run verify:provider` scripts.
+  - Changed `bun run verify:v1` from a shell chain into the same unified gate preset.
+- Verification:
+  - `bun test test/unit/quality-gate.test.ts test/unit/provider-gate.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: the intended workflow is now explicit: every new requirement must clear `bun run gate` before it is considered done locally.
+
 ## Step 1: Provider Readiness Gate
 
 - Commit: `ee7b9ac Add provider readiness gate`
@@ -122,3 +135,15 @@
   - `bun run typecheck`: pass.
   - `bun run build`: pass.
   - `bun run verify:v1`: pass; includes typecheck, 284 tests, fake eval, and cache benchmark.
+
+## Step 7: Implicit Runtime Google WebSearch Default
+
+- Scope: remove the runtime gap where docs said Google was the default, but `web_search` still failed without an explicit engine entry.
+- Implementation:
+  - Runtime now injects an implicit `google` engine when `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX` or `GOOGLE_SEARCH_ENGINE_ID` are present.
+  - Existing configured `google` engines inherit `cx` from env when omitted in JSON.
+  - The no-engine live-search error now points directly to the Google env vars needed to enable search.
+- Code Complete review result:
+  - Correctness: fixed the mismatch between documented default behavior and actual runtime behavior.
+  - Maintainability: implicit defaults are isolated in one config-normalization helper instead of spread across request execution.
+  - Verification: added no-config implicit Google coverage, env-based `cx` fill-in coverage, and more actionable error-message assertions.

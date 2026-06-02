@@ -1,11 +1,11 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
-import { easycodeDir } from "./easycode-path"
+import { easycodeDir } from "../../src/easycode-path"
 import { runCacheBenchmark } from "./cache-benchmark"
-import { loadEnvFile, missingProviderEnv } from "./cli"
+import { loadEnvFile, missingProviderEnv } from "../../src/cli"
 import { runEval, type EvalResult } from "./eval"
-import { runAPIxEval } from "./evals/apix"
-import { hasProvider, listProviders, type ProviderName } from "./provider"
+import { runAPIxEval } from "./apix"
+import { hasProvider, listProviders, type ProviderName } from "../../src/provider"
 
 type CheckStatus = "passed" | "failed" | "skipped"
 
@@ -48,7 +48,7 @@ const defaultSmokeTaskIDs = ["EC-REAL-001"]
 const defaultAPIxIDs = ["APIX-004", "APIX-011", "APIX-012"]
 
 export async function runProviderGate(options: ProviderGateOptions = {}) {
-  const root = path.resolve(options.root ?? path.resolve(import.meta.dir, ".."))
+  const root = path.resolve(options.root ?? path.resolve(import.meta.dir, "../.."))
   await loadEnvFile(root)
   const providers = options.providers ?? defaultProviders
   for (const provider of providers) {

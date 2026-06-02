@@ -37,6 +37,15 @@ Tasks without `providers` are fake-provider deterministic evals. Real provider e
 - The benchmark measures the fixed every-step prompt strategy used by normal agent runs.
 - Effective benchmark cost is input-only by default: cache-miss input tokens plus cached input tokens multiplied by the cached-input discount. Output tokens are reported for visibility but do not affect `effective_input` unless explicitly overridden.
 
+## Unified Quality Gate Contract
+- `bun run gate` is the default local post-change gate and is equivalent to `bun run verify:v1`.
+- The default local gate runs, in order: `typecheck`, `bun test`, fake local evals, a deterministic simulated APIx hard-gate subset, and the simulated real-suite cache benchmark.
+- Every new feature or bug-fix slice must pass `bun run gate` before it is considered ready to land.
+- The default APIx gate set is intentionally calibrated to the subset that is stable under the current simulated baseline; broader `bun run apix:eval` runs remain available for capability inspection and expansion work.
+- `bun run verify:full` extends the local gate with `build`; it keeps the same calibrated APIx gate subset unless explicit `--apix-ids` overrides are supplied.
+- `bun run verify:provider -- --provider <name>` wraps the existing provider readiness checks into the same reportable gate surface and writes JSON/Markdown reports under `.easycode/reports/quality-gate`.
+- The single-purpose commands (`bun test`, `bun run eval --provider fake`, `bun run apix:eval`, `bun run cache:bench`, `bun run provider:gate`) remain available for targeted debugging, but the gate commands are the source of truth for pass/fail readiness.
+
 ## Provider Gate Contract
 - `bun run provider:gate` checks `openai` and `deepseek` by default.
 - `--provider <name>` narrows the gate to one provider; `--providers a,b` checks an explicit list.

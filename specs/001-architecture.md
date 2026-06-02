@@ -21,6 +21,7 @@ CLI
 - `skill`: skill discovery and progressive prompt loading.
 - `provider`: fake and Codex/Responses streaming normalization.
 - `sandbox`: file and shell safety boundaries.
+- `dev/quality`: development-only quality tooling such as evals, APIx, cache benchmark, and gate orchestration; kept outside `src/` so runtime core stays focused.
 
 ```mermaid
 flowchart TD

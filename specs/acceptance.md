@@ -1,10 +1,14 @@
 # Acceptance Criteria
 
 ## Functional
+- `bun run gate` passes and is the required post-change local quality gate.
 - `bun run verify:v1` passes.
+- `bun run verify:full` passes.
 - `bun test` passes.
 - `bun run eval --provider fake` passes all local eval tasks.
+- `bun run apix:eval --provider simulated --table` remains available for targeted APIx inspection, while the default gate runs the calibrated simulated hard-gate subset automatically.
 - `bun run provider:gate -- --provider <real-provider>` writes a JSON and Markdown report under `.easycode/reports/provider-gate`.
+- `bun run verify:provider -- --provider <real-provider>` writes a JSON and Markdown report under `.easycode/reports/quality-gate`.
 - Provider gates skip explicitly when required credentials are missing instead of reporting fabricated real-provider results.
 - `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
 - `easycode build --once "..." --provider fake` can complete read -> edit -> bash.

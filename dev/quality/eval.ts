@@ -1,12 +1,12 @@
 import path from "node:path"
 import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
-import { AgentRunner, createRunner } from "./agent"
-import type { AgentMode } from "./message"
-import { createProvider, hasProvider, listProviders, type ProviderName } from "./provider"
-import { createLogger } from "./logger"
-import type { ToolContext, ToolRegistryLike, ToolResult } from "./tool"
-import { loadEnvFile } from "./cli"
+import { AgentRunner, createRunner } from "../../src/agent"
+import type { AgentMode } from "../../src/message"
+import { createProvider, hasProvider, listProviders, type ProviderName } from "../../src/provider"
+import { createLogger } from "../../src/logger"
+import type { ToolContext, ToolRegistryLike, ToolResult } from "../../src/tool"
+import { loadEnvFile } from "../../src/cli"
 
 export type EvalTask = {
   id: string
@@ -75,7 +75,7 @@ async function snapshotFiles(root: string) {
 type EvalProvider = ProviderName
 
 export async function runEval(input: { provider: EvalProvider; root?: string; logger?: boolean; ids?: string[] }) {
-  const projectRoot = input.root ?? path.resolve(import.meta.dir, "..")
+  const projectRoot = input.root ?? path.resolve(import.meta.dir, "../..")
   await loadEnvFile(projectRoot)
   const taskDir = path.join(projectRoot, "evals", "tasks")
   const tasks = (await readdir(taskDir)).filter((file) => file.endsWith(".json")).sort((left, right) => left.localeCompare(right))

@@ -41,5 +41,6 @@ MCP and WebSearch are complementary retrieval surfaces. MCP connects local, ente
 - Built-in live engines: `google`, `brave`, and `tavily`.
 - Custom JSON search engines can configure endpoint, method, auth header, query/limit parameter names, result array path, and result field paths.
 - The built-in `google` engine targets Google Programmable Search JSON API and requires `extraParams.cx`.
+- When no `websearch.json` exists, runtime can still default to `google` if `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX` or `GOOGLE_SEARCH_ENGINE_ID` are available in the environment.
 - MCP reads are allowed by default because they are local configured resources.
 - WebSearch requires explicit permission by default for both fixture and live modes.
