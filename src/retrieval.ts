@@ -115,12 +115,13 @@ export class WebSearchService {
 
   async search(query: string, limit = 5, options: { engine?: string; live?: boolean; signal?: AbortSignal } = {}): Promise<WebSearchResponse> {
     const file = Bun.file(this.configPath)
-    const config = (await file.exists()) ? WebSearchConfig.parse(JSON.parse(await file.text())) : WebSearchConfig.parse({})
+    const loaded = (await file.exists()) ? WebSearchConfig.parse(JSON.parse(await file.text())) : WebSearchConfig.parse({})
+    const config = withImplicitGoogleDefaults(loaded, this.options.env ?? process.env)
     const selectedEngineName = options.engine ?? config.defaultEngine
     const engine = selectEngine(config.engines, selectedEngineName)
     if (options.engine && !engine) throw new Error(`web search engine not found: ${options.engine}`)
     if (config.defaultEngine && !engine && options.live !== false) throw new Error(`web search default engine not found: ${config.defaultEngine}`)
-    if (options.live === true && !engine) throw new Error("live web search requires a configured engine")
+    if (options.live === true && !engine) throw new Error("live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX")
     const shouldSearchLive = options.live ?? Boolean(engine && selectedEngineName)
     if (engine && shouldSearchLive) {
       return { results: await this.searchLive(engine, query, limit, options.signal), live: true, engine: engine.name }
@@ -215,6 +216,28 @@ function selectEngine(engines: WebSearchEngine[], name: string | undefined) {
   return engines.find((engine) => engine.name === name)
 }
 
+function withImplicitGoogleDefaults(config: z.infer<typeof WebSearchConfig>, env: Record<string, string | undefined>) {
+  const cx = env.GOOGLE_SEARCH_CX ?? env.GOOGLE_SEARCH_ENGINE_ID
+  const existingGoogle = config.engines.find((engine) => engine.name === "google")
+  const engines = config.engines.map((engine) => {
+    if (engine.name !== "google" || "cx" in engine.extraParams || !cx) return engine
+    return { ...engine, extraParams: { ...engine.extraParams, cx } }
+  })
+  if (!existingGoogle && (env.GOOGLE_SEARCH_API_KEY || cx)) {
+    engines.push(WebSearchEngine.parse({
+      name: "google",
+      type: "google",
+      apiKeyEnv: "GOOGLE_SEARCH_API_KEY",
+      extraParams: cx ? { cx } : {},
+    }))
+  }
+  return {
+    ...config,
+    defaultEngine: config.defaultEngine ?? (engines.some((engine) => engine.name === "google") ? "google" : undefined),
+    engines,
+  }
+}
+
 function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine, "name" | "type" | "method" | "endpoint" | "queryParam" | "limitParam" | "resultsPath" | "titlePath" | "urlPath" | "snippetPath">> & WebSearchEngine {
   if (engine.type === "brave") {
     return {
@@ -230,7 +253,7 @@ function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine
     }
   }
   if (engine.type === "google") {
-    if (!("cx" in engine.extraParams)) throw new Error(`google web search engine ${engine.name} requires extraParams.cx`)
+    if (!("cx" in engine.extraParams)) throw new Error(`google web search engine ${engine.name} requires extraParams.cx or GOOGLE_SEARCH_CX`)
     return {
       ...engine,
       endpoint: engine.endpoint ?? "https://customsearch.googleapis.com/customsearch/v1",

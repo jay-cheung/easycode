@@ -9,6 +9,40 @@ async function tmpdir() {
 }
 
 describe("web retrieval", () => {
+  test("uses implicit Google default engine from environment without config file", async () => {
+    const root = await tmpdir()
+    try {
+      const requests: Array<{ url: string; headers: Headers }> = []
+      const service = new WebSearchService(root, {
+        env: {
+          GOOGLE_SEARCH_API_KEY: "google-token",
+          GOOGLE_SEARCH_CX: "programmable-engine-id",
+        },
+        fetch: async (input, init) => {
+          requests.push({ url: String(input), headers: new Headers(init?.headers) })
+          return Response.json({
+            items: [
+              { title: "Implicit EasyCode", link: "https://example.com/implicit", snippet: "Implicit Google default result." },
+            ],
+          })
+        },
+      })
+
+      const response = await service.search("easycode", 3)
+
+      expect(response).toMatchObject({ live: true, engine: "google" })
+      expect(response.results).toEqual([
+        expect.objectContaining({ title: "Implicit EasyCode", url: "https://example.com/implicit", snippet: "Implicit Google default result." }),
+      ])
+      expect(requests[0]?.url).toContain("https://customsearch.googleapis.com/customsearch/v1")
+      expect(requests[0]?.url).toContain("num=3")
+      expect(requests[0]?.url).toContain("cx=programmable-engine-id")
+      expect(requests[0]?.url).toContain("key=google-token")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("uses configured Google Programmable Search engine for live web search", async () => {
     const root = await tmpdir()
     try {
@@ -194,7 +228,7 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root)
 
-      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine")
+      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -210,7 +244,36 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root, { env: { GOOGLE_SEARCH_API_KEY: "google-token" } })
 
-      await expect(service.search("easycode", 5)).rejects.toThrow("google web search engine google requires extraParams.cx")
+      await expect(service.search("easycode", 5)).rejects.toThrow("google web search engine google requires extraParams.cx or GOOGLE_SEARCH_CX")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("fills configured google engine cx from environment", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        defaultEngine: "google",
+        engines: [{ name: "google", type: "google", apiKeyEnv: "GOOGLE_SEARCH_API_KEY" }],
+      }))
+      const requests: string[] = []
+      const service = new WebSearchService(root, {
+        env: {
+          GOOGLE_SEARCH_API_KEY: "google-token",
+          GOOGLE_SEARCH_ENGINE_ID: "programmable-engine-id",
+        },
+        fetch: async (input) => {
+          requests.push(String(input))
+          return Response.json({ items: [] })
+        },
+      })
+
+      const response = await service.search("easycode", 2)
+
+      expect(response).toMatchObject({ live: true, engine: "google" })
+      expect(requests[0]).toContain("cx=programmable-engine-id")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
