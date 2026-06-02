@@ -525,7 +525,7 @@ export function createBuiltinRegistry() {
 
   registry.register({
     name: "web_search",
-    description: "Search web evidence. Uses configured live search engines from .easycode/websearch.json when engine/defaultEngine is set, otherwise searches fixture results.",
+    description: "Search web evidence. Uses Tavily live search when configured in .easycode/websearch.json or via TAVILY_API_KEY, otherwise searches fixture results.",
     inputSchema: WebSearchInput,
     jsonSchema: objectSchema({ query: { type: "string" }, limit: { type: "number" }, engine: { type: "string" }, live: { type: "boolean" } }, ["query"]),
     permission: "web_search",

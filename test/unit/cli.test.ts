@@ -136,6 +136,48 @@ describe("cli args", () => {
     expect(status).toBe(0)
     expect(stdout).toContain("Starting new session: default")
     expect(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).exists()).toBe(true)
+    expect(stdout).toContain("Live web search is not configured.")
+    expect(stdout).toContain("TAVILY_API_KEY")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session startup skips web search setup hint when tavily is configured", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, TAVILY_API_KEY: "tavily-token" },
+    })
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).not.toContain("Live web search is not configured.")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session startup skips web search setup hint when tavily apiKey is configured in websearch.json", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+      defaultEngine: "tavily",
+      engines: [{ name: "tavily", type: "tavily", apiKey: "tvly-inline" }],
+    }))
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).not.toContain("Live web search is not configured.")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })

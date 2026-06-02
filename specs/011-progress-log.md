@@ -147,3 +147,23 @@
   - Correctness: fixed the mismatch between documented default behavior and actual runtime behavior.
   - Maintainability: implicit defaults are isolated in one config-normalization helper instead of spread across request execution.
   - Verification: added no-config implicit Google coverage, env-based `cx` fill-in coverage, and more actionable error-message assertions.
+
+## Step 8: Tavily-Only WebSearch and Startup Setup Hint
+
+- Scope: remove Google, Brave, and custom-engine support so `web_search` exposes one supported live provider, and prompt users to configure it when interactive sessions start.
+- Implementation:
+  - Runtime implicit defaults now only inject `tavily` from `TAVILY_API_KEY`.
+  - Non-Tavily engine entries fail with a direct Tavily-only migration error instead of partially working.
+  - CLI session startup now prints a `Web Search` hint when Tavily is not configured, pointing users to the repo-root `.env` file or shell environment.
+  - Tool descriptions, README, and MCP/WebSearch specs now document Tavily as the only supported live engine.
+  - Removed leftover generic auth branches that only existed for non-Tavily engines.
+- Code Complete review result:
+  - Correctness: startup guidance closes the usability gap where `web_search` failed later without telling users where to configure it.
+  - Complexity: the live-search path now has one supported provider instead of dead branches for retired providers.
+  - Maintainability: docs, tool description, and runtime behavior now match; there is no longer a split between supported and merely parseable engines.
+  - Verification: added CLI startup coverage for the setup hint and retained explicit unsupported-engine assertions for legacy configs.
+- Verification:
+  - `bun test test/unit/retrieval.test.ts test/unit/cli.test.ts`: pass.
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts`: pass.
+  - `bun run verify:v1`: pass; includes typecheck, full tests, fake eval, APIx subset, and cache benchmark.

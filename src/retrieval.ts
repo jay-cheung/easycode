@@ -4,7 +4,7 @@ import { easycodeDir } from "./easycode-path"
 import { getTlsConfig } from "./tls-config"
 
 const webSearchEnvHint = "Set it in the repo root .env or your shell environment."
-const tavilySetupHint = `Configure Tavily with TAVILY_API_KEY. ${webSearchEnvHint}`
+export const tavilySetupHint = `Configure Tavily with TAVILY_API_KEY. ${webSearchEnvHint}`
 
 const McpResource = z.object({
   uri: z.string(),
@@ -34,13 +34,12 @@ const SearchPrimitive = z.union([z.string(), z.number(), z.boolean()])
 
 const WebSearchEngine = z.object({
   name: z.string(),
-  type: z.enum(["brave", "google", "tavily", "custom"]).default("custom"),
+  type: z.string().default("tavily"),
   endpoint: z.string().optional(),
   method: z.enum(["GET", "POST"]).optional(),
   apiKeyEnv: z.string().optional(),
   apiKey: z.string().optional(),
   apiKeyHeader: z.string().optional(),
-  apiKeyParam: z.string().optional(),
   apiKeyPrefix: z.string().optional(),
   headers: z.record(z.string(), z.string()).default({}),
   queryParam: z.string().optional(),
@@ -230,13 +229,8 @@ function selectEngine(engines: WebSearchEngine[], name: string | undefined) {
 
 function withImplicitDefaults(config: z.infer<typeof WebSearchConfig>, env: Record<string, string | undefined>) {
   const tavilyConfigured = Boolean(env.TAVILY_API_KEY)
-  const cx = env.GOOGLE_SEARCH_CX ?? env.GOOGLE_SEARCH_ENGINE_ID
-  const existingGoogle = config.engines.find((engine) => engine.name === "google")
   const existingTavily = config.engines.find((engine) => engine.name === "tavily")
-  const engines = config.engines.map((engine) => {
-    if (engine.name !== "google" || "cx" in engine.extraParams || !cx) return engine
-    return { ...engine, extraParams: { ...engine.extraParams, cx } }
-  })
+  const engines = [...config.engines]
   if (!existingTavily && tavilyConfigured) {
     engines.push(WebSearchEngine.parse({
       name: "tavily",
@@ -244,80 +238,44 @@ function withImplicitDefaults(config: z.infer<typeof WebSearchConfig>, env: Reco
       apiKeyEnv: "TAVILY_API_KEY",
     }))
   }
-  if (!existingGoogle && (env.GOOGLE_SEARCH_API_KEY || cx)) {
-    engines.push(WebSearchEngine.parse({
-      name: "google",
-      type: "google",
-      apiKeyEnv: "GOOGLE_SEARCH_API_KEY",
-      extraParams: cx ? { cx } : {},
-    }))
-  }
   return {
     ...config,
-    defaultEngine: config.defaultEngine ?? (
-      engines.some((engine) => engine.name === "tavily") ? "tavily" :
-      engines.some((engine) => engine.name === "google") ? "google" :
-      undefined
-    ),
+    defaultEngine: config.defaultEngine ?? (engines.some((engine) => engine.name === "tavily") ? "tavily" : undefined),
     engines,
   }
 }
 
 function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine, "name" | "type" | "method" | "endpoint" | "queryParam" | "limitParam" | "resultsPath" | "titlePath" | "urlPath" | "snippetPath">> & WebSearchEngine {
-  if (engine.type === "brave") {
-    return {
-      ...engine,
-      endpoint: engine.endpoint ?? "https://api.search.brave.com/res/v1/web/search",
-      method: engine.method ?? "GET",
-      queryParam: engine.queryParam ?? "q",
-      limitParam: engine.limitParam ?? "count",
-      resultsPath: engine.resultsPath ?? "web.results",
-      titlePath: engine.titlePath ?? "title",
-      urlPath: engine.urlPath ?? "url",
-      snippetPath: engine.snippetPath ?? "description",
-    }
+  if (engine.type !== "tavily") {
+    throw new Error(`web search engine ${engine.name} type ${engine.type} is not supported; only tavily is available. ${tavilySetupHint}`)
   }
-  if (engine.type === "google") {
-    if (!("cx" in engine.extraParams)) {
-      throw new Error(`google web search engine ${engine.name} requires extraParams.cx or GOOGLE_SEARCH_CX / GOOGLE_SEARCH_ENGINE_ID. ${webSearchEnvHint}`)
-    }
-    return {
-      ...engine,
-      endpoint: engine.endpoint ?? "https://customsearch.googleapis.com/customsearch/v1",
-      method: engine.method ?? "GET",
-      apiKeyParam: engine.apiKeyParam ?? "key",
-      queryParam: engine.queryParam ?? "q",
-      limitParam: engine.limitParam ?? "num",
-      resultsPath: engine.resultsPath ?? "items",
-      titlePath: engine.titlePath ?? "title",
-      urlPath: engine.urlPath ?? "link",
-      snippetPath: engine.snippetPath ?? "snippet",
-    }
-  }
-  if (engine.type === "tavily") {
-    return {
-      ...engine,
-      endpoint: engine.endpoint ?? "https://api.tavily.com/search",
-      method: engine.method ?? "POST",
-      queryParam: engine.queryParam ?? "query",
-      limitParam: engine.limitParam ?? "max_results",
-      resultsPath: engine.resultsPath ?? "results",
-      titlePath: engine.titlePath ?? "title",
-      urlPath: engine.urlPath ?? "url",
-      snippetPath: engine.snippetPath ?? "content",
-    }
-  }
-  if (!engine.endpoint) throw new Error(`custom web search engine ${engine.name} requires endpoint`)
   return {
     ...engine,
-    endpoint: engine.endpoint,
-    method: engine.method ?? "GET",
-    queryParam: engine.queryParam ?? "q",
-    limitParam: engine.limitParam ?? "limit",
+    endpoint: engine.endpoint ?? "https://api.tavily.com/search",
+    method: engine.method ?? "POST",
+    queryParam: engine.queryParam ?? "query",
+    limitParam: engine.limitParam ?? "max_results",
     resultsPath: engine.resultsPath ?? "results",
     titlePath: engine.titlePath ?? "title",
     urlPath: engine.urlPath ?? "url",
-    snippetPath: engine.snippetPath ?? "snippet",
+    snippetPath: engine.snippetPath ?? "content",
+  }
+}
+
+export async function hasConfiguredWebSearch(root: string, env: Record<string, string | undefined> = process.env) {
+  if (env.TAVILY_API_KEY) return true
+  const file = Bun.file(path.join(easycodeDir(root), "websearch.json"))
+  if (!(await file.exists())) return false
+  try {
+    const config = WebSearchConfig.parse(JSON.parse(await file.text()))
+    if (config.defaultEngine !== "tavily") return false
+    const engine = selectEngine(config.engines, "tavily")
+    if (!engine) return false
+    if (engine.apiKey) return true
+    if (engine.apiKeyEnv) return Boolean(env[engine.apiKeyEnv])
+    return false
+  } catch {
+    return false
   }
 }
 
@@ -332,8 +290,8 @@ function apiKeyFor(engine: WebSearchEngine, env: Record<string, string | undefin
 function headersFor(engine: WebSearchEngine, apiKey: string | undefined) {
   const headers: Record<string, string> = { Accept: "application/json", ...engine.headers }
   if (!apiKey) return substituteHeaderTokens(headers, "")
-  const headerName = engine.apiKeyHeader ?? (engine.type === "brave" ? "X-Subscription-Token" : engine.type === "tavily" ? "Authorization" : undefined)
-  if (headerName) headers[headerName] = `${engine.apiKeyPrefix ?? (engine.type === "tavily" ? "Bearer " : "")}${apiKey}`
+  const headerName = engine.apiKeyHeader ?? "Authorization"
+  if (headerName) headers[headerName] = `${engine.apiKeyPrefix ?? "Bearer "}${apiKey}`
   return substituteHeaderTokens(headers, apiKey)
 }
 
@@ -343,7 +301,6 @@ function substituteHeaderTokens(headers: Record<string, string>, apiKey: string)
 
 function requestFor(engine: ReturnType<typeof normalizeEngine>, query: string, limit: number, headers: Record<string, string>, apiKey: string | undefined, signal: AbortSignal | undefined) {
   const params = { ...engine.extraParams, [engine.queryParam]: query, [engine.limitParam]: limit }
-  if (engine.apiKeyParam && apiKey) params[engine.apiKeyParam] = apiKey
   const timeout = timeoutSignal(signal, engine.timeoutMs)
   if (engine.method === "POST") {
     return {

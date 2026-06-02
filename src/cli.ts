@@ -18,6 +18,7 @@ import { SkillService } from "./skill"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
 import { TuiRenderer } from "./ui/tui"
+import { hasConfiguredWebSearch, tavilySetupHint } from "./retrieval"
 
 type EnvTarget = {
   [key: string]: string | undefined
@@ -402,6 +403,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const session = await selectSession(args.session, store, reader, tui)
     if (!session) return "completed"
     tui?.startSession(session)
+    await maybeShowWebSearchSetupHint(args.root, tui)
     const logger = args.logger ? createLogger({ root: args.root, session }) : undefined
     emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, once: args.once } })
     emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
@@ -514,6 +516,11 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
   } finally {
     reader.close()
   }
+}
+
+async function maybeShowWebSearchSetupHint(root: string, tui?: TuiRenderer) {
+  if (await hasConfiguredWebSearch(root, process.env)) return
+  writeCliText(tui, `Live web search is not configured.\n${tavilySetupHint}`, "Web Search")
 }
 
 async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader, tui?: TuiRenderer) {

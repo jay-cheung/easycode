@@ -37,10 +37,8 @@ MCP and WebSearch are complementary retrieval surfaces. MCP connects local, ente
 - `mcp_list_resources` reads `.easycode/mcp.json` and returns cited resource summaries.
 - `mcp_read_resource` reads one `.easycode/mcp.json` resource by URI and returns citation metadata.
 - `web_search` reads `.easycode/websearch.json` fixtures when no live engine is selected.
-- `web_search` performs live search when `.easycode/websearch.json` has `defaultEngine` or the tool input specifies `engine`.
-- Built-in live engines: `google`, `brave`, and `tavily`.
-- Custom JSON search engines can configure endpoint, method, auth header, query/limit parameter names, result array path, and result field paths.
-- The built-in `google` engine targets Google Programmable Search JSON API and requires `extraParams.cx`.
-- When no `websearch.json` exists, runtime can still default to `google` if `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX` or `GOOGLE_SEARCH_ENGINE_ID` are available in the environment.
+- `web_search` performs live search only through Tavily when `.easycode/websearch.json` has `defaultEngine: "tavily"` or the tool input specifies `engine: "tavily"`.
+- When no `websearch.json` exists, runtime can still default to `tavily` if `TAVILY_API_KEY` is available in the environment.
+- Interactive CLI startup prints a setup hint when Tavily is not configured, pointing users to the repo-root `.env` file or the current shell environment.
 - MCP reads are allowed by default because they are local configured resources.
 - WebSearch requires explicit permission by default for both fixture and live modes.

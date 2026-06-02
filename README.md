@@ -123,52 +123,19 @@ bun run src/cli.ts build --provider fake --tui
 
 ---
 
-### Web Search（真实搜索 + 本地 fixture）
+### Web Search（Tavily + 本地 fixture）
 
 `.easycode/websearch.json` 支持两种模式：
 
-- 配置 `defaultEngine` 或调用工具时传 `engine`：发起真实搜索。
+- 配置 Tavily 或调用工具时传 `engine: "tavily"`：发起真实搜索。
 - 不配置搜索引擎或显式 `live: false`：读取本地 `results` fixture，便于离线测试。
-- 如果未配置 `.easycode/websearch.json`，但环境里存在 `GOOGLE_SEARCH_API_KEY` 和 `GOOGLE_SEARCH_CX`（或 `GOOGLE_SEARCH_ENGINE_ID`），运行时会自动使用 `google` 作为默认 live 引擎。
+- 如果未配置 `.easycode/websearch.json`，但环境里存在 `TAVILY_API_KEY`，运行时会自动使用 `tavily` 作为默认 live 引擎。
+- 交互式会话启动时，如果未配置 Tavily，CLI 会提示去仓库根目录 `.env` 或当前 shell 环境配置 `TAVILY_API_KEY`。
 
-Google Programmable Search 示例：
+推荐先在仓库根目录 `.env` 配置：
 
-```json
-{
-  "defaultEngine": "google",
-  "engines": [
-    {
-      "name": "google",
-      "type": "google",
-      "apiKeyEnv": "GOOGLE_SEARCH_API_KEY",
-      "extraParams": {
-        "cx": "your-programmable-search-engine-id",
-        "hl": "zh-CN"
-      }
-    }
-  ],
-  "results": [
-    { "url": "https://example.com", "title": "Example", "snippet": "引用摘要", "retrievedAt": "2026-05-28T00:00:00.000Z" }
-  ]
-}
-```
-
-`google` 内建引擎使用 Google Programmable Search JSON API，请配置 `extraParams.cx`。
-
-Brave Search 示例：
-
-```json
-{
-  "defaultEngine": "brave",
-  "engines": [
-    {
-      "name": "brave",
-      "type": "brave",
-      "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
-      "extraParams": { "country": "US" }
-    }
-  ]
-}
+```dotenv
+TAVILY_API_KEY=tvly-...
 ```
 
 Tavily 示例：
@@ -182,30 +149,6 @@ Tavily 示例：
       "type": "tavily",
       "apiKeyEnv": "TAVILY_API_KEY",
       "extraParams": { "search_depth": "basic", "topic": "general" }
-    }
-  ]
-}
-```
-
-自定义 JSON 搜索引擎示例：
-
-```json
-{
-  "engines": [
-    {
-      "name": "internal-search",
-      "type": "custom",
-      "endpoint": "https://search.example.com/query",
-      "method": "POST",
-      "apiKeyEnv": "INTERNAL_SEARCH_TOKEN",
-      "apiKeyHeader": "X-API-Key",
-      "queryParam": "text",
-      "limitParam": "size",
-      "resultsPath": "data.items",
-      "titlePath": "headline",
-      "urlPath": "link",
-      "snippetPath": "summary",
-      "sourcePath": "publisher"
     }
   ]
 }

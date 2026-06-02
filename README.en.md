@@ -123,52 +123,19 @@ Available tools:
 
 ---
 
-### Web Search (Live Search + Fixtures)
+### Web Search (Tavily + Fixtures)
 
 `.easycode/websearch.json` supports two modes:
 
-- Set `defaultEngine`, or pass `engine` to the tool: run live search.
+- Configure Tavily, or pass `engine: "tavily"` to the tool: run live search.
 - Omit search engines, or pass `live: false`: read local `results` fixtures for deterministic tests.
-- If `.easycode/websearch.json` is absent but `GOOGLE_SEARCH_API_KEY` and `GOOGLE_SEARCH_CX` (or `GOOGLE_SEARCH_ENGINE_ID`) are present in the environment, runtime falls back to `google` as the default live engine.
+- If `.easycode/websearch.json` is absent but `TAVILY_API_KEY` is present in the environment, runtime falls back to `tavily` as the default live engine.
+- Interactive session startup prints a setup hint when Tavily is not configured, pointing users to the repo-root `.env` file or the current shell environment.
 
-Google Programmable Search example:
+Recommended repo-root `.env`:
 
-```json
-{
-  "defaultEngine": "google",
-  "engines": [
-    {
-      "name": "google",
-      "type": "google",
-      "apiKeyEnv": "GOOGLE_SEARCH_API_KEY",
-      "extraParams": {
-        "cx": "your-programmable-search-engine-id",
-        "hl": "en"
-      }
-    }
-  ],
-  "results": [
-    { "url": "https://example.com", "title": "Example", "snippet": "Quoted summary", "retrievedAt": "2026-05-28T00:00:00.000Z" }
-  ]
-}
-```
-
-The built-in `google` engine uses the Google Programmable Search JSON API and requires `extraParams.cx`.
-
-Brave Search example:
-
-```json
-{
-  "defaultEngine": "brave",
-  "engines": [
-    {
-      "name": "brave",
-      "type": "brave",
-      "apiKeyEnv": "BRAVE_SEARCH_API_KEY",
-      "extraParams": { "country": "US" }
-    }
-  ]
-}
+```dotenv
+TAVILY_API_KEY=tvly-...
 ```
 
 Tavily example:
@@ -182,30 +149,6 @@ Tavily example:
       "type": "tavily",
       "apiKeyEnv": "TAVILY_API_KEY",
       "extraParams": { "search_depth": "basic", "topic": "general" }
-    }
-  ]
-}
-```
-
-Custom JSON search engine example:
-
-```json
-{
-  "engines": [
-    {
-      "name": "internal-search",
-      "type": "custom",
-      "endpoint": "https://search.example.com/query",
-      "method": "POST",
-      "apiKeyEnv": "INTERNAL_SEARCH_TOKEN",
-      "apiKeyHeader": "X-API-Key",
-      "queryParam": "text",
-      "limitParam": "size",
-      "resultsPath": "data.items",
-      "titlePath": "headline",
-      "urlPath": "link",
-      "snippetPath": "summary",
-      "sourcePath": "publisher"
     }
   ]
 }
