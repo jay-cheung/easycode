@@ -1024,4 +1024,47 @@ describe("agent integration", () => {
     expect(result.text).toBe("Read completed.")
     await rm(root, { recursive: true, force: true })
   })
+
+  test("extracts DSML edit calls without trimming string parameters or leaking markup", async () => {
+    const root = await fixture()
+    await Bun.write(
+      path.join(root, "src", "slash.ts"),
+      [
+        "export function slashHelpText() {",
+        "  return [",
+        '    "  /skill list             list available skills",',
+        '    "  /skill use <name>       keep a skill active for this session",',
+        '    "  /skill clear            clear active skills",',
+        "  ].join(\"\\n\")",
+        "}",
+        "",
+      ].join("\n")
+    )
+    const events: RunUiEvent[] = []
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "text_delta",
+            text: '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="edit">\n<｜｜DSML｜｜parameter name="filePath" string="true">src/slash.ts</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="oldString" string="true">    "  /skill clear            clear active skills",</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="newString" string="true">    "  /skill remove <name>    remove one active skill",\n    "  /skill clear            clear active skills",</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>',
+          }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Updated help text." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event), settings: defaultSessionSettings("test-provider") }).run("Update slash help", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["edit"])
+    expect(result.text).toBe("Updated help text.")
+    expect(await Bun.file(path.join(root, "src", "slash.ts")).text()).toContain('"  /skill remove <name>    remove one active skill"')
+    expect(events.filter((event): event is Extract<RunUiEvent, { type: "text_delta" }> => event.type === "text_delta").map((event) => event.text).join("")).not.toContain("DSML")
+    await rm(root, { recursive: true, force: true })
+  })
 })

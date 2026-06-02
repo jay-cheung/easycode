@@ -615,6 +615,26 @@ describe("provider", () => {
     ])
   })
 
+  test("text tool protocol preserves DSML string parameter whitespace for edits", () => {
+    const input = '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="edit">\n<｜｜DSML｜｜parameter name="filePath" string="true">src/slash.ts</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="oldString" string="true">    "  /skill clear            clear active skills",</｜｜DSML｜｜parameter>\n<｜｜DSML｜｜parameter name="newString" string="true">    "  /skill remove <name>    remove one active skill",\n    "  /skill clear            clear active skills",</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      {
+        type: "tool_call",
+        call: {
+          id: "call_text_1",
+          name: "edit",
+          input: {
+            filePath: "src/slash.ts",
+            oldString: '    "  /skill clear            clear active skills",',
+            newString: '    "  /skill remove <name>    remove one active skill",\n    "  /skill clear            clear active skills",',
+          },
+          rawArguments: '{"filePath":"src/slash.ts","oldString":"    \\"  /skill clear            clear active skills\\",","newString":"    \\"  /skill remove <name>    remove one active skill\\",\\n    \\"  /skill clear            clear active skills\\","}',
+        },
+      },
+    ])
+  })
+
   test("text tool protocol parses DSML-style with half-width pipes", () => {
     const input = '<||DSML||invoke name="read">\n<||DSML||parameter name="filePath">README.md</||DSML||parameter>\n</||DSML||invoke>'
     const events = textToolProtocolOutputToProviderEvents(input)

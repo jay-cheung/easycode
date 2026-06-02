@@ -12,7 +12,7 @@ const invokePattern = /<(?:[|｜]{2}DSML[|｜]{2})?invoke\s+name\s*=\s*["']([^"'
 const toolCallsBlockPattern = /<(?:[|｜]{2}DSML[|｜]{2})?tool_calls>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?tool_calls>/gi
 
 // Individual <parameter name="key" ...>value</parameter> inside an <invoke> block
-const parameterPattern = /<(?:[|｜]{2}DSML[|｜]{2})?parameter\s+name\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?parameter>/gi
+const parameterPattern = /<(?:[|｜]{2}DSML[|｜]{2})?parameter\s+name\s*=\s*["']([^"']+)["']([^>]*)>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?parameter>/gi
 
 export class TextToolProtocolProvider implements Provider {
   readonly name: string
@@ -200,9 +200,10 @@ function parseParametersToArguments(invokeBody: string): string {
   const params: Record<string, unknown> = {}
   for (const match of invokeBody.matchAll(parameterPattern)) {
     const key = match[1] ?? ""
-    const rawValue = (match[2] ?? "").trim()
+    const attributes = match[2] ?? ""
+    const rawValue = match[3] ?? ""
     if (!key) continue
-    params[key] = coerceParameterValue(rawValue)
+    params[key] = attributeValue(attributes, "string") === "true" ? rawValue : coerceParameterValue(rawValue.trim())
   }
   return Object.keys(params).length > 0 ? JSON.stringify(params) : "{}"
 }
