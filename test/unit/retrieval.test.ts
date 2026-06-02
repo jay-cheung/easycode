@@ -228,7 +228,7 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root)
 
-      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX")
+      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX. Set it in the repo root .env or your shell environment.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -244,7 +244,33 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root, { env: { GOOGLE_SEARCH_API_KEY: "google-token" } })
 
-      await expect(service.search("easycode", 5)).rejects.toThrow("google web search engine google requires extraParams.cx or GOOGLE_SEARCH_CX")
+      await expect(service.search("easycode", 5)).rejects.toThrow("google web search engine google requires extraParams.cx or GOOGLE_SEARCH_CX / GOOGLE_SEARCH_ENGINE_ID. Set it in the repo root .env or your shell environment.")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("missing api key error points to .env or shell configuration", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, ".easycode"), { recursive: true })
+      await Bun.write(path.join(root, ".easycode", "websearch.json"), JSON.stringify({
+        defaultEngine: "google",
+        engines: [{
+          name: "google",
+          type: "google",
+          apiKeyEnv: "GOOGLE_SEARCH_API_KEY",
+          extraParams: { cx: "programmable-engine-id" },
+        }],
+      }))
+      const service = new WebSearchService(root, {
+        env: {},
+        fetch: async () => {
+          throw new Error("live fetch should not be called")
+        },
+      })
+
+      await expect(service.search("easycode", 3)).rejects.toThrow("web search engine google requires GOOGLE_SEARCH_API_KEY. Set it in the repo root .env or your shell environment.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -2,6 +2,8 @@ import path from "node:path"
 import { z } from "zod"
 import { easycodeDir } from "./easycode-path"
 
+const webSearchEnvHint = "Set it in the repo root .env or your shell environment."
+
 const McpResource = z.object({
   uri: z.string(),
   title: z.string(),
@@ -121,7 +123,9 @@ export class WebSearchService {
     const engine = selectEngine(config.engines, selectedEngineName)
     if (options.engine && !engine) throw new Error(`web search engine not found: ${options.engine}`)
     if (config.defaultEngine && !engine && options.live !== false) throw new Error(`web search default engine not found: ${config.defaultEngine}`)
-    if (options.live === true && !engine) throw new Error("live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX")
+    if (options.live === true && !engine) {
+      throw new Error(`live web search requires a configured engine; configure Google with GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_CX. ${webSearchEnvHint}`)
+    }
     const shouldSearchLive = options.live ?? Boolean(engine && selectedEngineName)
     if (engine && shouldSearchLive) {
       return { results: await this.searchLive(engine, query, limit, options.signal), live: true, engine: engine.name }
@@ -253,7 +257,9 @@ function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine
     }
   }
   if (engine.type === "google") {
-    if (!("cx" in engine.extraParams)) throw new Error(`google web search engine ${engine.name} requires extraParams.cx or GOOGLE_SEARCH_CX`)
+    if (!("cx" in engine.extraParams)) {
+      throw new Error(`google web search engine ${engine.name} requires extraParams.cx or GOOGLE_SEARCH_CX / GOOGLE_SEARCH_ENGINE_ID. ${webSearchEnvHint}`)
+    }
     return {
       ...engine,
       endpoint: engine.endpoint ?? "https://customsearch.googleapis.com/customsearch/v1",
@@ -298,7 +304,7 @@ function apiKeyFor(engine: WebSearchEngine, env: Record<string, string | undefin
   if (engine.apiKey) return engine.apiKey
   if (!engine.apiKeyEnv) return undefined
   const value = env[engine.apiKeyEnv]
-  if (!value) throw new Error(`web search engine ${engine.name} requires ${engine.apiKeyEnv}`)
+  if (!value) throw new Error(`web search engine ${engine.name} requires ${engine.apiKeyEnv}. ${webSearchEnvHint}`)
   return value
 }
 
