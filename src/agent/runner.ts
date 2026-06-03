@@ -18,6 +18,7 @@ import { createAgent } from "./protocol"
 import type { Agent, AgentRunResult, AgentRunnerOptions } from "./types"
 import { createProviderMetrics, finalizeProviderMetrics, finishProviderMetricCall, observeProviderMetricEvent, startProviderMetricCall, type ProviderMetricsAccumulator } from "./metrics"
 import { ledgerRecord, toolScopeFiles } from "./ledger"
+import { evaluateHypothesisTurn, normalizeHypothesis, type ActiveHypothesis, type HypothesisViolation } from "./hypothesis"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
@@ -37,6 +38,12 @@ type ProviderTurnResult = {
   toolCalls: ToolCall[]
   failureText?: string
   cancelledOutput?: string
+  replayEvents: Array<
+    | { type: "reasoning_delta"; text: string }
+    | { type: "text_delta"; text: string }
+    | { type: "tool_call"; call: ToolCall }
+    | { type: "failure"; text: string }
+  >
 }
 
 type ProviderTurnInput = {
@@ -71,6 +78,8 @@ export class AgentRunner {
   private summarySubagent: BackgroundAgentTask | undefined
   private nextSummarySubagentID = 1
   private hasProposedPlan: boolean
+  private evidenceRevision = 0
+  private activeHypothesis: ActiveHypothesis | undefined
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -91,6 +100,7 @@ export class AgentRunner {
     this.providerProgressIntervalMs = options.providerProgressIntervalMs ?? defaultProviderProgressIntervalMs
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
     this.onBackgroundContextUpdate = options.onBackgroundContextUpdate
+    this.activeHypothesis = activeHypothesisFromLedger(this.context.state.ledger)
     const providerContextWindow = this.provider.capabilities?.contextWindowTokens
     this.context.configureStrategy({
       contextWindowTokens: providerContextWindow ?? Math.max(this.context.strategyState.maxTokens, options.settings?.maxTokens ?? 0),
@@ -114,6 +124,7 @@ export class AgentRunner {
     const providerMetrics = createProviderMetrics(this.provider.name, this.provider.model)
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
+    this.noteExternalEvidence()
     this.recordRunIntent(prompt)
     await this.refreshRepoMap(input.signal, prompt)
     if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
@@ -133,10 +144,12 @@ export class AgentRunner {
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       const plan = this.context.planRequest({ step, agent, instructions, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
       const shouldCheckSummaryReadiness = usedTools.length > 0 && step >= explorationSummaryStep(this.maxSteps)
-      const providerMessages = shouldCheckSummaryReadiness ? [...plan.providerMessages, explorationSummaryReadinessMessage(step + 1, this.maxSteps)] : plan.providerMessages
+      const providerMessages = shouldCheckSummaryReadiness
+        ? [...plan.providerMessages, ...this.activeHypothesisMessages(), explorationSummaryReadinessMessage(step + 1, this.maxSteps)]
+        : [...plan.providerMessages, ...this.activeHypothesisMessages()]
       const availableTools = shouldCheckSummaryReadiness ? [] : tools
       state = this.aspect.transition("streaming", { step: step + 1 })
-      const turn = await this.runProviderTurn({
+      const turn = await this.runValidatedProviderTurn({
         agent,
         prompt,
         messages: this.context.state.messages,
@@ -174,6 +187,7 @@ export class AgentRunner {
         if (toolCall.name === "skill" && result.metadata.status === "succeeded") this.markSkillLoaded(toolCall.input)
         this.recordToolOutcome(toolCall, result, prompt)
         this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
+        this.noteExternalEvidence()
         this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
         if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
         if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
@@ -204,6 +218,7 @@ export class AgentRunner {
     const textChunks: string[] = []
     const reasoningChunks: string[] = []
     const toolCalls: ToolCall[] = []
+    const replayEvents: ProviderTurnResult["replayEvents"] = []
     const tools = input.agent.tools === "none" ? [] : input.tools
     const emitDeltas = input.emitDeltas ?? true
     const observeContextUsage = input.observeContextUsage ?? true
@@ -222,10 +237,11 @@ export class AgentRunner {
         if (event.type === "usage" && input.providerMetrics && this.onEvent) {
           this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
         }
-        if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user.") }
+        if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
         if (event.type === "reasoning_delta") {
           stopProviderProgress()
           reasoningChunks.push(event.text)
+          replayEvents.push({ type: "reasoning_delta", text: event.text })
           if (emitDeltas) {
             this.onEvent?.({ type: "reasoning_delta", text: event.text })
             this.onTextDelta?.(event.text)
@@ -234,6 +250,7 @@ export class AgentRunner {
         if (event.type === "text_delta") {
           stopProviderProgress()
           textChunks.push(event.text)
+          replayEvents.push({ type: "text_delta", text: event.text })
           if (emitDeltas) {
             const safeText = xmlFilter.feed(event.text)
             if (safeText) {
@@ -245,6 +262,7 @@ export class AgentRunner {
         if (event.type === "failure") {
           stopProviderProgress()
           failureText = runFailureText(event.error.output || event.error.message, "provider_error")
+          replayEvents.push({ type: "failure", text: failureText })
           if (emitDeltas) {
             this.onEvent?.({ type: "failure", text: failureText })
             this.onTextDelta?.(failureText)
@@ -253,6 +271,7 @@ export class AgentRunner {
         if (event.type === "tool_call") {
           stopProviderProgress()
           toolCalls.push(event.call)
+          replayEvents.push({ type: "tool_call", call: event.call })
           if (emitDeltas) this.onEvent?.({ type: "tool_call", call: event.call })
         }
         if (event.type === "usage" && observeContextUsage) this.context.observeUsage(event)
@@ -262,13 +281,15 @@ export class AgentRunner {
         this.onEvent?.({ type: "text_delta", text: leftover })
         this.onTextDelta?.(leftover)
       }
-      return this.extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }, emitDeltas)
+      if (leftover) replayEvents.push({ type: "text_delta", text: leftover })
+      return this.extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, replayEvents }, emitDeltas)
     } catch (error) {
-      if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user.") }
+      if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
       if (!(error instanceof ProviderError)) throw error
       const failureText = runFailureText(providerFailureText(error), "provider_error")
+      replayEvents.push({ type: "failure", text: failureText })
       if (emitDeltas) this.onEvent?.({ type: "failure", text: failureText })
-      return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText }
+      return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, replayEvents }
     } finally {
       finishProviderMetricCall(input.providerMetrics, metricCall)
       stopProviderProgress()
@@ -284,10 +305,62 @@ export class AgentRunner {
     const extractedCalls = events.filter((e): e is { type: "tool_call"; call: ToolCall } => e.type === "tool_call").map((e) => e.call)
     if (extractedCalls.length === 0) return result
     const textParts = events.filter((e): e is { type: "text_delta"; text: string } => e.type === "text_delta").map((e) => e.text)
+    const replayEvents: ProviderTurnResult["replayEvents"] = [...result.replayEvents.filter((event) => event.type === "reasoning_delta")]
+    for (const event of events) {
+      if (event.type === "text_delta") replayEvents.push({ type: "text_delta", text: event.text })
+      if (event.type === "tool_call") replayEvents.push({ type: "tool_call", call: event.call })
+    }
     if (emitDeltas) {
       for (const call of extractedCalls) this.onEvent?.({ type: "tool_call", call })
     }
-    return { ...result, text: textParts.join(""), toolCalls: extractedCalls }
+    return { ...result, text: textParts.join(""), toolCalls: extractedCalls, replayEvents }
+  }
+
+  private async runValidatedProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
+    let correction: string | undefined
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const providerMessages = correction ? [...input.providerMessages, { role: "system" as const, content: correction }] : input.providerMessages
+      const turn = await this.runProviderTurn({ ...input, providerMessages, emitDeltas: false })
+      const validation = evaluateHypothesisTurn({
+        reasoningText: turn.reasoningText,
+        text: turn.text,
+        toolCallCount: turn.toolCalls.length,
+        activeHypothesis: this.activeHypothesis,
+        evidenceRevision: this.evidenceRevision,
+      })
+      if (!validation.violation) {
+        if (validation.nextHypothesis) this.updateActiveHypothesis(validation.nextHypothesis.summary, validation.nextHypothesis.normalized)
+        this.emitProviderTurn(turn)
+        return turn
+      }
+      this.recordHypothesisViolation(validation.violation)
+      correction = hypothesisCorrectionMessage(validation.violation, this.activeHypothesis)
+    }
+    const failureText = runFailureText("Hypothesis drift blocked. Keep the current diagnosis or cite new evidence before changing it.", "provider_error")
+    const failedTurn: ProviderTurnResult = { text: "", reasoningText: "", toolCalls: [], failureText, replayEvents: [{ type: "failure", text: failureText }] }
+    this.emitProviderTurn(failedTurn)
+    return failedTurn
+  }
+
+  private emitProviderTurn(turn: ProviderTurnResult) {
+    for (const event of turn.replayEvents) {
+      if (event.type === "reasoning_delta") {
+        this.onEvent?.({ type: "reasoning_delta", text: event.text })
+        this.onTextDelta?.(event.text)
+        continue
+      }
+      if (event.type === "text_delta") {
+        this.onEvent?.({ type: "text_delta", text: event.text })
+        this.onTextDelta?.(event.text)
+        continue
+      }
+      if (event.type === "tool_call") {
+        this.onEvent?.({ type: "tool_call", call: event.call })
+        continue
+      }
+      this.onEvent?.({ type: "failure", text: event.text })
+      this.onTextDelta?.(event.text)
+    }
   }
 
   private async runTool(call: ToolCall, mode: AgentMode, signal?: AbortSignal) {
@@ -453,6 +526,7 @@ export class AgentRunner {
         ledgerRecord("constraint", "failure_recovery_rule", "after tool failure, keep objective and take nearest safe recovery.", "current", turn),
         ledgerRecord("constraint", "full_scope_finality", "do not treat probes, subsets, or dry runs as final for full-scope requests.", "current", turn),
         ledgerRecord("constraint", "evidence_grounding", "do not claim evidence unless it is in messages, summary, ledger, files, or tool outputs.", "current", turn),
+        ledgerRecord("constraint", "hypothesis_lock", "once a concrete diagnosis or change hypothesis is formed, keep it until new user or tool evidence justifies changing it.", "current", turn),
       ],
     })
   }
@@ -533,6 +607,54 @@ export class AgentRunner {
       ],
     })
   }
+
+  private noteExternalEvidence() {
+    this.evidenceRevision += 1
+  }
+
+  private activeHypothesisMessages() {
+    if (!this.activeHypothesis) return []
+    return [{
+      role: "system" as const,
+      content: `Active hypothesis: ${this.activeHypothesis.summary}\nKeep executing this hypothesis unless new user or tool evidence appears. Do not replace it without citing the new evidence first.`,
+    }]
+  }
+
+  private updateActiveHypothesis(summary: string, normalized: string) {
+    const turn = this.context.state.messages.length
+    this.activeHypothesis = {
+      summary,
+      normalized,
+      evidenceRevision: this.evidenceRevision,
+      updatedAtTurn: turn,
+    }
+    this.context.updateLedger({
+      current: [
+        ledgerRecord("decision", "active_hypothesis", truncateForLedger(summary, 220), "current", turn, {
+          reason: `evidence revision ${this.evidenceRevision}`,
+          evidence: { source: "assistant" },
+        }),
+      ],
+    })
+  }
+
+  private recordHypothesisViolation(violation: HypothesisViolation) {
+    const turn = this.context.state.messages.length
+    this.context.updateLedger({
+      current: [
+        ledgerRecord("failure", "hypothesis_drift_violation", truncateForLedger(violation.message, 240), "current", turn, {
+          evidence: { source: "assistant" },
+          scope: { topics: ["hypothesis_lock"] },
+        }),
+        ...(this.activeHypothesis
+          ? [ledgerRecord("decision", "active_hypothesis", truncateForLedger(this.activeHypothesis.summary, 220), "current", turn, {
+              reason: "kept active after drift violation",
+              evidence: { source: "assistant" },
+            })]
+          : []),
+      ],
+    })
+  }
 }
 
 
@@ -576,6 +698,7 @@ function numericMetadata(value: unknown) {
 }
 
 function appendOutput(output: string, part: string) {
+  if (!part) return output
   if (!output || output.endsWith("\n")) return `${output}${part}`
   return `${output}\n${part}`
 }
@@ -607,6 +730,25 @@ function recoveryHintForToolFailure(call: ToolCall, result: { output: string; me
     return "next_recovery_action: keep requested scope; use longer timeout or label any subset as diagnostic before full rerun."
   }
   return "next_recovery_action: inspect failure, preserve requested scope, choose smallest safe recovery."
+}
+
+function activeHypothesisFromLedger(ledger: ContextManagerLike["state"]["ledger"]): ActiveHypothesis | undefined {
+  const record = ledger?.current?.find((item) => item.kind === "decision" && item.subject === "active_hypothesis")
+  if (!record) return undefined
+  const normalized = normalizeHypothesis(record.value)
+  if (!normalized) return undefined
+  return { summary: record.value, normalized, evidenceRevision: 0, updatedAtTurn: record.updatedAtTurn }
+}
+
+function hypothesisCorrectionMessage(violation: HypothesisViolation, activeHypothesis: ActiveHypothesis | undefined) {
+  const active = activeHypothesis ? `Current active hypothesis: "${activeHypothesis.summary}".` : "No replacement hypothesis is allowed without new evidence."
+  return [
+    "Hypothesis discipline violation detected.",
+    violation.message,
+    active,
+    "Return one concrete hypothesis only.",
+    "If you need to change it, first cite the new user or tool evidence that justifies the change.",
+  ].join("\n")
 }
 
 

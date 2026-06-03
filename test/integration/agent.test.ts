@@ -355,6 +355,49 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("retries a provider turn when hypotheses drift without new evidence", async () => {
+    const root = await fixture()
+    const chunks: string[] = []
+    const context = new ContextManager()
+    let calls = 0
+    let correctionSeen = false
+    let activeHypothesisSeen = false
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        calls += 1
+        const systemPrompt = input.providerMessages.filter((message) => message.role === "system").map((message) => message.content).join("\n")
+        correctionSeen ||= systemPrompt.includes("Hypothesis discipline violation detected.")
+        activeHypothesisSeen ||= systemPrompt.includes("Active hypothesis: The bug is in src/add.ts.")
+        if (calls === 1) {
+          yield { type: "reasoning_delta", text: "The bug is in src/add.ts. Actually the bug is in test/add.test.ts." }
+          yield { type: "tool_call", call: { id: "call_read_retry", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        if (calls === 2) {
+          yield { type: "reasoning_delta", text: "The bug is in src/add.ts." }
+          yield { type: "tool_call", call: { id: "call_read_ok", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context, onTextDelta: (text) => chunks.push(text) }).run("Fix", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read"])
+    expect(result.reasoning).toBe("The bug is in src/add.ts.")
+    expect(result.reasoning).not.toContain("test/add.test.ts")
+    expect(chunks.join("")).not.toContain("test/add.test.ts")
+    expect(correctionSeen).toBe(true)
+    expect(activeHypothesisSeen).toBe(true)
+    expect(calls).toBe(3)
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "decision", subject: "active_hypothesis", value: "The bug is in src/add.ts." }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "hypothesis_drift_violation" }))
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("executes multiple tool calls from one provider turn in order", async () => {
     const root = await fixture()
     let calls = 0

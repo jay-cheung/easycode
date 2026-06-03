@@ -31,6 +31,7 @@ describe("agent protocol", () => {
     expect(prompt).toContain("\"actually\"")
     expect(prompt).toContain("\"let me re-read\"")
     expect(prompt).toContain("\"maybe\"")
+    expect(prompt).toContain("keep it locked")
   })
 
   test("summary agent is internal and tool-free", () => {
