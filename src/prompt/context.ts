@@ -23,12 +23,12 @@ const toolPriorityDirective = [
   "3. call_graph for bounded callers/callees.",
   "4. read_lines for exact ranges.",
   "5. list / git_diff / read / grep / edit|write / bash.",
-  "Before edit/write or a code-change recommendation, produce a symbol-aware edit plan for symbol-affecting work: target symbols, owning definitions, affected references or callers, excluded same-name matches, and verification.",
+  "For symbol-affecting work, follow the symbol-aware edit plan requirement before edit/write or a code-change recommendation.",
   "Do not full-read files over 100 lines. Never read or expose .easycode/cache/code-index/index.json.",
 ].join("\n")
 
 export function buildContextSystemPrompt(agent: Pick<Agent, "systemPrompt" | "mode">) {
-  return [agent.systemPrompt, contextExecutionContract, `Mode: ${agent.mode}`, toolPriorityDirective].join("\n\n")
+  return [agent.systemPrompt, contextExecutionContract, toolPriorityDirective].join("\n\n")
 }
 
 export function buildInstructionPrompt(instructions: InstructionInfo[]) {

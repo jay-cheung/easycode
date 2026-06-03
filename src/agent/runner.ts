@@ -9,7 +9,7 @@ import { createBuiltinRegistry, type ToolDef, type ToolRegistryLike } from "../t
 import { CliCodeNavigator } from "../tool/code-navigator"
 import { createRunAspect, type RunAspect } from "../instrumentation"
 import type { Logger } from "../logger"
-import { BASE_COMPACT_PROMPT } from "../context/prompt"
+import { buildCompactPrompt } from "../context/prompt"
 import * as protocol from "./protocol"
 import type { PermissionRule } from "../permission"
 import { defaultSessionSettings, type SessionSettings } from "../settings"
@@ -619,7 +619,7 @@ function assistantMessage(reasoningText: string, text: string) {
 
 function compactPrompt(messages: Array<{ role: string; content: string }>) {
   const transcript = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n")
-  return `${BASE_COMPACT_PROMPT}\n\nConversation to summarize:\n<conversation>\n${transcript}\n</conversation>`
+  return buildCompactPrompt(transcript)
 }
 
 function extractSummary(output: string) {

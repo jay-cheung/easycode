@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 13: EasyCode Summary Prompt Rewrite
+
+- Scope: replace the borrowed Claude-style compaction summary prompt with a shorter EasyCode-native prompt and trim obvious prompt duplication now that prompt templates live under one module.
+- Implementation:
+  - Replaced the old compaction summary prompt example pack, `<analysis>` requirement, and long checklist with a compact EasyCode continuation-summary contract in `src/prompt/compact.ts`.
+  - Added `buildCompactPrompt(...)` so summary prompt assembly stays inside the prompt module instead of being hand-built in `src/agent/runner.ts`.
+  - Trimmed duplicated context prompt instructions by removing the extra `Mode:` wrapper line and shortening the repeated symbol-aware edit-plan reminder in `src/prompt/context.ts`.
+- Verification:
+  - `bun test test/integration/agent.test.ts test/unit/agent.test.ts test/unit/context.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: the summary subagent still returns `<summary>` payloads and keeps the same logging/compaction lifecycle; the change is about prompt quality and token discipline, not behavior surface.
+
 ## Step 12: Unified Prompt Module
 
 - Scope: centralize EasyCode's model-facing prompt templates so agent protocol, context composition, compaction, and text-tool fallback no longer maintain separate prompt strings inline.
