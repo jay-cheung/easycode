@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 20: TUI UI Language Selection
+
+- Scope: localize fixed interactive CLI/TUI copy across six languages and add durable language selection at first startup plus a `/lang` session command.
+- Implementation:
+  - Added `src/i18n.ts` as the shared fixed-copy catalog for `en`, `zh`, `ja`, `fr`, `ko`, and `de`, covering slash help, session/setup prompts, TUI panels, live monitor status text, and timeline headings.
+  - Extended `SessionSettings` with persisted `language`, wired startup to prompt for `EASYCODE_LANG` on first interactive launch, and saved the chosen default into `~/.easycode/.env`.
+  - Added `/lang <code>` handling so the current session, future startup defaults, and TUI rendering can all switch languages without restarting the app.
+  - Updated CLI/TUI tests to cover first-start language setup, `/lang` persistence, and the localized startup/web-search flow.
+- Verification:
+  - `bun test test/unit/slash.test.ts test/unit/session.test.ts test/unit/tui.test.ts test/unit/cli.test.ts`
+  - `bun run typecheck`
+- Notes: runtime/model/tool error strings outside the fixed TUI/session surface remain unchanged for now; this slice targets user-facing shell copy and startup/session UX.
+
 ## Step 19: Single Unified Gate
 
 - Scope: collapse the public verification surface to one `bun run gate` command and make it include the former full gate plus real-provider checks by default.

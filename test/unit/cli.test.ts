@@ -295,12 +295,14 @@ describe("cli args", () => {
     const root = await tmpdir()
     const home = await tmpdir()
     const result = await spawnCliForcedTTY(["build", "--root", root], [
+      { waitFor: "Language [1-6 or code, default: en]: ", send: "zh\n", timeoutMs: 5_000 },
       { waitFor: "Would you like to set up environment variables now? (Y/n): ", send: "n\n", timeoutMs: 5_000 },
       { waitFor: "Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n): ", send: "n\n", timeoutMs: 5_000 },
       { waitFor: "easycode> ", send: ":exit\n", timeoutMs: 5_000 },
     ], {
       ...process.env,
       HOME: home,
+      EASYCODE_LANG: "",
       EASYCODE_PROVIDER: "",
       DEEPSEEK_API_KEY: "",
       DEEPSEEK_MODEL: "",
@@ -312,10 +314,12 @@ describe("cli args", () => {
       TAVILY_API_KEY: "",
     })
     expect(result.status).toBe(0)
+    expect(result.stdout).toContain("Language [1-6 or code, default: en]:")
+    expect(result.stdout).toContain("UI language saved as zh (中文)")
     expect(result.stdout).toContain("Would you like to set up environment variables now? (Y/n):")
     expect(result.stdout).toContain("Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n):")
-    expect(result.stdout).toContain("Starting new session: default")
-    expect(result.stdout).toContain("Live web search is not configured.")
+    expect(result.stdout).toContain("开始新会话：default")
+    expect(result.stdout).toContain("尚未配置实时联网搜索。")
     expect(result.stdout).toContain("~/.easycode/.env")
     expect(result.stderr).toBe("")
     await rm(root, { recursive: true, force: true })
@@ -326,12 +330,14 @@ describe("cli args", () => {
     const root = await tmpdir()
     const home = await tmpdir()
     const result = await spawnCliForcedTTY(["build", "--provider", "fake", "--root", root], [
+      { waitFor: "Language [1-6 or code, default: en]: ", send: "en\n", timeoutMs: 5_000 },
       { waitFor: "Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n): ", send: "\n", timeoutMs: 5_000 },
       { waitFor: "Tavily API key (tvly-, leave empty to skip): ", send: "tvly-pty-test\n", timeoutMs: 5_000 },
       { waitFor: "easycode> ", send: ":exit\n", timeoutMs: 5_000 },
     ], {
       ...process.env,
       HOME: home,
+      EASYCODE_LANG: "",
       TAVILY_API_KEY: "",
     })
     const envPath = path.join(home, ".easycode", ".env")
@@ -419,6 +425,29 @@ describe("cli args", () => {
     expect(stdout).toContain("2. alpha - 1 message")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
+  })
+
+  test("lang command updates session language and global preference", async () => {
+    const root = await tmpdir()
+    const home = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+      env: { ...process.env, HOME: home, EASYCODE_LANG: "en" },
+    })
+    child.stdin.write("/lang zh\n/settings\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("界面语言已切换为 zh (中文)")
+    expect(stdout).toContain("language: zh (中文)")
+    expect(await Bun.file(path.join(home, ".easycode", ".env")).text()).toContain("EASYCODE_LANG=zh")
+    expect(JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).text()).settings.language).toBe("zh")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
   })
 
   test("tui session covers settings, sessions, and prompt rendering", async () => {
@@ -591,7 +620,7 @@ describe("cli args", () => {
     expect(status).toBe(0)
     expect(stdout).toContain("[Permission]")
     expect(stdout).toContain("Allow read for .env?")
-    expect(stdout).toContain("TUI: cancelling current run...")
+    expect(stdout).toContain("TUI: Cancelling current run...")
     expect(stdout).not.toContain("SECRET=hidden")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })

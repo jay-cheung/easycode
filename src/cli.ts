@@ -4,6 +4,7 @@ import { stdout as output } from "node:process"
 import { createRunner, hasProposedPlanText } from "./agent"
 import type { ContextManagerLike } from "./context"
 import { createLogger, emitLog } from "./logger"
+import { detectUiLanguage } from "./i18n"
 import type { AgentMode, ImagePart } from "./message"
 import { savePlan } from "./plans"
 import { hasProvider, listProviders } from "./provider"
@@ -13,7 +14,7 @@ import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { LineReader, eofPrompt } from "./cli/line-reader"
 import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession } from "./cli/session-helpers"
-import { interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveWebSearchEnv } from "./cli/startup"
+import { configuredUiLanguage, interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveLanguage, setupInteractiveWebSearchEnv } from "./cli/startup"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
 import { TuiRenderer } from "./ui/tui"
@@ -33,6 +34,7 @@ export {
   startupModelChoices,
   startupModelConfig,
   startupProviders,
+  configuredUiLanguage,
 } from "./cli/startup"
 
 function parseArgs(argv: string[]) {
@@ -100,6 +102,7 @@ async function main() {
     args = { ...args, provider: process.env.EASYCODE_PROVIDER }
   }
   if (interactiveStartupEnabled()) {
+    await setupInteractiveLanguage(process.env)
     const preselectedProvider = args.providerExplicit && hasProvider(args.provider) ? args.provider : args.provider === "fake" ? undefined : args.provider
     const selectedProvider = await setupInteractiveEnv(args.root, process.env, preselectedProvider)
     if (!args.providerExplicit && selectedProvider && hasProvider(selectedProvider)) {
@@ -127,8 +130,8 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
   const reader = new LineReader()
   const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
-  const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: settings.provider, model: settings.model, session: args.session ?? "once", logger: args.logger }) : undefined
-  const timeline = tui ?? new TimelineRenderer(output)
+  const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: settings.provider, model: settings.model, language: settings.language, session: args.session ?? "once", logger: args.logger }) : undefined
+  const timeline = tui ?? new TimelineRenderer(output, settings.language)
   const onEvent = timelineEventHandler(timeline)
   try {
     const controller = new AbortController()
@@ -144,7 +147,8 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
 async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   const store = new SessionStore(args.root)
   const reader = new LineReader()
-  const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: args.provider, model: args.model, session: args.session, logger: args.logger }) : undefined
+  const startupLanguage = configuredUiLanguage(process.env) ?? detectUiLanguage(process.env)
+  const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: args.provider, model: args.model, language: startupLanguage, session: args.session, logger: args.logger }) : undefined
   let exitRequested = false
   let activeAbort: AbortController | undefined
   const onSigint = () => {
@@ -157,10 +161,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
   }
   process.on("SIGINT", onSigint)
   try {
-    const session = await selectSession(args.session, store, reader, tui)
+    const session = await selectSession(args.session, store, reader, startupLanguage, tui)
     if (!session) return "completed"
     tui?.startSession(session)
-    await maybeShowWebSearchSetupHint(args.root, tui)
     const logger = args.logger ? createLogger({ root: args.root, session }) : undefined
     emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, once: args.once } })
     emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
@@ -173,13 +176,14 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
 
     let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
     if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
+    await maybeShowWebSearchSetupHint(args.root, activeSettings.language, tui)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
     let activeMode = args.mode
     let runner: ReturnType<typeof createRunner> | undefined
-    tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
-    const timeline = tui ?? new TimelineRenderer(output)
+    tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
+    const timeline = tui ?? new TimelineRenderer(output, activeSettings.language)
 
     const runMetrics: { current?: ProviderRunMetrics } = {}
     const onEvent = (event: RunUiEvent) => {
@@ -215,7 +219,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session, tui })
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
-        tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
+        tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
+        if (!tui) timeline.setLanguage?.(activeSettings.language)
         if (changed.resetRunner) runner = undefined
         await saveSession(runner?.context ?? context)
         if (exitRequested) return "completed"

@@ -370,6 +370,7 @@ easycode build --once "Fix failing tests" --provider openai --max-steps 20
 | `/skill clear`           | 清空所有已启用技能 / Disable all skills                          |
 | `/thinking on|off`       | 开启或关闭模型 thinking / Enable or disable model thinking       |
 | `/effort <level>`        | 设置思考强度：`low`、`medium`、`high`、`max` / Set effort        |
+| `/lang <code>`           | 设置界面语言：`en`、`zh`、`ja`、`fr`、`ko`、`de` / Set UI language |
 | `/settings`              | 查看当前会话设置 / Show current session settings                 |
 | `/sessions`              | 查看已保存会话 / List saved sessions                             |
 | `//text`                 | 将`/text` 作为普通 prompt 发送 / Send `/text` as a normal prompt |
@@ -423,6 +424,8 @@ bun run gate
   Unified gate. Runs `typecheck`, `bun test`, `fake eval`, calibrated local `APIx` hard-gate subset, `cache benchmark`, `build`, then real-provider gate. Real providers default to `deepseek`, `openai`, and `openai-compatible`; missing credentials are recorded as `skipped` and do not fail the overall gate.
 - 首次交互式配置 `deepseek` 或 `openai` 时，CLI 会优先调用各自官方 `GET /models` API 取最新可用模型，并只展示最近两个版本；如果请求失败，则回退到内置候选。仍然支持直接输入自定义 model。
   During first-time interactive setup for `deepseek` or `openai`, the CLI first calls each provider's official `GET /models` API, keeps only the two most recent versions, and falls back to bundled presets on failure. Custom model input is still supported.
+- 首次进入交互式会话且未配置 `EASYCODE_LANG` 时，CLI 会先让用户选择界面语言，并把选择保存到 `~/.easycode/.env`。之后可以随时用 `/lang <code>` 切换，中/英/日/法/韩/德的固定文案都会同步生效。
+  On the first interactive startup without `EASYCODE_LANG`, the CLI asks the user to choose a UI language and saves it to `~/.easycode/.env`. Users can switch later with `/lang <code>`, and the fixed TUI copy updates across Chinese, English, Japanese, French, Korean, and German.
 
 如果只想单独跑某一类验证 / Run individual verification types:
 

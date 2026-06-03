@@ -1,8 +1,11 @@
+import { detectUiLanguage, normalizeUiLanguage, type UiLanguage } from "./i18n"
+
 export type ReasoningEffort = "low" | "medium" | "high" | "max"
 
 export type SessionSettings = {
   provider: string
   model?: string
+  language: UiLanguage
   thinking: boolean
   effort: ReasoningEffort
   selectedSkills: string[]
@@ -15,7 +18,7 @@ export type SessionSettings = {
 export const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "max"]
 
 export function defaultSessionSettings(provider = "fake"): SessionSettings {
-  return { provider, thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 32_000, maxSteps: 66 }
+  return { provider, language: detectUiLanguage(), thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 32_000, maxSteps: 66 }
 }
 
 export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = "fake"): SessionSettings {
@@ -25,6 +28,7 @@ export function normalizeSessionSettings(input: Partial<SessionSettings> | undef
   return {
     provider: typeof input?.provider === "string" && input.provider ? input.provider : fallback.provider,
     model: typeof input?.model === "string" && input.model ? input.model : undefined,
+    language: normalizeUiLanguage(input?.language, fallback.language),
     thinking: typeof input?.thinking === "boolean" ? input.thinking : fallback.thinking,
     effort,
     maxTokens: positiveInteger(input?.maxTokens) ?? fallback.maxTokens,

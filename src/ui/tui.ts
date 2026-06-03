@@ -1,5 +1,6 @@
 import type { PermissionRequest } from "../permission"
 import type { SessionTokenUsage } from "../session"
+import { languageDisplay, uiText, type UiLanguage } from "../i18n"
 import { TimelineRenderer, type RunUiEvent, type ProviderRunMetrics } from "./timeline"
 
 type Writable = {
@@ -13,6 +14,7 @@ export type TuiContext = {
   mode: string
   provider: string
   model?: string
+  language?: UiLanguage
   session?: string
   logger?: boolean
 }
@@ -78,7 +80,7 @@ export class TuiRenderer {
     private readonly output: Writable = process.stdout,
     context: TuiContext,
   ) {
-    this.timeline = new TimelineRenderer(new TuiWritable(this))
+    this.timeline = new TimelineRenderer(new TuiWritable(this), context.language ?? "en")
     this.context = context
     
     // Draw welcome screen only once at the beginning
@@ -93,15 +95,25 @@ export class TuiRenderer {
     return this.output.columns ?? 80
   }
 
+  getLanguage() {
+    return this.context.language ?? "en"
+  }
+
+  setLanguage(language: UiLanguage) {
+    this.configure({ language })
+  }
+
   configure(context: Partial<TuiContext>, status = this.lastStatus) {
     this.context = { ...this.context, ...context }
+    this.timeline.setLanguage(this.getLanguage())
     this.lastStatus = status
     
     // If not running, display a beautiful compact settings card when settings change
     if (!this.running && this.rendered) {
+      const copy = uiText(this.getLanguage())
       const modelStr = this.context.model ?? "(provider default)"
-      const line = `provider: \x1b[35m${this.context.provider}\x1b[0m  ·  model: \x1b[32m${modelStr}\x1b[0m  ·  mode: \x1b[36m${this.context.mode}\x1b[0m  ·  status: \x1b[93m${status}\x1b[0m`
-      const card = drawCard("⚙️  TUI Configured", [line], this.getColumns(), {
+      const line = copy.tuiConfiguredLine(this.context.provider, modelStr, this.context.mode, status, languageDisplay(this.getLanguage()))
+      const card = drawCard(`⚙️  ${copy.tuiConfiguredTitle}`, [line], this.getColumns(), {
         color: "\x1b[90m",
         borderStyle: "round"
       })
@@ -110,9 +122,11 @@ export class TuiRenderer {
   }
 
   startSession(session: string) {
-    this.configure({ session }, "session selected")
-    const line = `Active Session: \x1b[1m\x1b[38;5;99m${session}\x1b[0m`
-    const card = drawCard("📝 Session Started", [line], this.getColumns(), {
+    this.configure({ session }, uiText(this.getLanguage()).statusSessionSelected)
+    const copy = uiText(this.getLanguage())
+    const prefix = copy.activeSession("").replace(/\s*$/, " ")
+    const line = `${prefix}\x1b[1m\x1b[38;5;99m${session}\x1b[0m`
+    const card = drawCard(`📝 ${copy.sessionStartedTitle}`, [line], this.getColumns(), {
       color: "\x1b[38;5;99m",
       borderStyle: "round"
     })
@@ -120,6 +134,7 @@ export class TuiRenderer {
   }
 
   event(event: RunUiEvent) {
+    const copy = uiText(this.getLanguage())
     if (event.type === "run_start") {
       this.running = true
       this.streaming = false
@@ -127,7 +142,7 @@ export class TuiRenderer {
       this.queuedPrompt = undefined
       this.metrics = undefined
       this.context = { ...this.context, mode: event.mode, provider: event.provider, model: event.model }
-      this.statusText = "Initializing run..."
+      this.statusText = copy.statusInitializing
       this.elapsedStart = Date.now()
       this.elapsedMs = 0
       this.startSpinnerTimer()
@@ -137,7 +152,7 @@ export class TuiRenderer {
         this.streaming = true
         this.eraseStatusPanel() // Cleanly erase panel when streaming starts to prevent any overlap
       }
-      this.statusText = event.type === "reasoning_delta" ? "Model thinking..." : "Model answering..."
+      this.statusText = event.type === "reasoning_delta" ? copy.statusThinking : copy.statusAnswering
     } else {
       this.streaming = false
       
@@ -153,25 +168,25 @@ export class TuiRenderer {
     }
 
     if (event.type === "provider_progress") {
-      this.statusText = `Waiting for ${event.provider}...`
+      this.statusText = copy.statusWaitingProvider(event.provider)
     } else if (event.type === "tool_call") {
-      this.statusText = `Executing tool: ${event.call.name}`
+      this.statusText = copy.statusExecutingTool(event.call.name)
     } else if (event.type === "tool_progress") {
-      this.statusText = `Running tool: ${event.toolName} (${formatDuration(event.elapsedMs)})`
+      this.statusText = copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs))
     } else if (event.type === "tool_result") {
-      this.statusText = `Tool completed: ${event.toolName}`
+      this.statusText = copy.statusToolCompleted(event.toolName)
     } else if (event.type === "context_compaction") {
       if (event.status === "started") {
-        this.statusText = "Compacting context..."
+        this.statusText = copy.statusCompacting
       } else {
-        this.statusText = `Context compaction ${event.status}`
+        this.statusText = copy.statusCompactionDone(event.status)
       }
     } else if (event.type === "repo_map") {
-      this.statusText = `Prewarming repo map (${event.status})`
+      this.statusText = copy.statusRepoMap(event.status)
     } else if (event.type === "provider_metrics") {
       this.metrics = event.metrics
       if (!event.interim) {
-        this.statusText = "Received provider metrics"
+        this.statusText = copy.statusProviderMetrics
       }
     } else if (event.type === "failure") {
       this.running = false
@@ -190,9 +205,9 @@ export class TuiRenderer {
     }
     
     if (event.type === "run_start") {
-      this.configure({ mode: event.mode, provider: event.provider, model: event.model }, "running")
+      this.configure({ mode: event.mode, provider: event.provider, model: event.model }, copy.statusRunning)
     } else if (event.type === "failure") {
-      this.status("failed")
+      this.status(copy.statusFailed)
     } else if (event.type === "run_done") {
       this.status(event.status)
     }
@@ -213,11 +228,13 @@ export class TuiRenderer {
   }
 
   inputPrompt() {
-    return this.getIsTTY() ? "\x1b[1m\x1b[32measycode>\x1b[0m " : "easycode> "
+    const prompt = uiText(this.getLanguage()).inputPrompt
+    return this.getIsTTY() ? `\x1b[1m\x1b[32m${prompt.trim()}\x1b[0m ` : prompt
   }
 
   sessionPrompt() {
-    return this.getIsTTY() ? "\x1b[1m\x1b[38;5;99msession>\x1b[0m " : "session> "
+    const prompt = uiText(this.getLanguage()).sessionPrompt
+    return this.getIsTTY() ? `\x1b[1m\x1b[38;5;99m${prompt.trim()}\x1b[0m ` : prompt
   }
 
   permissionPrompt(request: PermissionRequest, text: string) {
@@ -236,7 +253,7 @@ export class TuiRenderer {
       }
     }
     
-    const card = drawCard("🛡️  Permission Required", formattedLines, this.getColumns(), {
+    const card = drawCard(`🛡️  ${uiText(this.getLanguage()).permissionTitle}`, formattedLines, this.getColumns(), {
       color: "\x1b[33m",
       borderStyle: "round"
     })
@@ -249,26 +266,29 @@ export class TuiRenderer {
     this.stopSpinnerTimer()
     this.eraseStatusPanel()
 
-    this.status("plan approval")
+    this.status(uiText(this.getLanguage()).statusPlanApproval)
     
-    return "[Plan] [A]pprove & execute  [R]eject  [E]dit plan  [N]ew prompt [A]: "
+    return uiText(this.getLanguage()).planApprovalPrompt
   }
 
   runInputHint() {
-    this.status("input monitor")
-    this.writeText("TUI: Type /cancel to stop this run; other input is queued for the next run.\n")
+    const copy = uiText(this.getLanguage())
+    this.status(copy.statusInputMonitor)
+    this.writeText(`TUI: ${copy.runInputHint}\n`)
   }
 
   queued(text: string) {
-    this.status("queued input")
+    const copy = uiText(this.getLanguage())
+    this.status(copy.statusQueuedInput)
     this.queuedPrompt = text
-    this.writeText(`TUI: Queued next input: ${text}\n`)
+    this.writeText(`TUI: ${copy.queuedNextInput(text)}\n`)
   }
 
   cancelling() {
-    this.status("cancelling")
-    this.statusText = "Cancelling current run..."
-    this.writeText("TUI: cancelling current run...\n")
+    const copy = uiText(this.getLanguage())
+    this.status(copy.statusCancelling)
+    this.statusText = copy.cancellingRun
+    this.writeText(`TUI: ${copy.cancellingRun}\n`)
   }
 
   slashCommand(command: string) {
@@ -381,6 +401,7 @@ export class TuiRenderer {
   }
 
   private generateStatusPanelLines(): string[] {
+    const copy = uiText(this.getLanguage())
     const width = Math.max(60, Math.min(this.getColumns(), 90))
     const chars = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" }
     
@@ -389,7 +410,7 @@ export class TuiRenderer {
     const reset = "\x1b[0m"
     
     // Line 1: Top Border
-    const title = ` EasyCode Live Monitor `
+    const title = ` ${copy.liveMonitorTitle} `
     const leftH = chars.h.repeat(2)
     const rightH = chars.h.repeat(Math.max(0, width - title.length - 4))
     lines.push(`${color}${chars.tl}${leftH}${title}${rightH}${chars.tr}${reset}`)
@@ -412,7 +433,7 @@ export class TuiRenderer {
     const statusIcon = "➔"
     const elapsedStr = formatDuration(this.elapsedMs)
     const statusText = truncateToWidth(this.statusText, width - 25)
-    const contentLine2 = `  \x1b[32m${statusIcon}\x1b[0m  \x1b[1mStatus:\x1b[0m \x1b[36m${statusText}\x1b[0m \x1b[90m(Elapsed: ${elapsedStr})\x1b[0m`
+    const contentLine2 = `  \x1b[32m${statusIcon}\x1b[0m  \x1b[1m${copy.statusLabel}:\x1b[0m \x1b[36m${statusText}\x1b[0m \x1b[90m(${copy.elapsedLabel}: ${elapsedStr})\x1b[0m`
     const visibleLen2 = displayWidth(contentLine2)
     const paddedLine2 = contentLine2 + " ".repeat(Math.max(0, width - visibleLen2 - 4))
     lines.push(`${color}${chars.v}${reset}${paddedLine2}${color}${chars.v}${reset}`)
@@ -421,7 +442,7 @@ export class TuiRenderer {
     let contentLine3 = ""
     if (this.queuedPrompt) {
       const truncatedQueued = truncateToWidth(this.queuedPrompt, width - 20)
-      contentLine3 = `  \x1b[33m📥\x1b[0m  \x1b[1mQueued Next:\x1b[0m \x1b[90m"${truncatedQueued}"\x1b[0m`
+      contentLine3 = `  \x1b[33m📥\x1b[0m  \x1b[1m${copy.queuedNextLabel}:\x1b[0m \x1b[90m"${truncatedQueued}"\x1b[0m`
     } else {
       let metricsStr = ""
       if (this.metrics) {
@@ -430,14 +451,14 @@ export class TuiRenderer {
       } else {
         metricsStr = `calls: \x1b[1m0\x1b[0m  ·  tokens: \x1b[1m0\x1b[0m (hit: \x1b[32m0.0%\x1b[0m)`
       }
-      contentLine3 = `  \x1b[33m📊\x1b[0m  \x1b[1mMetrics:\x1b[0m ${metricsStr}`
+      contentLine3 = `  \x1b[33m📊\x1b[0m  \x1b[1m${copy.metricsLabel}:\x1b[0m ${metricsStr}`
     }
     const visibleLen3 = displayWidth(contentLine3)
     const paddedLine3 = contentLine3 + " ".repeat(Math.max(0, width - visibleLen3 - 4))
     lines.push(`${color}${chars.v}${reset}${paddedLine3}${color}${chars.v}${reset}`)
     
     // Line 5: Bottom Border
-    const hintText = ` Type /cancel to stop execution `
+    const hintText = ` ${copy.typeCancelHint} `
     const bottomH = chars.h.repeat(Math.max(0, width - hintText.length - 4))
     lines.push(`${color}${chars.bl}${chars.h.repeat(2)}${hintText}${bottomH}${chars.br}${reset}`)
     
@@ -445,6 +466,7 @@ export class TuiRenderer {
   }
 
   private renderWelcomeDashboard() {
+    const copy = uiText(this.getLanguage())
     const width = Math.max(72, Math.min(this.getColumns(), 100))
     const session = this.context.session ?? "(selecting)"
     const model = this.context.model ?? "(provider default)"
@@ -452,24 +474,21 @@ export class TuiRenderer {
     const root = compactPath(this.context.root, width - 20)
 
     const lines = [
-      `\x1b[90mEasyCode TUI | mode=${this.context.mode} provider=${this.context.provider} model=${model}\x1b[0m`,
-      `\x1b[90msession=${session} logger=${logger} status=ready\x1b[0m`,
-      `\x1b[90mroot=${root}\x1b[0m`,
-      `\x1b[90m/help /settings /sessions /model /skill /image /thinking /effort /cancel\x1b[0m`,
+      `\x1b[90m${copy.welcomeOverview(this.context.mode, this.context.provider, model)}\x1b[0m`,
+      `\x1b[90m${copy.welcomeSession(session, logger, this.lastStatus, languageDisplay(this.getLanguage()))}\x1b[0m`,
+      `\x1b[90m${copy.welcomeRoot(root)}\x1b[0m`,
+      `\x1b[90m${copy.welcomeCommands}\x1b[0m`,
       `\x1b[90m─\x1b[0m`.repeat(width - 4),
-      `\x1b[1m📂 Project Root:\x1b[0m  \x1b[36m${root}\x1b[0m`,
-      `\x1b[1m🤖 AI Agent:\x1b[0m     \x1b[35m${this.context.provider}\x1b[0m · model: \x1b[32m${model}\x1b[0m`,
-      `\x1b[1m🔧 Run Mode:\x1b[0m     ${this.context.mode === "build" ? "\x1b[45m\x1b[37m\x1b[1m BUILD \x1b[0m" : "\x1b[44m\x1b[37m\x1b[1m PLAN \x1b[0m"}`,
-      `\x1b[1m📝 Session ID:\x1b[0m   \x1b[93m${session}\x1b[0m · logger: \x1b[90m${logger}\x1b[0m`,
+      `\x1b[1m📂 ${copy.welcomeProjectRoot}\x1b[0m  \x1b[36m${root}\x1b[0m`,
+      `\x1b[1m🤖 ${copy.welcomeAgent}\x1b[0m     \x1b[35m${this.context.provider}\x1b[0m · model: \x1b[32m${model}\x1b[0m`,
+      `\x1b[1m🔧 ${copy.welcomeRunMode}\x1b[0m     ${this.context.mode === "build" ? "\x1b[45m\x1b[37m\x1b[1m BUILD \x1b[0m" : "\x1b[44m\x1b[37m\x1b[1m PLAN \x1b[0m"}`,
+      `\x1b[1m📝 ${copy.welcomeSessionId}\x1b[0m   \x1b[93m${session}\x1b[0m · logger: \x1b[90m${logger}\x1b[0m`,
       `\x1b[90m─\x1b[0m`.repeat(width - 4),
-      `\x1b[1m💡 Slash Commands:\x1b[0m`,
-      `   \x1b[36m/help\x1b[0m      Show help details      \x1b[36m/settings\x1b[0m  View active settings`,
-      `   \x1b[36m/sessions\x1b[0m  List saved sessions    \x1b[36m/model\x1b[0m     Change active model`,
-      `   \x1b[36m/skill\x1b[0m     Manage skills          \x1b[36m/image\x1b[0m     Attach vision input`,
-      `   \x1b[36m/cancel\x1b[0m    Stop active execution  \x1b[36mexit\x1b[0m       Exit EasyCode`
+      `\x1b[1m💡 ${copy.welcomeSlashCommands}\x1b[0m`,
+      ...copy.welcomeCommandLines,
     ]
 
-    const card = drawCard("EasyCode TUI", lines, this.getColumns(), {
+    const card = drawCard(copy.welcomeTitle, lines, this.getColumns(), {
       color: "\x1b[38;5;99m", // modern violet color
       borderStyle: "round",
       minWidth: 72
@@ -480,9 +499,10 @@ export class TuiRenderer {
   }
 
   private renderSuccessSummary() {
+    const copy = uiText(this.getLanguage())
     const lines = [
-      `\x1b[1mStatus:\x1b[0m         🎉 \x1b[32m\x1b[1mSUCCESS\x1b[0m`,
-      `\x1b[1mDuration:\x1b[0m       ⚡ \x1b[36m${formatDuration(this.elapsedMs)}\x1b[0m`,
+      `\x1b[1m${copy.statusLabel}:\x1b[0m         🎉 \x1b[32m\x1b[1m${copy.successStatus}\x1b[0m`,
+      `\x1b[1m${copy.durationLine("").split(":")[0]}:\x1b[0m       ⚡ \x1b[36m${formatDuration(this.elapsedMs)}\x1b[0m`,
     ]
     
     if (this.metrics) {
@@ -494,14 +514,14 @@ export class TuiRenderer {
       const cumTotal = cumInput + cumOutput
 
       lines.push(
-        `\x1b[1mRound Calls:\x1b[0m    📞 \x1b[35m${this.metrics.calls}\x1b[0m`,
-        `\x1b[1mRound Tokens:\x1b[0m   📊 \x1b[33m${roundTotal.toLocaleString()}\x1b[0m (cache hit: \x1b[32m${roundHitRate}%\x1b[0m)`,
-        `\x1b[1mSession Calls:\x1b[0m  📞 \x1b[35m${cumCalls}\x1b[0m`,
-        `\x1b[1mSession Tokens:\x1b[0m 📊 \x1b[33m${cumTotal.toLocaleString()}\x1b[0m (in: ${cumInput.toLocaleString()}, out: ${cumOutput.toLocaleString()})`
+        copy.roundCallsLine(String(this.metrics.calls)),
+        copy.roundTokensLine(roundTotal.toLocaleString(), `${roundHitRate}%`),
+        copy.sessionCallsLine(String(cumCalls)),
+        copy.sessionTokensLine(cumTotal.toLocaleString(), cumInput.toLocaleString(), cumOutput.toLocaleString())
       )
     }
     
-    const card = drawCard("🏁 Execution Completed", lines, this.getColumns(), {
+    const card = drawCard(`🏁 ${copy.successTitle}`, lines, this.getColumns(), {
       color: "\x1b[32m",
       borderStyle: "round"
     })
@@ -509,10 +529,11 @@ export class TuiRenderer {
   }
 
   private renderFailureSummary(reason: string) {
+    const copy = uiText(this.getLanguage())
     const lines = [
-      `\x1b[1mStatus:\x1b[0m         ❌ \x1b[31m\x1b[1mFAILED\x1b[0m`,
-      `\x1b[1mDuration:\x1b[0m       ⚡ \x1b[36m${formatDuration(this.elapsedMs)}\x1b[0m`,
-      `\x1b[1mReason:\x1b[0m         ⚠️  \x1b[31m${reason}\x1b[0m`
+      `\x1b[1m${copy.statusLabel}:\x1b[0m         ❌ \x1b[31m\x1b[1m${copy.failureStatus}\x1b[0m`,
+      `\x1b[1m${copy.durationLine("").split(":")[0]}:\x1b[0m       ⚡ \x1b[36m${formatDuration(this.elapsedMs)}\x1b[0m`,
+      `\x1b[1m${copy.reasonLine("").split(":")[0]}:\x1b[0m         ⚠️  \x1b[31m${reason}\x1b[0m`
     ]
     
     if (this.metrics) {
@@ -523,14 +544,14 @@ export class TuiRenderer {
       const cumTotal = cumInput + cumOutput
 
       lines.push(
-        `\x1b[1mRound Calls:\x1b[0m    📞 \x1b[35m${this.metrics.calls}\x1b[0m`,
-        `\x1b[1mRound Tokens:\x1b[0m   📊 \x1b[33m${roundTotal.toLocaleString()}\x1b[0m`,
-        `\x1b[1mSession Calls:\x1b[0m  📞 \x1b[35m${cumCalls}\x1b[0m`,
-        `\x1b[1mSession Tokens:\x1b[0m 📊 \x1b[33m${cumTotal.toLocaleString()}\x1b[0m (in: ${cumInput.toLocaleString()}, out: ${cumOutput.toLocaleString()})`
+        copy.roundCallsLine(String(this.metrics.calls)),
+        copy.roundTokensLine(roundTotal.toLocaleString()),
+        copy.sessionCallsLine(String(cumCalls)),
+        copy.sessionTokensLine(cumTotal.toLocaleString(), cumInput.toLocaleString(), cumOutput.toLocaleString())
       )
     }
     
-    const card = drawCard("🛑 Execution Failed", lines, this.getColumns(), {
+    const card = drawCard(`🛑 ${copy.failureTitle}`, lines, this.getColumns(), {
       color: "\x1b[31m",
       borderStyle: "round"
     })

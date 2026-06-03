@@ -17,7 +17,9 @@
 - `easycode build --session demo --provider fake` starts the named interactive session.
 - `easycode build --provider fake --tui` provides the same interactive capabilities as the plain CLI: session selection, slash commands, queued input, cancellation, permission prompts, plan approval, timeline events, settings changes, image attachment, skills, and saved sessions.
 - `easycode build --once "..." --provider fake --tui` renders the TUI shell and the normal run timeline without changing runner behavior.
+- First interactive startup without `EASYCODE_LANG` prompts for a UI language choice and saves it for later sessions.
 - `/sessions` lists saved sessions and marks the active one in interactive mode.
+- `/lang <code>` updates the fixed CLI/TUI language for the current session and persists the default in `~/.easycode/.env`.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.
 - `/image` attaches an image to the next prompt only when the active provider supports images.

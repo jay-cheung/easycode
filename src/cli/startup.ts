@@ -3,6 +3,7 @@ import os from "node:os"
 import { createInterface } from "node:readline"
 import type { Interface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
+import { detectUiLanguage, languageDisplay, languageLabel, parseUiLanguage, type UiLanguage, uiLanguageChoices, uiLanguages, uiText } from "../i18n"
 import { hasProvider, listProviders } from "../provider"
 import { hasConfiguredWebSearch } from "../retrieval"
 
@@ -94,6 +95,30 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
 
 export function interactiveStartupEnabled(env: EnvTarget = process.env) {
   return input.isTTY || env.EASYCODE_TEST_FORCE_TTY === "1"
+}
+
+export function configuredUiLanguage(env: EnvTarget = process.env) {
+  return parseUiLanguage(env.EASYCODE_LANG)
+}
+
+export async function setupInteractiveLanguage(env: EnvTarget = process.env) {
+  if (configuredUiLanguage(env)) return configuredUiLanguage(env)
+  const fallback = detectUiLanguage(env)
+  const rl = createInterface({ input, output })
+  try {
+    output.write("\nSelect interface language / 选择界面语言 / 言語を選択 / Choisir la langue / 언어 선택 / Sprache wählen\n")
+    for (const [index, language] of uiLanguages.entries()) {
+      output.write(`  ${index + 1}) ${languageLabel(language)} (${language})${language === fallback ? " [default]" : ""}\n`)
+    }
+    output.write("\n")
+    const raw = await ask(rl, `Language [1-${uiLanguages.length} or code, default: ${fallback}]: `)
+    const selected = selectStartupLanguage(raw, fallback)
+    const envPath = await saveUiLanguagePreference(selected, env)
+    output.write(`\nUI language saved as ${languageDisplay(selected)} in ${envPath}\n`)
+    return selected
+  } finally {
+    rl.close()
+  }
 }
 
 export function requiredEnvForProvider(provider: string) {
@@ -196,10 +221,11 @@ export function mergeEnvText(existing: string, entries: Record<string, string>) 
 export async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, preselectedProvider?: string): Promise<string | undefined> {
   const initialProvider = preselectedProvider ?? (env.EASYCODE_PROVIDER && hasProvider(env.EASYCODE_PROVIDER) ? env.EASYCODE_PROVIDER : undefined)
   if (!needsEnvSetup(initialProvider, env)) return initialProvider
+  const copy = uiText(configuredUiLanguage(env) ?? detectUiLanguage(env))
 
   const rl = createInterface({ input, output })
   try {
-    output.write("\nProvider environment is not configured for this project.\n")
+    output.write(`\n${copy.providerTitle} environment is not configured for this project.\n`)
     output.write("easycode can write the missing values to .env. Existing shell variables and .env entries are preserved.\n\n")
 
     const answer = await new Promise<string>((resolve) => {
@@ -207,7 +233,7 @@ export async function setupInteractiveEnv(root: string, env: EnvTarget = process
     })
     if (answer.trim().toLowerCase() === "n") return initialProvider
 
-    const selectedProvider = initialProvider ?? await promptForStartupProvider(rl)
+    const selectedProvider = initialProvider ?? await promptForStartupProvider(rl, env)
     if (!hasProvider(selectedProvider)) return initialProvider
 
     const entries: Record<string, string> = { EASYCODE_PROVIDER: selectedProvider }
@@ -225,10 +251,11 @@ export async function setupInteractiveEnv(root: string, env: EnvTarget = process
 
 export async function setupInteractiveWebSearchEnv(root: string, env: EnvTarget = process.env) {
   if (await hasConfiguredWebSearch(root, env)) return
+  const copy = uiText(configuredUiLanguage(env) ?? detectUiLanguage(env))
 
   const rl = createInterface({ input, output })
   try {
-    output.write("\nLive web search is not configured.\n")
+    output.write(`\n${copy.webSearchNotConfigured}\n`)
     output.write(`easycode can save TAVILY_API_KEY to ${easycodeGlobalEnvHint} for all projects.\n\n`)
 
     const answer = await new Promise<string>((resolve) => {
@@ -251,8 +278,9 @@ export async function setupInteractiveWebSearchEnv(root: string, env: EnvTarget 
   }
 }
 
-async function promptForStartupProvider(rl: Interface) {
+async function promptForStartupProvider(rl: Interface, env: EnvTarget = process.env) {
   const realProviders = startupProviders()
+  const copy = uiText(configuredUiLanguage(env) ?? detectUiLanguage(env))
   output.write("\nAvailable providers:\n")
   for (const provider of realProviders) {
     output.write(`  ${provider}\n`)
@@ -263,7 +291,7 @@ async function promptForStartupProvider(rl: Interface) {
   })
   const provider = raw.trim().toLowerCase() || "deepseek"
   if (!hasProvider(provider)) {
-    output.write(`Unknown provider: ${provider}. Skipping setup.\n`)
+    output.write(`${copy.providerUnknown(provider, realProviders.join(", "))}\n`)
     return ""
   }
   return provider
@@ -407,4 +435,20 @@ function applyEnvEntries(env: EnvTarget, entries: Record<string, string>) {
   for (const [key, value] of Object.entries(entries)) {
     env[key] = value
   }
+}
+
+export async function saveUiLanguagePreference(language: UiLanguage, env: EnvTarget = process.env) {
+  const envPath = await writeGlobalEnvEntries({ EASYCODE_LANG: language })
+  applyEnvEntries(env, { EASYCODE_LANG: language })
+  return envPath
+}
+
+function selectStartupLanguage(raw: string, fallback: UiLanguage) {
+  const value = raw.trim()
+  if (!value) return fallback
+  const numeric = Number(value)
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= uiLanguages.length) {
+    return uiLanguages[numeric - 1]
+  }
+  return parseUiLanguage(value) ?? fallback
 }

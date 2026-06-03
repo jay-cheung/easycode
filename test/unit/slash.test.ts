@@ -11,12 +11,14 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/model gpt-4o with spaces")).toEqual({ type: "model", model: "gpt-4o with spaces" })
     expect(parseSlashCommand("/provider openai")).toEqual({ type: "provider", name: "openai" })
     expect(parseSlashCommand("/effort max")).toEqual({ type: "effort", value: "max" })
+    expect(parseSlashCommand("/lang zh")).toEqual({ type: "lang", value: "zh" })
+    expect(parseSlashCommand("/lang")).toEqual({ type: "lang" })
     expect(parseSlashCommand("/sessions")).toEqual({ type: "sessions" })
   })
 
   test("returns error for model and provider with no args", () => {
-    expect(parseSlashCommand("/model")).toEqual({ type: "error", message: "/model requires a model name" })
-    expect(parseSlashCommand("/provider")).toEqual({ type: "error", message: "/provider requires a provider name" })
+    expect(parseSlashCommand("/model")).toEqual({ type: "error", code: "model_requires_name" })
+    expect(parseSlashCommand("/provider")).toEqual({ type: "error", code: "provider_requires_name" })
   })
 
   test("accepts the thingking typo as a thinking alias", () => {
@@ -25,7 +27,7 @@ describe("slash commands", () => {
   })
 
   test("normalizes session settings", () => {
-    expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", thinking: true, effort: "high", maxTokens: 32_000, maxSteps: 66 })
+    expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", language: expect.any(String), thinking: true, effort: "high", maxTokens: 32_000, maxSteps: 66 })
     expect(normalizeSessionSettings({ provider: "deepseek", effort: "max", selectedSkills: ["demo", "demo", ""], pendingSkillLoads: ["demo", "demo", ""] }, "fake")).toMatchObject({
       provider: "deepseek",
       effort: "max",

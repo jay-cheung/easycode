@@ -106,7 +106,7 @@ type CodeIndexResult = {
 - Provider-facing messages are derived from internal messages.
 - Tool metadata includes status and safety metadata where relevant.
 - Zod validates model-produced tool arguments before execution.
-- Session settings persist model/thinking/effort/skill choices; pending images do not persist.
+- Session settings persist model/language/thinking/effort/skill choices; pending images do not persist.
 - Repo map and code index caches are derived artifacts under `.easycode/cache`; deleting them must not affect correctness.
 - Code-navigation tools preserve the public protocol while switching internals from CLI search to index-first lookup.
 - `code-index/index.json` is tool-private cache data. It must never be returned wholesale to the model; model-visible navigation outputs are limited to repo-map skeletons, bounded search previews, and `read_lines` slices.

@@ -1,4 +1,5 @@
 import { stdout as output } from "node:process"
+import { languageDisplay, parseUiLanguage, supportedLanguageSummary, uiText } from "../i18n"
 import { imageLabel, imagePartFromInput } from "../image"
 import type { AgentMode, ImagePart } from "../message"
 import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService, type PermissionRequest } from "../permission"
@@ -10,33 +11,36 @@ import { parseSlashCommand, slashHelpText, type SlashCommand } from "../slash"
 import { SkillService } from "../skill"
 import { TuiRenderer } from "../ui/tui"
 import { eofPrompt, LineReader } from "./line-reader"
+import { saveUiLanguagePreference } from "./startup"
 
-export async function maybeShowWebSearchSetupHint(root: string, tui?: TuiRenderer) {
+export async function maybeShowWebSearchSetupHint(root: string, language: SessionSettings["language"], tui?: TuiRenderer) {
   if (await hasConfiguredWebSearch(root, process.env)) return
-  writeCliText(tui, `Live web search is not configured.\n${tavilySetupHint}`, "Web Search")
+  const copy = uiText(language)
+  writeCliText(tui, `${copy.webSearchNotConfigured}\n${tavilySetupHint}`, copy.webSearchTitle)
 }
 
-export async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader, tui?: TuiRenderer) {
+export async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader, language: SessionSettings["language"], tui?: TuiRenderer) {
+  const copy = uiText(language)
   if (explicitSession) return explicitSession
   const sessions = await store.list()
   if (sessions.length === 0) {
-    writeCliText(tui, "Starting new session: default", "Session")
+    writeCliText(tui, copy.startingNewSession("default"), copy.sessionTitle)
     return "default"
   }
   const sessionLines = [
-    "Select a session:",
+    copy.selectSession,
     ...sessions.map((session, index) => `  ${index + 1}. ${session.id}${session.messageCount ? ` (${session.messageCount} messages)` : ""}`),
-    "Press Enter for 1, enter a number, or type a new session id.",
+    copy.selectSessionHint,
   ]
-  writeCliText(tui, sessionLines.join("\n"), "Sessions")
+  writeCliText(tui, sessionLines.join("\n"), copy.sessionsTitle)
   while (true) {
-    const answer = (await reader.question(tui?.sessionPrompt() ?? "session> ")).trim()
+    const answer = (await reader.question(tui?.sessionPrompt() ?? copy.sessionPrompt)).trim()
     if (answer === eofPrompt) return undefined
     if (!answer) return sessions[0].id
     const selectedIndex = Number(answer)
     if (Number.isInteger(selectedIndex)) {
       if (selectedIndex >= 1 && selectedIndex <= sessions.length) return sessions[selectedIndex - 1].id
-      writeCliText(tui, `Choose 1-${sessions.length}, or type a non-numeric new session id.`, "Sessions")
+      writeCliText(tui, copy.selectSessionRange(sessions.length), copy.sessionsTitle)
       continue
     }
     return answer
@@ -48,56 +52,73 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
   let pendingImages = input.pendingImages
   let resetRunner = false
   input.tui?.slashCommand(command.type)
-  const write = (text: string, title = "Command") => writeCliText(input.tui, text, title)
+  const write = (text: string, title?: string) => writeCliText(input.tui, text, title ?? uiText(next.language).commandTitle)
+
   switch (command.type) {
     case "help":
-      write(slashHelpText(), "Help")
+      write(slashHelpText(next.language), uiText(next.language).helpTitle)
       break
     case "settings":
-      write(settingsText(next, pendingImages), "Settings")
+      write(settingsText(next, pendingImages), uiText(next.language).settingsTitle)
       break
     case "sessions":
-      write(await sessionsText(input.sessions, input.currentSession), "Sessions")
+      write(await sessionsText(input.sessions, input.currentSession, next.language), uiText(next.language).sessionsTitle)
       break
     case "unknown":
-      write(`Unknown command: /${command.name}. Use /help.`, "Command")
+      write(uiText(next.language).commandUnknown(command.name), uiText(next.language).commandTitle)
       break
     case "error":
-      write(command.message, "Command")
+      write(uiText(next.language).slashError(command.code), uiText(next.language).commandTitle)
       break
     case "model":
       next.model = command.model
       resetRunner = true
-      write(`Model set to ${next.model}`, "Model")
+      write(uiText(next.language).modelSet(next.model), uiText(next.language).modelTitle)
       break
     case "provider":
-      if (!hasProvider(command.name)) write(`Unknown provider: ${command.name}. Available providers: ${listProviders().join(", ")}`, "Provider")
+      if (!hasProvider(command.name)) write(uiText(next.language).providerUnknown(command.name, listProviders().join(", ")), uiText(next.language).providerTitle)
       else {
         next.provider = command.name
         next.model = undefined
         resetRunner = true
-        write(`Provider set to ${next.provider}`, "Provider")
+        write(uiText(next.language).providerSet(next.provider), uiText(next.language).providerTitle)
       }
       break
+    case "lang": {
+      if (!command.value) {
+        write(uiText(next.language).languageCurrent(languageDisplay(next.language), supportedLanguageSummary()), uiText(next.language).languageTitle)
+        break
+      }
+      const selected = parseUiLanguage(command.value)
+      if (!selected) {
+        write(uiText(next.language).languageInvalid(command.value, supportedLanguageSummary()), uiText(next.language).languageTitle)
+        break
+      }
+      next.language = selected
+      input.tui?.configure({ language: next.language })
+      const envPath = await saveUiLanguagePreference(next.language, process.env)
+      write(uiText(next.language).languageUpdated(languageDisplay(next.language), envPath), uiText(next.language).languageTitle)
+      break
+    }
     case "thinking": {
       const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) write(`Provider ${next.provider} does not support thinking controls.`, "Thinking")
+      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) write(uiText(next.language).providerThinkingUnsupported(next.provider), uiText(next.language).thinkingTitle)
       else {
         next.thinking = command.value === "on"
         resetRunner = true
-        write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.`, "Thinking")
+        write(uiText(next.language).thinkingUpdated(next.thinking, Boolean(command.aliasUsed)), uiText(next.language).thinkingTitle)
       }
       break
     }
     case "effort": {
-      if (!isReasoningEffort(command.value)) write("/effort requires low, medium, high, or max", "Effort")
+      if (!isReasoningEffort(command.value)) write(uiText(next.language).slashError("effort_requires_value"), uiText(next.language).effortTitle)
       else {
         const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) write(`Provider ${next.provider} does not support effort controls.`, "Effort")
+        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) write(uiText(next.language).providerEffortUnsupported(next.provider), uiText(next.language).effortTitle)
         else {
           next.effort = command.value
           resetRunner = true
-          write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.`, "Effort")
+          write(uiText(next.language).effortUpdated(next.effort, next.thinking), uiText(next.language).effortTitle)
         }
       }
       break
@@ -105,17 +126,17 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
     case "image": {
       if (command.action === "clear") {
         pendingImages = []
-        write("Pending images cleared.", "Image")
+        write(uiText(next.language).pendingImagesCleared, uiText(next.language).imageTitle)
       } else {
         const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.`, "Image")
+        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) write(uiText(next.language).providerImageUnsupported(next.provider), uiText(next.language).imageTitle)
         else {
           try {
             const part = await imagePartFromInput(command.value, input.root)
             pendingImages = [...pendingImages, part]
-            write(`Attached image: ${imageLabel(part.source)}`, "Image")
+            write(uiText(next.language).imageAttached(imageLabel(part.source)), uiText(next.language).imageTitle)
           } catch (error) {
-            write(error instanceof Error ? error.message : String(error), "Image")
+            write(error instanceof Error ? error.message : String(error), uiText(next.language).imageTitle)
           }
         }
       }
@@ -125,71 +146,67 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
       if (command.action === "list") {
         const skills = await input.skills.available()
         const lines: string[] = []
-        for (const skill of skills) {
-          lines.push(`${skill.id}\n  name: ${skill.name} — ${skill.description}`)
-        }
-        write(skills.length === 0 ? "No skills found." : lines.join("\n"), "Skills")
+        for (const skill of skills) lines.push(`${skill.id}\n  name: ${skill.name} — ${skill.description}`)
+        write(skills.length === 0 ? uiText(next.language).noSkillsFound : lines.join("\n"), uiText(next.language).skillsTitle)
       }
       if (command.action === "clear") {
         next.selectedSkills = []
         next.pendingSkillLoads = []
         resetRunner = true
-        write("Active skills cleared.", "Skills")
+        write(uiText(next.language).skillsCleared, uiText(next.language).skillsTitle)
       }
       if (command.action === "use") {
         const skill = await input.skills.load(command.name)
-        if (!skill) write(`Skill not found: ${command.name}`, "Skills")
+        if (!skill) write(uiText(next.language).skillNotFound(command.name), uiText(next.language).skillsTitle)
         else {
           next.selectedSkills = [...new Set([...next.selectedSkills, skill.id])]
           next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.id])]
           resetRunner = true
-          write(`Skill active: ${skill.id}`, "Skills")
+          write(uiText(next.language).skillActivated(skill.id), uiText(next.language).skillsTitle)
         }
       }
       if (command.action === "remove") {
         const removed = next.selectedSkills.filter((id) => id === command.name || id.endsWith(`/${command.name}`) || id.endsWith(`:${command.name}`))
         if (removed.length === 0) {
-          write(`No active skill found: ${command.name}`, "Skills")
+          write(uiText(next.language).noActiveSkillFound(command.name), uiText(next.language).skillsTitle)
         } else {
           next.selectedSkills = next.selectedSkills.filter((id) => !removed.includes(id))
           next.pendingSkillLoads = (next.pendingSkillLoads ?? []).filter((id) => !removed.includes(id))
           resetRunner = true
-          write(`Skill removed: ${removed.join(", ")}`, "Skills")
+          write(uiText(next.language).skillRemoved(removed.join(", ")), uiText(next.language).skillsTitle)
         }
       }
       break
     }
   }
+
   return { settings: next, pendingImages, resetRunner }
 }
 
-export async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined) {
-  if (!store) return "No session store is active."
+export async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined, language: SessionSettings["language"]) {
+  const copy = uiText(language)
+  if (!store) return copy.noSessionStore
   const sessions = await store.list()
-  if (sessions.length === 0) return "No saved sessions."
+  if (sessions.length === 0) return copy.noSavedSessions
   return [
-    "Saved sessions:",
-    ...sessions.map((session, index) => {
-      const current = session.id === currentSession ? " (current)" : ""
-      const messages = session.messageCount === 1 ? "1 message" : `${session.messageCount} messages`
-      return `  ${index + 1}. ${session.id}${current} - ${messages}`
-    }),
+    copy.savedSessions,
+    ...sessions.map((session, index) => copy.sessionSummary(index + 1, session.id, session.id === currentSession, session.messageCount)),
   ].join("\n")
 }
 
 export function settingsText(settings: SessionSettings, images: ImagePart[]) {
-  return [
-    `provider: ${settings.provider}`,
-    `model: ${settings.model ?? "(provider default)"}`,
-    `thinking: ${settings.thinking ? "on" : "off"}`,
-    `effort: ${settings.effort}`,
-    "cache: every-step",
-    `maxTokens: ${settings.maxTokens}`,
-    `maxSteps: ${settings.maxSteps}`,
-    `skills: ${settings.selectedSkills.join(", ") || "(none)"}`,
-    `pendingSkillLoads: ${settings.pendingSkillLoads.join(", ") || "(none)"}`,
-    `pending images: ${images.length}`,
-  ].join("\n")
+  return uiText(settings.language).settingsText({
+    provider: settings.provider,
+    model: settings.model,
+    thinking: settings.thinking,
+    effort: settings.effort,
+    language: languageDisplay(settings.language),
+    skills: settings.selectedSkills.join(", ") || "(none)",
+    pendingSkillLoads: settings.pendingSkillLoads.join(", ") || "(none)",
+    pendingImages: images.length,
+    maxTokens: settings.maxTokens,
+    maxSteps: settings.maxSteps,
+  })
 }
 
 export function writeCliText(tui: TuiRenderer | undefined, text: string, title: string) {
@@ -202,8 +219,9 @@ export function writeCliText(tui: TuiRenderer | undefined, text: string, title: 
 
 export function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[], tui?: TuiRenderer) {
   const pumpAbort = new AbortController()
+  const copy = uiText(tui?.getLanguage() ?? "en")
   if (tui) tui.runInputHint()
-  else output.write("Type /cancel to stop this run; other input will run next.\n")
+  else output.write(`${copy.runInputHint}\n`)
   const done = (async () => {
     while (!pumpAbort.signal.aborted) {
       const line = await reader.nextLine("background", pumpAbort.signal)
@@ -212,14 +230,14 @@ export function collectRunInput(reader: LineReader, activeAbort: AbortController
       if (!text) continue
       if (isCancelInput(text)) {
         if (tui) tui.cancelling()
-        else output.write("Cancelling current run...\n")
+        else output.write(`${copy.cancellingRun}\n`)
         activeAbort.abort()
         pumpAbort.abort()
         break
       }
       queuedPrompts.push(text)
       if (tui) tui.queued(shortPrompt(text))
-      else output.write(`Queued next input: ${shortPrompt(text)}\n`)
+      else output.write(`${copy.queuedNextInput(shortPrompt(text))}\n`)
     }
   })()
   return {
@@ -231,10 +249,11 @@ export function collectRunInput(reader: LineReader, activeAbort: AbortController
 }
 
 export async function question(reader: LineReader, tui?: TuiRenderer) {
-  return reader.question(tui?.inputPrompt() ?? "> ")
+  return reader.question(tui?.inputPrompt() ?? uiText(tui?.getLanguage() ?? "en").inputPrompt)
 }
 
 export function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () => void, tui?: TuiRenderer) {
+  const copy = uiText(tui?.getLanguage() ?? "en")
   return new PermissionService(defaultPermissionRules(mode), async (request) => {
     const basePrompt = permissionPrompt(request)
     const answer = (await questionWithPrompt(reader, tui?.permissionPrompt(request, basePrompt) ?? basePrompt)).trim().toLowerCase()
@@ -243,7 +262,7 @@ export function permissionService(mode: AgentMode, reader: LineReader, cancelRun
     if (isCancelInput(answer)) {
       cancelRun?.()
       if (tui) tui.cancelling()
-      else output.write("Cancelling current run...\n")
+      else output.write(`${copy.cancelledRun}\n`)
       return "reject"
     }
     if (answer === "a" || answer === "always") return "always"

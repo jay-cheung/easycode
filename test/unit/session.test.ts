@@ -45,11 +45,11 @@ describe("session store", () => {
     const store = new SessionStore(root)
     const context = new ContextManager()
     context.add(textMessage("user", "hello"))
-    await store.save("demo", context, { provider: "openai", model: "gpt-5-mini", thinking: false, effort: "max", selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
+    await store.save("demo", context, { provider: "openai", model: "gpt-5-mini", language: "fr", thinking: false, effort: "max", selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
 
     const saved = await store.load("demo")
-    expect(saved?.settings).toMatchObject({ provider: "openai", model: "gpt-5-mini", thinking: false, effort: "max", selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
-    expect(await store.settings("demo", "fake")).toMatchObject({ provider: "openai", model: "gpt-5-mini", thinking: false, effort: "max", selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
+    expect(saved?.settings).toMatchObject({ provider: "openai", model: "gpt-5-mini", language: "fr", thinking: false, effort: "max", selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
+    expect(await store.settings("demo", "fake")).toMatchObject({ provider: "openai", model: "gpt-5-mini", language: "fr", thinking: false, effort: "max", selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
     await rm(root, { recursive: true, force: true })
   })
 

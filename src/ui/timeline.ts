@@ -1,4 +1,5 @@
 import type { ToolCall } from "../message"
+import { languageLocale, uiText, type UiLanguage } from "../i18n"
 
 export type ProviderRunMetrics = {
   provider: string
@@ -62,29 +63,36 @@ export class TimelineRenderer {
   private answerOpen = false
   private answerMarkdown: MarkdownLineRenderer | undefined
   private readonly colorEnabled: boolean
+  private language: UiLanguage
 
-  constructor(private readonly output: Writable = process.stdout) {
+  constructor(private readonly output: Writable = process.stdout, language: UiLanguage = "en") {
     this.colorEnabled = output.isTTY === true
+    this.language = language
+  }
+
+  setLanguage(language: UiLanguage) {
+    this.language = language
   }
 
   event(event: RunUiEvent) {
+    const copy = uiText(this.language)
     if (event.type === "run_start") {
       this.closeThought()
       this.closeAnswer()
       const model = event.model ? ` ${event.model}` : ""
-      this.output.write(`\n${this.title("thought", "● Model")} ${event.provider}${model} (${event.mode})\n`)
+      this.output.write(`\n${this.title("thought", copy.timelineModel)} ${event.provider}${model} (${event.mode})\n`)
       return
     }
     if (event.type === "provider_progress") {
       const model = event.model ? ` ${event.model}` : ""
-      this.output.write(`  … waiting for ${this.title("thought", `${event.provider}${model}`)} after ${formatDuration(event.elapsedMs)}\n`)
+      this.output.write(copy.timelineWaitingFor(this.title("thought", `${event.provider}${model}`), formatDuration(event.elapsedMs)))
       return
     }
     if (event.type === "provider_metrics") {
       if (event.interim) return
       this.closeThought()
       this.closeAnswer()
-      this.output.write(formatProviderMetrics(event.metrics, (text) => this.title("thought", text)))
+      this.output.write(formatProviderMetrics(event.metrics, copy, this.language, (text) => this.title("thought", text)))
       return
     }
     if (event.type === "context_compaction") {
@@ -92,15 +100,15 @@ export class TimelineRenderer {
       this.closeAnswer()
       if (event.status === "started") {
         const count = event.inputMessages === undefined ? "" : `, messages=${event.inputMessages}`
-        this.output.write(`\n${this.title("tool", "● Context compaction")} summarizing older context${count}\n`)
+        this.output.write(`\n${this.title("tool", copy.timelineContextCompactionStart(count))}\n`)
       } else if (event.status === "completed") {
         const elapsed = event.elapsedMs === undefined ? "" : ` (${formatDuration(event.elapsedMs)})`
         const summary = event.summaryChars === undefined ? "" : `, summary_chars=${event.summaryChars}`
         const tokens = event.summaryTokens === undefined ? "" : `, summary_tokens=${event.summaryTokens}`
-        this.output.write(`  ✓ ${this.title("tool", "Context compacted")}${elapsed}${summary}${tokens}\n`)
+        this.output.write(copy.timelineContextCompactionDone(elapsed, summary, tokens))
       } else {
         const elapsed = event.elapsedMs === undefined ? "" : ` after ${formatDuration(event.elapsedMs)}`
-        this.output.write(`  × ${this.title("tool", "Context compaction failed")}${elapsed}${event.error ? `: ${event.error}` : ""}\n`)
+        this.output.write(copy.timelineContextCompactionFailed(elapsed, event.error ? `: ${event.error}` : ""))
       }
       return
     }
@@ -110,9 +118,9 @@ export class TimelineRenderer {
       if (event.status === "succeeded") {
         const cache = event.cacheHit ? "cache hit" : "refreshed"
         const relevant = event.relevantFiles === undefined ? "" : `, relevant=${event.relevantFiles}`
-        this.output.write(`\n${this.title("tool", "● repo_map prewarm")} ${cache}, files=${event.files ?? 0}${relevant}, path=${event.cachePath ?? "-"}\n`)
+        this.output.write(`\n${this.title("tool", copy.timelineRepoMapSuccess(cache, event.files ?? 0, relevant, event.cachePath ?? "-"))}\n`)
       } else {
-        this.output.write(`\n${this.title("tool", "● repo_map prewarm")} failed${event.error ? `: ${event.error}` : ""}\n`)
+        this.output.write(`\n${this.title("tool", copy.timelineRepoMapFailed(event.error ? `: ${event.error}` : ""))}\n`)
       }
       return
     }
@@ -135,7 +143,7 @@ export class TimelineRenderer {
       return
     }
     if (event.type === "tool_progress") {
-      this.output.write(`  … ${this.title("tool", event.toolName)} still running after ${formatDuration(event.elapsedMs)}\n`)
+      this.output.write(uiText(this.language).timelineToolRunning(this.title("tool", event.toolName), formatDuration(event.elapsedMs)))
       return
     }
     if (event.type === "tool_result") {
@@ -165,14 +173,14 @@ export class TimelineRenderer {
     this.phase = "thought"
     this.thoughtStartedAt = Date.now()
     this.thoughtText = ""
-    this.output.write(`\n${this.title("thought", "● Thought")}\n`)
+    this.output.write(`\n${this.title("thought", uiText(this.language).timelineThought)}\n`)
   }
 
   private closeThought() {
     if (this.phase !== "thought") return
     const elapsed = Math.max(1, Math.round((Date.now() - this.thoughtStartedAt) / 1000))
     if (this.thoughtText && !this.thoughtText.endsWith("\n")) this.output.write("\n")
-    this.output.write(`  Thought for ${elapsed}s\n`)
+    this.output.write(uiText(this.language).timelineThoughtDone(elapsed))
     this.phase = "idle"
   }
 
@@ -181,7 +189,7 @@ export class TimelineRenderer {
     this.phase = "answer"
     this.answerOpen = true
     this.answerMarkdown = new MarkdownLineRenderer((text) => this.output.write(text), this.colorEnabled, this.output.columns)
-    this.output.write(`\n${this.title("answer", "● Answer")}\n`)
+    this.output.write(`\n${this.title("answer", uiText(this.language).timelineAnswer)}\n`)
   }
 
   private closeAnswer() {
@@ -478,23 +486,40 @@ function formatDuration(durationMs: number) {
   return `${Math.round(seconds)}s`
 }
 
-function formatProviderMetrics(metrics: ProviderRunMetrics, title: (text: string) => string) {
+function formatProviderMetrics(metrics: ProviderRunMetrics, copy: ReturnType<typeof uiText>, language: UiLanguage, title: (text: string) => string) {
   const model = metrics.model ? ` ${metrics.model}` : ""
   const firstResponse = metrics.firstResponseMs === undefined ? "-" : formatDuration(metrics.firstResponseMs)
   const speed = metrics.outputTokensPerSecond === undefined ? "-" : `${formatNumber(metrics.outputTokensPerSecond)}/s`
   const total = metrics.totalTokens === undefined ? "" : ` total=${formatInteger(metrics.totalTokens)}`
   const reasoning = metrics.reasoningTokens === undefined ? "" : ` reasoning=${formatInteger(metrics.reasoningTokens)}`
+  const lines = copy.timelineMetricsBody({
+    provider: metrics.provider,
+    model,
+    calls: metrics.calls,
+    latency: formatDuration(metrics.providerElapsedMs),
+    ttft: firstResponse,
+    speed,
+    inputTokens: formatInteger(metrics.inputTokens, language),
+    cached: formatInteger(metrics.cacheHitTokens, language),
+    miss: formatInteger(metrics.cacheMissTokens, language),
+    hitRate: formatPercent(metrics.hitRate),
+    outputTokens: formatInteger(metrics.outputTokens, language),
+    reasoning,
+    total,
+    effectiveCost: formatNumber(metrics.effectiveCost, language),
+    cacheHitRate: formatRate(metrics.rates.inputCacheHit, language),
+    cacheMissRate: formatRate(metrics.rates.inputCacheMiss, language),
+    outputRate: formatRate(metrics.rates.output, language),
+  })
   return [
-    `\n${title("● Metrics")}\n`,
-    `  provider ${metrics.provider}${model} · calls=${metrics.calls} · latency=${formatDuration(metrics.providerElapsedMs)} · ttft=${firstResponse} · output_rate=${speed}\n`,
-    `  usage input=${formatInteger(metrics.inputTokens)} cached=${formatInteger(metrics.cacheHitTokens)} miss=${formatInteger(metrics.cacheMissTokens)} hit_rate=${formatPercent(metrics.hitRate)} output=${formatInteger(metrics.outputTokens)}${reasoning}${total}\n`,
-    `  cost effective=${formatNumber(metrics.effectiveCost)} per_1M(cache_hit=${formatRate(metrics.rates.inputCacheHit)} cache_miss=${formatRate(metrics.rates.inputCacheMiss)} output=${formatRate(metrics.rates.output)})\n`,
+    `\n${title(copy.timelineMetrics)}\n`,
+    ...lines.map((line) => `${line}\n`),
   ].join("")
 }
 
-function formatInteger(value: number) {
+function formatInteger(value: number, language: UiLanguage = "en") {
   if (!Number.isFinite(value)) return "0"
-  return Math.round(value).toLocaleString("en-US")
+  return Math.round(value).toLocaleString(languageLocale(language))
 }
 
 function formatPercent(value: number) {
@@ -502,13 +527,13 @@ function formatPercent(value: number) {
   return `${(value * 100).toFixed(1)}%`
 }
 
-function formatRate(value: number) {
+function formatRate(value: number, language: UiLanguage = "en") {
   if (!Number.isFinite(value)) return "0"
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
+  return value.toLocaleString(languageLocale(language), { maximumFractionDigits: 6 })
 }
 
-function formatNumber(value: number) {
+function formatNumber(value: number, language: UiLanguage = "en") {
   if (!Number.isFinite(value)) return "0"
   if (value !== 0 && Math.abs(value) < 0.0001) return value.toExponential(2)
-  return value.toLocaleString("en-US", { maximumFractionDigits: 6 })
+  return value.toLocaleString(languageLocale(language), { maximumFractionDigits: 6 })
 }

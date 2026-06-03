@@ -1,3 +1,5 @@
+import { uiText, type SlashErrorCode, type UiLanguage } from "./i18n"
+
 export type SlashCommand =
   | { type: "prompt"; text: string }
   | { type: "help" }
@@ -12,9 +14,10 @@ export type SlashCommand =
   | { type: "model"; model: string }
   | { type: "provider"; name: string }
   | { type: "effort"; value: string }
+  | { type: "lang"; value?: string }
   | { type: "thinking"; value: "on" | "off"; aliasUsed?: boolean }
   | { type: "unknown"; name: string }
-  | { type: "error"; message: string }
+  | { type: "error"; code: SlashErrorCode }
 
 export function parseSlashCommand(input: string): SlashCommand {
   if (!input.startsWith("/")) return { type: "prompt", text: input }
@@ -29,7 +32,7 @@ export function parseSlashCommand(input: string): SlashCommand {
   if (name === "image") {
     if (args[0]?.toLowerCase() === "clear") return { type: "image", action: "clear" }
     const value = args.join(" ")
-    return value ? { type: "image", action: "add", value } : { type: "error", message: "/image requires a path or URL" }
+    return value ? { type: "image", action: "add", value } : { type: "error", code: "image_requires_value" }
   }
   if (name === "skill") {
     const action = args[0]?.toLowerCase()
@@ -37,51 +40,39 @@ export function parseSlashCommand(input: string): SlashCommand {
     if (action === "clear") return { type: "skill", action: "clear" }
     if (action === "remove") {
       const skillName = args.slice(1).join(" ")
-      return skillName ? { type: "skill", action: "remove", name: skillName } : { type: "error", message: "/skill remove requires a skill name" }
+      return skillName ? { type: "skill", action: "remove", name: skillName } : { type: "error", code: "skill_remove_requires_name" }
     }
     if (action === "use") {
       const skillName = args.slice(1).join(" ")
-      return skillName ? { type: "skill", action: "use", name: skillName } : { type: "error", message: "/skill use requires a skill name" }
+      return skillName ? { type: "skill", action: "use", name: skillName } : { type: "error", code: "skill_use_requires_name" }
     }
     return { type: "skill", action: "use", name: args.join(" ") }
   }
   if (name === "model") {
     const model = args.join(" ")
-    if (!model) return { type: "error", message: "/model requires a model name" }
+    if (!model) return { type: "error", code: "model_requires_name" }
     return { type: "model", model }
   }
   if (name === "provider") {
     const provider = args[0]
-    if (!provider) return { type: "error", message: "/provider requires a provider name" }
+    if (!provider) return { type: "error", code: "provider_requires_name" }
     return { type: "provider", name: provider }
   }
   if (name === "effort") {
     const value = args[0]?.toLowerCase()
-    return value ? { type: "effort", value } : { type: "error", message: "/effort requires low, medium, high, or max" }
+    return value ? { type: "effort", value } : { type: "error", code: "effort_requires_value" }
+  }
+  if (name === "lang") {
+    return args[0] ? { type: "lang", value: args[0] } : { type: "lang" }
   }
   if (name === "thinking" || name === "thingking") {
     const value = args[0]?.toLowerCase()
-    if (value !== "on" && value !== "off") return { type: "error", message: "/thinking requires on or off" }
+    if (value !== "on" && value !== "off") return { type: "error", code: "thinking_requires_value" }
     return { type: "thinking", value, aliasUsed: name === "thingking" }
   }
   return { type: "unknown", name: rawName }
 }
 
-export function slashHelpText() {
-  return [
-    "Commands:",
-    "  /image <path-or-url>    attach an image to the next prompt",
-    "  /image clear            clear pending images",
-    "  /skill list             list available skills",
-    "  /skill use <name>       keep a skill active for this session",
-    "  /skill remove <name>    remove one active skill",
-    "  /skill clear            clear active skills",
-    "  /model <name>           switch model (e.g. gpt-4o)",
-    "  /provider <name>        switch provider (e.g. openai)",
-    "  /effort <level>         set thinking strength: low, medium, high, max",
-    "  /thinking on|off        enable or disable model thinking",
-    "  /settings               show current session settings",
-    "  /sessions               list saved sessions",
-    "  //text                  send /text as a normal prompt",
-  ].join("\n")
+export function slashHelpText(language: UiLanguage = "en") {
+  return uiText(language).helpText
 }
