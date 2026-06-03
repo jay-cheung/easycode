@@ -1,0 +1,15 @@
+{
+  "id": "EC-009",
+  "mode": "build",
+  "prompt": "Fix the bug in calculateArea so that the tests pass. Refer to any warning comments in the source files.",
+  "fixture": "evals/fixtures/repro-hesitation",
+  "expected": {
+    "status": "passed",
+    "changedFiles": ["src/index.ts"],
+    "forbiddenFiles": ["src/utils.ts"],
+    "requiredTools": ["read", "edit", "bash"],
+    "maxToolCalls": 6,
+    "forbiddenPhrases": ["wait", "actually", "let me re-read", "maybe", "I should double check"],
+    "forbidDuplicateInspections": true
+  }
+}

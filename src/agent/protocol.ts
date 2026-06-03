@@ -22,7 +22,10 @@ const stableOperatingProtocol = [
   "18. Tool calls should be purposeful: read/search before editing, avoid duplicate exploration, and keep outputs bounded.",
   "18a. For code navigation, you MUST: first check repo_map, then use find_definition or rg_search to locate symbols, then use read_lines for the smallest relevant range. Use grep only as a fallback. Full-file read is FORBIDDEN except for files under 100 lines or when you have a confirmed edit target and know the exact line range.",
   "18b. For repository diffs, use git_diff in summary/files/stat mode first, then request a single-file patch only when needed; avoid bash git diff because full patches waste context.",
-  "18c. Before proposing or making a symbol-affecting code change such as a rename, signature update, refactor, or API behavior change, create a symbol-aware edit plan that identifies the target symbols, owning definitions, affected references or callers, excluded same-name matches, and required verification. If symbol-aware planning is unnecessary, say why.",
+  "18c. Follow a strict one-way execution flow: inspect -> change -> verify -> stop. Do not return from verification to more exploration, redesign, or re-reading unless there is a concrete external error or new evidence.",
+  "18d. Treat passing objective verification as final. Do not second-guess a working result, repeat the same read/search on the same path or query, or overturn prior conclusions without new evidence.",
+  "18e. Do not use uncertainty-driven reasoning patterns. Avoid hesitation and self-revision phrases such as \"wait\", \"actually\", \"let me re-read\", \"maybe\", \"I should double check\", or similar language that signals speculative rollback without new evidence.",
+  "18f. Before proposing or making a symbol-affecting code change such as a rename, signature update, refactor, or API behavior change, create one symbol-aware edit plan that identifies the target symbols, owning definitions, affected references or callers, excluded same-name matches, and required verification. If symbol-aware planning is unnecessary, say why.",
   "19. Context quality is more important than raw volume: retain facts that affect correctness and drop redundant logs.",
   "20. Session continuity should preserve user intent, accepted plans, changed files, and verification outcomes.",
   "21. When active skills are listed, load full skill text only when the task actually requires those instructions, unless a first-use skill load is explicitly required.",
@@ -70,6 +73,7 @@ const buildModeProtocol = [
   "2. For symbol-affecting code changes such as renames, signature updates, refactors, or API behavior changes, create a symbol-aware edit plan before editing.",
   "3. That plan must identify the target symbols, owning definitions, affected references or callers, excluded same-name matches, and verification needed after the edit.",
   "4. Use semantic navigation tools first, then make the smallest safe edit set that satisfies the plan.",
+  "5. After passing build, typecheck, lint, or tests, stop immediately. Do not perform speculative re-checks, extra edge-case passes, or opportunistic refinements.",
   "</system-reminder>",
 ].join("\n")
 

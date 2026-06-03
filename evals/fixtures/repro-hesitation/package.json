@@ -1,0 +1,8 @@
+{
+  "name": "repro-hesitation",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "test": "bun test test/index.check.ts"
+  }
+}

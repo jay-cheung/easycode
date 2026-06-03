@@ -9,6 +9,7 @@ describe("agent protocol", () => {
     expect(prompt).toContain("symbol-aware edit plan")
     expect(prompt).toContain("target symbols")
     expect(prompt).toContain("excluded same-name matches")
+    expect(prompt).toContain("stop immediately")
   })
 
   test("plan mode carries a strict planning workflow", () => {
@@ -20,6 +21,16 @@ describe("agent protocol", () => {
     expect(prompt).toContain("Files likely to change")
     expect(prompt).toContain("target symbols")
     expect(prompt).toContain("excluded same-name matches")
+  })
+
+  test("stable protocol forbids uncertainty-driven rollback language", () => {
+    const prompt = createAgent("build").systemPrompt
+
+    expect(prompt).toContain("strict one-way execution flow")
+    expect(prompt).toContain("\"wait\"")
+    expect(prompt).toContain("\"actually\"")
+    expect(prompt).toContain("\"let me re-read\"")
+    expect(prompt).toContain("\"maybe\"")
   })
 
   test("summary agent is internal and tool-free", () => {

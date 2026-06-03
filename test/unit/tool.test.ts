@@ -5,6 +5,7 @@ import { ContextManager } from "../../src/context"
 import { type BashResult, Sandbox } from "../../src/sandbox"
 import { PermissionService, defaultPermissionAutoReviewer, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
+import { toolCallMessage, toolResultMessage, userMessage, type Message } from "../../src/message"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
@@ -153,6 +154,74 @@ describe("tool", () => {
     expect(result.metadata.status).toBe("succeeded")
     expect(result.title).toBe("sample.ts:2-2")
     expect(result.output).toBe("2 | two")
+  })
+
+  test("blocks exact duplicate read on the same file", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "sample.ts"), "one\ntwo\n")
+    const messages = [
+      userMessage("Inspect sample.ts"),
+      toolCallMessage({ id: "call_read_1", name: "read", input: { filePath: "sample.ts" } }),
+      toolResultMessage({ callID: "call_read_1", toolName: "read", status: "succeeded", output: "one\ntwo\n", metadata: { status: "succeeded" } }),
+    ]
+
+    const result = await registry.run("read", { filePath: "sample.ts" }, toolContext(root, messages))
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("duplicate_inspection")
+    expect(result.output).toContain("read sample.ts")
+  })
+
+  test("allows read_lines on the same file when the requested range differs", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "sample.ts"), "one\ntwo\nthree\n")
+    const messages = [
+      userMessage("Inspect sample.ts"),
+      toolCallMessage({ id: "call_read_lines_1", name: "read_lines", input: { filePath: "sample.ts", startLine: 1, endLine: 1 } }),
+      toolResultMessage({ callID: "call_read_lines_1", toolName: "read_lines", status: "succeeded", output: "1 | one", metadata: { status: "succeeded" } }),
+    ]
+
+    const result = await registry.run("read_lines", { filePath: "sample.ts", startLine: 2, endLine: 2 }, toolContext(root, messages))
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.output).toBe("2 | two")
+  })
+
+  test("allows reread after a successful edit invalidates prior inspection", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "sample.ts"), "one\ntwo\n")
+    const messages = [
+      userMessage("Inspect and fix sample.ts"),
+      toolCallMessage({ id: "call_read_1", name: "read", input: { filePath: "sample.ts" } }),
+      toolResultMessage({ callID: "call_read_1", toolName: "read", status: "succeeded", output: "one\ntwo\n", metadata: { status: "succeeded" } }),
+      toolCallMessage({ id: "call_edit_1", name: "edit", input: { filePath: "sample.ts", oldString: "one", newString: "ONE" } }),
+      toolResultMessage({ callID: "call_edit_1", toolName: "edit", status: "succeeded", output: "updated", metadata: { status: "succeeded" } }),
+    ]
+
+    const result = await registry.run("read", { filePath: "sample.ts" }, toolContext(root, messages))
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.output).toContain("one")
+  })
+
+  test("blocks exact duplicate git_status inspection", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await git(root, ["init"])
+    const messages = [
+      userMessage("Check git state"),
+      toolCallMessage({ id: "call_git_status_1", name: "git_status", input: { short: true } }),
+      toolResultMessage({ callID: "call_git_status_1", toolName: "git_status", status: "succeeded", output: "clean", metadata: { status: "succeeded" } }),
+    ]
+
+    const result = await registry.run("git_status", { short: true }, toolContext(root, messages))
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("duplicate_inspection")
+    expect(result.output).toContain("git_status")
   })
 
   test("read blocks large files and points to semantic navigation", async () => {
@@ -527,8 +596,8 @@ describe("tool", () => {
   })
 })
 
-function toolContext(root = import.meta.dir) {
-  return { agentMode: "build" as const, sandbox: new Sandbox(root), permission: PermissionService.autoApprove(defaultPermissionRules("build")), skills: new SkillService(root), messages: [] }
+function toolContext(root = import.meta.dir, messages: Message[] = []) {
+  return { agentMode: "build" as const, sandbox: new Sandbox(root), permission: PermissionService.autoApprove(defaultPermissionRules("build")), skills: new SkillService(root), messages }
 }
 
 async function git(root: string, args: string[]) {

@@ -5,6 +5,7 @@ import type { Sandbox } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
 import type { ContextManagerLike } from "../context/types"
 import { BashInput, bashApprovalForCommand, bashCwd } from "./bash"
+import { findDuplicateInspection } from "./utils/duplicate-inspection"
 import { invalidProviderToolArguments } from "./utils/arguments"
 
 export type JsonSchema = {
@@ -77,6 +78,14 @@ export class ToolRegistry implements ToolRegistryLike {
     const parsed = tool.inputSchema.safeParse(input)
     if (!parsed.success) {
       return { title: "Invalid tool input", output: `Invalid arguments for ${name}: ${parsed.error.message}`, metadata: { status: "failed", validation: parsed.error.issues } }
+    }
+    const duplicateInspection = findDuplicateInspection(ctx.messages, name, parsed.data)
+    if (duplicateInspection) {
+      return {
+        title: "Duplicate inspection blocked",
+        output: `Duplicate inspection blocked for ${duplicateInspection.description}. Reuse the previous result unless new evidence, a file change, or a verification failure requires re-inspection.`,
+        metadata: { status: "failed", error: "duplicate_inspection", tool: name, duplicateTarget: duplicateInspection.description },
+      }
     }
     try {
       const patterns = tool.patterns(parsed.data, ctx)

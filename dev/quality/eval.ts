@@ -2,9 +2,10 @@ import path from "node:path"
 import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
 import { AgentRunner, createRunner } from "../../src/agent"
+import { collectDuplicateInspections } from "../../src/tool/utils/duplicate-inspection"
 import type { AgentMode } from "../../src/message"
 import { createProvider, hasProvider, listProviders, type ProviderName } from "../../src/provider"
-import { createLogger } from "../../src/logger"
+import { createLogger, formatLogEvent } from "../../src/logger"
 import type { ToolContext, ToolRegistryLike, ToolResult } from "../../src/tool"
 import { loadEnvFile } from "../../src/cli"
 
@@ -22,6 +23,8 @@ export type EvalTask = {
     requiredTools?: string[]
     maxToolCalls?: number
     outputContains?: string[]
+    forbiddenPhrases?: string[]
+    forbidDuplicateInspections?: boolean
   }
 }
 
@@ -92,7 +95,13 @@ export async function runEval(input: { provider: EvalProvider; root?: string; lo
     const workdir = path.join(os.tmpdir(), `easycode-${task.id}-${Date.now()}`)
     await copyDir(path.join(projectRoot, task.fixture), workdir)
     const before = await snapshotFiles(workdir)
-    const logger = input.logger ? createLogger() : undefined
+    const logger = input.logger ? (() => {
+      const base = createLogger({ root: workdir, session: task.id })
+      return Object.assign((event: any) => {
+        console.log(formatLogEvent(event))
+        base(event)
+      }, { filePath: base.filePath, transcriptFilePath: base.transcriptFilePath })
+    })() : undefined
     const result = task.tools === "none"
       ? await new AgentRunner({ root: workdir, provider: createProvider(input.provider), registry: emptyRegistry, logger }).run(task.prompt, task.mode)
       : await createRunner({ root: workdir, provider: input.provider, mode: task.mode, logger }).run(task.prompt, task.mode)
@@ -103,11 +112,36 @@ export async function runEval(input: { provider: EvalProvider; root?: string; lo
     const missingChange = expected.changedFiles?.find((filePath) => before.get(filePath) === after.get(filePath))
     const forbiddenChange = expected.forbiddenFiles?.find((filePath) => before.get(filePath) !== after.get(filePath))
     const missingOutput = expected.outputContains?.find((text) => !result.text.toLowerCase().includes(text.toLowerCase()))
-    const passed = result.status === "completed" && !missingTool && !tooManyTools && !missingChange && !forbiddenChange && !missingOutput
-    results.push({ id: task.id, passed, reason: missingTool ? `missing tool ${missingTool}` : tooManyTools ? "too many tool calls" : missingChange ? `missing expected change ${missingChange}` : forbiddenChange ? `forbidden file changed ${forbiddenChange}` : missingOutput ? `missing output ${missingOutput}` : undefined })
+    const forbiddenPhrase = expected.forbiddenPhrases?.find((text) => outputContainsText([result.reasoning, result.text], text))
+    const duplicateInspection = expected.forbidDuplicateInspections ? collectDuplicateInspections(result.messages)[0] : undefined
+    const passed = result.status === "completed" && !missingTool && !tooManyTools && !missingChange && !forbiddenChange && !missingOutput && !forbiddenPhrase && !duplicateInspection
+    results.push({
+      id: task.id,
+      passed,
+      reason: missingTool
+        ? `missing tool ${missingTool}`
+        : tooManyTools
+          ? "too many tool calls"
+          : missingChange
+            ? `missing expected change ${missingChange}`
+            : forbiddenChange
+              ? `forbidden file changed ${forbiddenChange}`
+              : missingOutput
+                ? `missing output ${missingOutput}`
+                : forbiddenPhrase
+                  ? `forbidden phrase ${forbiddenPhrase}`
+                  : duplicateInspection
+                    ? `duplicate inspection ${duplicateInspection.description}`
+                    : undefined,
+    })
     await rm(workdir, { recursive: true, force: true })
   }
   return results
+}
+
+function outputContainsText(values: Array<string | undefined>, expected: string) {
+  const lowered = expected.toLowerCase()
+  return values.some((value) => value?.toLowerCase().includes(lowered))
 }
 
 function expectedForProvider(task: EvalTask, provider: EvalProvider): EvalTask["expected"] {
@@ -118,7 +152,8 @@ function expectedForProvider(task: EvalTask, provider: EvalProvider): EvalTask["
 if (import.meta.main) {
   const provider = process.argv.includes("--provider") ? process.argv[process.argv.indexOf("--provider") + 1] : "deepseek"
   if (!hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: ${listProviders().join(", ")}`)
-  const results = await runEval({ provider, logger: process.argv.includes("--logger") })
+  const ids = process.argv.includes("--ids") ? process.argv[process.argv.indexOf("--ids") + 1].split(",") : undefined
+  const results = await runEval({ provider, logger: process.argv.includes("--logger"), ids })
   for (const result of results) console.log(`${result.skipped ? "SKIP" : result.passed ? "PASS" : "FAIL"} ${result.id}${result.reason ? ` - ${result.reason}` : ""}`)
   if (results.some((result) => !result.skipped && !result.passed)) process.exit(1)
 }

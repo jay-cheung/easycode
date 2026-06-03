@@ -41,6 +41,15 @@ export type ProviderInputMessage = {
   parts?: MessagePart[]
 }
 
+export type ToolInvocation = {
+  callID: string
+  toolName: string
+  input: unknown
+  status: Exclude<ToolCallStatus, "pending" | "running"> | "pending"
+  output?: string
+  metadata?: Record<string, unknown>
+}
+
 let idCounter = 0
 
 export function createID(prefix: string) {
@@ -212,6 +221,37 @@ export function messagesToProviderInput(messages: Message[], options: MessageTex
 
 export function toolResults(messages: Message[]) {
   return messages.flatMap((message) => message.parts.filter((part): part is ToolResultPart => part.type === "tool_result"))
+}
+
+export function toolCalls(messages: Message[]) {
+  return messages.flatMap((message) => message.parts.filter((part): part is ToolCallPart => part.type === "tool_call"))
+}
+
+export function toolInvocations(messages: Message[]): ToolInvocation[] {
+  const calls = new Map<string, ToolInvocation>()
+  const ordered: ToolInvocation[] = []
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type === "tool_call") {
+        const invocation: ToolInvocation = {
+          callID: part.call.id,
+          toolName: part.call.name,
+          input: part.call.input,
+          status: "pending",
+        }
+        calls.set(part.call.id, invocation)
+        ordered.push(invocation)
+        continue
+      }
+      if (part.type !== "tool_result") continue
+      const invocation = calls.get(part.callID)
+      if (!invocation) continue
+      invocation.status = part.status
+      invocation.output = part.output
+      invocation.metadata = part.metadata
+    }
+  }
+  return ordered
 }
 
 export function truncateLargeMessageOutputs(messages: Message[]): Message[] {

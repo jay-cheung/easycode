@@ -1,6 +1,7 @@
 import { Provider, ProviderInput, ProviderEvent } from "./types"
 import { hasToolResult, call, latestToolResult } from "./utils"
 import type { ProviderCapabilities, ProviderOptions } from "./types"
+import { toolResults } from "../message"
 
 export class FakeProvider implements Provider {
   readonly name = "fake"
@@ -161,6 +162,37 @@ export class FakeProvider implements Provider {
         return
       }
       yield { type: "text_delta", text: "Invalid tool arguments surfaced." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("calculatearea")) {
+      const readResults = toolResults(input.messages).filter((r) => r.toolName === "read")
+      const readCount = readResults.length
+      const editDone = hasToolResult(input.messages, "edit")
+      const testDone = hasToolResult(input.messages, "bash")
+
+      if (readCount === 0) {
+        yield { type: "tool_call", call: call("read", { filePath: "src/index.ts" }) }
+        yield { type: "done" }
+        return
+      }
+      if (readCount === 1) {
+        yield { type: "tool_call", call: call("read", { filePath: "src/utils.ts" }) }
+        yield { type: "done" }
+        return
+      }
+      if (!editDone) {
+        yield { type: "tool_call", call: call("edit", { filePath: "src/index.ts", oldString: "return add(width, height);", newString: "return multiply(width, height);" }) }
+        yield { type: "done" }
+        return
+      }
+      if (!testDone) {
+        yield { type: "tool_call", call: call("bash", { command: "bun run test" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Task completed." }
+      yield { type: "usage", inputTokens: 120, outputTokens: 30 }
       yield { type: "done" }
       return
     }
