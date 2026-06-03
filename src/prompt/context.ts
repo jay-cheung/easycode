@@ -45,14 +45,18 @@ function formatInstruction(instruction: InstructionInfo) {
 
 export function buildSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[], pendingSkillLoads: SkillInfo[]) {
   if (skills.length === 0 && selectedSkills.length === 0) return ""
-  const skillList = sortedSkills(skills).map(formatSkillDescription).join("\n") || "(none)"
+  const selectedIDs = new Set(selectedSkills.map((skill) => skill.id))
+  const selectedNames = new Set(selectedSkills.map((skill) => skill.name))
+  const availableSkills = skills.filter((skill) => !selectedIDs.has(skill.id) && !selectedNames.has(skill.name))
+  const skillList = sortedSkills(availableSkills).map(formatSkillDescription).join("\n") || "(none)"
   const selected = sortedSkills(selectedSkills).map(formatSkillDescription).join("\n") || "(none)"
   const selectedSkillList = `Active skills, descriptions only. Load full instructions with the skill tool when needed:\n${selected}`
   const pending = sortedSkills(pendingSkillLoads).map(formatSkillDescription).join("\n")
   const pendingPrompt = pending
     ? `First-use skill load required. Before answering or taking task-specific action, you MUST call the skill tool for each listed skill, then follow the returned instructions:\n${pending}`
     : ""
-  return [`Available skills, descriptions only until skill tool is called:\n${skillList}`, `Selected skill instructions:\n${selectedSkillList}`, pendingPrompt].filter(Boolean).join("\n\n")
+  const availablePrompt = availableSkills.length > 0 || selectedSkills.length === 0 ? `Available skills, descriptions only until skill tool is called:\n${skillList}` : ""
+  return [availablePrompt, `Selected skill instructions:\n${selectedSkillList}`, pendingPrompt].filter(Boolean).join("\n\n")
 }
 
 export function hasSkillPrompt(skills: SkillInfo[], selectedSkills: SkillInfo[]) {

@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 14: Prompt Dedup Pass
+
+- Scope: reduce repeated prompt guidance after centralization, focusing on the fixed agent prefix and duplicated selected-skill descriptions in context composition.
+- Implementation:
+  - Split the large agent prompt anchor into `operatingCore`, `navigationAndCacheContract`, and `symbolEditPlanContract` in `src/prompt/agent.ts` so shared rules stay explicit without repeating full symbol-planning text in multiple sections.
+  - Shortened build/plan mode reminders to reference the shared symbol-aware edit-plan contract instead of restating the full checklist.
+  - Changed `src/prompt/context.ts` so selected skills are no longer repeated inside the generic available-skill list; selected and unselected skills are now rendered separately.
+- Verification:
+  - `bun test test/unit/agent.test.ts test/unit/context.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this pass is intended to shrink static prefix noise without changing the public runtime model or the skill-loading workflow.
+
 ## Step 13: EasyCode Summary Prompt Rewrite
 
 - Scope: replace the borrowed Claude-style compaction summary prompt with a shorter EasyCode-native prompt and trim obvious prompt duplication now that prompt templates live under one module.
