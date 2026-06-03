@@ -159,27 +159,42 @@ export function validProviderMessageSuffix(messages: Message[]) {
 }
 
 function stripUnpairedToolExchanges(messages: Message[]): Message[] {
-  const keptCallIDs = new Set<string>()
-  const withMatchedCalls = messages.map((message, index) => {
-    if (message.role !== "assistant") return message
+  const preserved: Message[] = []
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+    if (message.role === "tool") continue
+    if (message.role !== "assistant") {
+      preserved.push(message)
+      continue
+    }
+
     const toolCalls = message.parts.filter((part): part is ToolCallPart => part.type === "tool_call")
-    if (toolCalls.length === 0) return message
+    if (toolCalls.length === 0) {
+      preserved.push(message)
+      continue
+    }
+
     const followingResultIDs = new Set<string>()
-    for (let next = index + 1; next < messages.length && messages[next].role === "tool"; next += 1) {
+    let next = index + 1
+    while (next < messages.length && messages[next].role === "tool") {
       for (const part of messages[next].parts) {
         if (part.type === "tool_result") followingResultIDs.add(part.callID)
       }
+      next += 1
     }
-    const parts = message.parts.filter((part) => part.type !== "tool_call" || followingResultIDs.has(part.call.id))
-    for (const part of parts) {
-      if (part.type === "tool_call") keptCallIDs.add(part.call.id)
+
+    const assistantParts = message.parts.filter((part) => part.type !== "tool_call" || followingResultIDs.has(part.call.id))
+    const keptCallIDs = new Set(assistantParts.flatMap((part) => (part.type === "tool_call" ? [part.call.id] : [])))
+    if (assistantParts.length > 0) preserved.push({ ...message, parts: assistantParts })
+
+    for (let toolIndex = index + 1; toolIndex < next; toolIndex += 1) {
+      const toolMessage = messages[toolIndex]
+      const toolParts = toolMessage.parts.filter((part) => part.type !== "tool_result" || keptCallIDs.has(part.callID))
+      if (toolParts.length > 0) preserved.push({ ...toolMessage, parts: toolParts })
     }
-    return { ...message, parts }
-  })
-  return withMatchedCalls.map((message) => {
-    if (message.role !== "tool") return message
-    return { ...message, parts: message.parts.filter((part) => part.type !== "tool_result" || keptCallIDs.has(part.callID)) }
-  }).filter((message) => message.parts.length > 0)
+    index = next - 1
+  }
+  return preserved
 }
 
 export function redactProtectedMessage(message: Message, protectedCallIDs = new Set<string>()): Message {

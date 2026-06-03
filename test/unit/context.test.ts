@@ -142,6 +142,25 @@ describe("context", () => {
     expect(calls).toEqual(outputs)
   })
 
+  test("compose after summary drops tool results that precede a later assistant tool call", () => {
+    const context = new ContextManager()
+    context.state.summary = "model summary"
+    context.add(textMessage("user", "evaluate prompt"))
+    context.add(toolResultMessage({ callID: "call_text_1", toolName: "bash", status: "failed", output: "bad cwd" }))
+    context.add(toolResultMessage({ callID: "call_text_2", toolName: "read_lines", status: "succeeded", output: "100 | test(...)" }))
+    context.add(toolCallMessage([
+      { id: "call_text_1", name: "read_lines", input: { filePath: "src/prompt/compact.ts", startLine: 1, endLine: 200 } },
+      { id: "call_text_2", name: "rg_search", input: { query: "compactPrompt|extractSummary", dir: "src/agent/runner.ts" } },
+    ]))
+    context.add(toolResultMessage({ callID: "call_text_1", toolName: "read_lines", status: "failed", output: "invalid args" }))
+    context.add(toolResultMessage({ callID: "call_text_2", toolName: "rg_search", status: "failed", output: "invalid args" }))
+
+    const responseInput = context.compose({ agent: createAgent("build"), skills: [], tools: [] }).flatMap(providerMessageToResponseInput)
+
+    expect(responseInput.filter((item) => item.type === "function_call_output").map((item) => item.call_id)).toEqual(["call_text_1", "call_text_2"])
+    expect(responseInput.find((item) => item.type === "message" && item.role === "user" && item.content.some((part) => part.text?.includes("bad cwd")))).toBeUndefined()
+  })
+
 
   test("compose includes only skill descriptions", () => {
     const context = new ContextManager()
