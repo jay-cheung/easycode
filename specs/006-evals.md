@@ -47,12 +47,13 @@ Tasks without `providers` are fake-provider deterministic evals. Real provider e
 - The single-purpose commands (`bun test`, `bun run eval --provider fake`, `bun run apix:eval`, `bun run cache:bench`, `bun run provider:gate`) remain available for targeted debugging, but the gate commands are the source of truth for pass/fail readiness.
 
 ## Provider Gate Contract
-- `bun run provider:gate` checks `openai` and `deepseek` by default.
+- `bun run provider:gate` checks `deepseek`, `openai`, and `openai-compatible` by default.
 - `--provider <name>` narrows the gate to one provider; `--providers a,b` checks an explicit list.
 - Missing required credentials are recorded as `skipped` with the missing variable names, not as pass/fail.
 - Configured providers run a no-tool real smoke eval, a small deterministic APIx hard-gate subset, and the real cache benchmark unless disabled with `--no-apix` or `--no-cache`.
 - Each run writes machine-readable JSON and Markdown to `.easycode/reports/provider-gate` so provider readiness can be compared over time.
 - The process exits non-zero only when a configured provider check fails; an all-skipped run is allowed for local development without credentials.
+- The shared real-provider smoke eval task `EC-REAL-001` must stay aligned with the same provider set so the default gate does not silently skip supported providers.
 
 ## APIx Golden Dataset
 - `specs/007-apix-golden-dataset.md` defines the 100-case APIx dataset for layered context architecture.

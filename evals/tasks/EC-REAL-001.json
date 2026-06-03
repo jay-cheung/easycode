@@ -3,7 +3,7 @@
   "mode": "build",
   "prompt": "Reply with exactly: easycode real eval ok",
   "fixture": "evals/fixtures/simple-bug",
-  "providers": ["openai", "deepseek"],
+  "providers": ["openai", "deepseek", "openai-compatible"],
   "tools": "none",
   "expected": {
     "status": "passed",

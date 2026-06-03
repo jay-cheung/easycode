@@ -24,7 +24,7 @@ async function tmpdir() {
 }
 
 function configuredProvider() {
-  if (!realProviderName || !hasProvider(realProviderName)) throw new Error(`Set EASYCODE_TEST_PROVIDER to one of: openai, deepseek`)
+  if (!realProviderName || !hasProvider(realProviderName)) throw new Error(`Set EASYCODE_TEST_PROVIDER to one of: openai, deepseek, openai-compatible`)
   return createProvider(realProviderName)
 }
 

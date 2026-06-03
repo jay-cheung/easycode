@@ -3,7 +3,7 @@ import { OpenAILikeProvider, normalizeModelName } from "./openai-like"
 import type { ProviderOptions } from "./types"
 
 export class OpenAIProvider extends OpenAILikeProvider {
-  constructor(model = process.env.EASYCODE_MODEL ?? "gpt-5-mini", runtime: ProviderOptions = {}) {
+  constructor(model = process.env.OPENAI_MODEL ?? process.env.EASYCODE_MODEL ?? "gpt-5-mini", runtime: ProviderOptions = {}) {
     const normalizedModel = normalizeModelName(model)
     const reasoningModel = isReasoningModel(normalizedModel)
     super({

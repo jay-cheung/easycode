@@ -43,7 +43,7 @@ export type ProviderGateOptions = {
   writeReport?: boolean
 }
 
-const defaultProviders = ["openai", "deepseek"]
+const defaultProviders = listProviders().filter((provider) => provider !== "fake" && provider !== "simulated")
 const defaultSmokeTaskIDs = ["EC-REAL-001"]
 const defaultAPIxIDs = ["APIX-004", "APIX-011", "APIX-012"]
 

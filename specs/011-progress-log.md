@@ -1,5 +1,19 @@
 # Progress Log
 
+## Step 8: Provider Matrix + Startup Model Presets
+
+- Scope: align the default real-provider gate with the public provider surface and make interactive startup model selection less guessy for DeepSeek and OpenAI.
+- Implementation:
+  - Changed `dev/quality/provider-gate.ts` default provider matrix from a hand-maintained pair to all public real providers (`deepseek`, `openai`, `openai-compatible`).
+  - Expanded `evals/tasks/EC-REAL-001.json` so the shared real-provider smoke eval covers `openai-compatible`.
+  - Added startup model discovery for `deepseek` and `openai` in `src/cli.ts`: prefer the providers' public `GET /models` APIs, keep only the two most recent versions, and still allow direct custom model input.
+  - Switched OpenAI provider-specific startup config to write/read `OPENAI_MODEL` before the global `EASYCODE_MODEL` fallback.
+- Verification:
+  - `bun test test/unit/provider-gate.test.ts test/unit/quality-gate.test.ts test/unit/cli.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: startup provider selection now hides internal `simulated`, and provider gate defaults no longer drift from the documented supported provider surface.
+
 ## Step 6: Unified Test And Eval Gate
 
 - Scope: consolidate typecheck, tests, fake evals, APIx, cache benchmark, build, and provider readiness behind one reportable gate entrypoint.

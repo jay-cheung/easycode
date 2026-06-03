@@ -2,6 +2,7 @@
 import path from "node:path"
 import os from "node:os"
 import { createInterface } from "node:readline"
+import type { Interface } from "node:readline"
 import { stdin as input, stdout as output } from "node:process"
 import { createRunner, hasProposedPlanText } from "./agent"
 import type { ContextManagerLike } from "./context"
@@ -264,6 +265,113 @@ export function needsEnvSetup(provider: string | undefined, env: EnvTarget = pro
   return missingProviderEnv(provider, env).length > 0
 }
 
+type StartupModelConfig = {
+  provider: string
+  envKey: string
+  promptLabel: string
+  defaultModel: string
+  fallbackChoices: string[]
+  modelsURL: string
+  apiKeyEnv: string
+}
+
+const startupModelConfigs: Record<string, StartupModelConfig> = {
+  deepseek: {
+    provider: "deepseek",
+    envKey: "DEEPSEEK_MODEL",
+    promptLabel: "DeepSeek",
+    defaultModel: "deepseek-v4-pro",
+    fallbackChoices: ["deepseek-v4-pro", "deepseek-v4-flash"],
+    modelsURL: "https://api.deepseek.com/models",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+  },
+  openai: {
+    provider: "openai",
+    envKey: "OPENAI_MODEL",
+    promptLabel: "OpenAI",
+    defaultModel: "gpt-5.5",
+    fallbackChoices: ["gpt-5.5", "gpt-5.4"],
+    modelsURL: "https://api.openai.com/v1/models",
+    apiKeyEnv: "OPENAI_API_KEY",
+  },
+}
+
+type ModelsListResponse = {
+  data?: Array<{ id?: string }>
+}
+
+type ModelListFetcher = (input: string, init?: RequestInit) => Promise<Response>
+
+export function startupProviders() {
+  return listProviders().filter((provider) => provider !== "fake" && provider !== "simulated")
+}
+
+export function startupModelConfig(provider: string) {
+  return startupModelConfigs[provider]
+}
+
+export function startupModelChoices(provider: string) {
+  return startupModelConfig(provider)?.fallbackChoices ?? []
+}
+
+export function configuredStartupModel(provider: string, env: EnvTarget = process.env) {
+  const config = startupModelConfig(provider)
+  if (!config) return undefined
+  const value = env[config.envKey]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+export function selectStartupModel(provider: string, raw: string) {
+  const value = raw.trim()
+  const config = startupModelConfig(provider)
+  if (!config) return undefined
+  const choices = startupModelChoices(provider)
+  if (!value) return config.defaultModel
+  const numeric = Number(value)
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= choices.length) {
+    return choices[numeric - 1]
+  }
+  const preset = choices.find((choice) => choice.toLowerCase() === value.toLowerCase())
+  return preset ?? value
+}
+
+export function recentStartupModels(provider: string, ids: string[]) {
+  if (provider === "openai") return recentOpenAIModels(ids)
+  if (provider === "deepseek") return recentDeepSeekModels(ids)
+  return []
+}
+
+export async function fetchStartupModelChoices(
+  provider: string,
+  env: EnvTarget = process.env,
+  fetcher: ModelListFetcher = globalThis.fetch,
+): Promise<string[]> {
+  const config = startupModelConfig(provider)
+  const apiKey = config ? env[config.apiKeyEnv] : undefined
+  if (!config || !apiKey) return startupModelChoices(provider)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 5_000)
+  try {
+    const response = await fetcher(config.modelsURL, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      signal: controller.signal,
+    })
+    if (!response.ok) return startupModelChoices(provider)
+    const payload = await response.json() as ModelsListResponse
+    const ids = payload.data?.flatMap((item) => (typeof item.id === "string" ? [item.id] : [])) ?? []
+    const recent = recentStartupModels(provider, ids)
+    return recent.length > 0 ? recent : startupModelChoices(provider)
+  } catch {
+    return startupModelChoices(provider)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export function mergeEnvText(existing: string, entries: Record<string, string>) {
   const lines = existing ? existing.replace(/\s*$/, "\n").split(/\n/) : []
   const present = new Set(parseEnvFile(existing).keys())
@@ -294,7 +402,7 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
     if (answer.trim().toLowerCase() === "n") return initialProvider
 
     const selectedProvider = initialProvider ?? await (async () => {
-      const realProviders = listProviders().filter((p) => p !== "fake" && p !== "openai-like")
+      const realProviders = startupProviders()
       output.write("\nAvailable providers:\n")
       for (const p of realProviders) {
         output.write(`  ${p}\n`)
@@ -321,11 +429,9 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
         })
         if (apiKey.trim()) entries.DEEPSEEK_API_KEY = apiKey.trim()
       }
-      if (!env.DEEPSEEK_MODEL && !env.EASYCODE_MODEL) {
-        const model = await new Promise<string>((resolve) => {
-          rl.question("DeepSeek model [deepseek-v4-pro]: ", resolve)
-        })
-        if (model.trim()) entries.DEEPSEEK_MODEL = model.trim()
+      if (!configuredStartupModel(selectedProvider, env)) {
+        const model = await promptForStartupModel(selectedProvider, rl, { ...env, ...entries })
+        if (model) entries.DEEPSEEK_MODEL = model
       }
     } else if (selectedProvider === "openai") {
       if (!env.OPENAI_API_KEY) {
@@ -334,11 +440,9 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
         })
         if (apiKey.trim()) entries.OPENAI_API_KEY = apiKey.trim()
       }
-      if (!env.EASYCODE_MODEL) {
-        const model = await new Promise<string>((resolve) => {
-          rl.question("OpenAI model [gpt-5-mini]: ", resolve)
-        })
-        if (model.trim()) entries.EASYCODE_MODEL = model.trim()
+      if (!configuredStartupModel(selectedProvider, env)) {
+        const model = await promptForStartupModel(selectedProvider, rl, { ...env, ...entries })
+        if (model) entries.OPENAI_MODEL = model
       }
     } else if (selectedProvider === "openai-compatible") {
       if (!env.OPENAI_COMPAT_API_KEY) {
@@ -353,7 +457,7 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
         })
         if (url.trim()) entries.OPENAI_COMPAT_API_URL = url.trim()
       }
-      if (!env.OPENAI_COMPAT_MODEL && !env.EASYCODE_MODEL) {
+      if (!env.OPENAI_COMPAT_MODEL) {
         const model = await new Promise<string>((resolve) => {
           rl.question("OpenAI-compatible model: ", resolve)
         })
@@ -372,6 +476,69 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
   } finally {
     rl.close()
   }
+}
+
+async function promptForStartupModel(provider: string, rl: Interface, env: EnvTarget = process.env) {
+  const config = startupModelConfig(provider)
+  if (!config) return undefined
+  const choices = await fetchStartupModelChoices(provider, env)
+  output.write(`\n${config.promptLabel} model presets:\n`)
+  for (const [index, choice] of choices.entries()) {
+    output.write(`  ${index + 1}) ${choice}${choice === config.defaultModel ? " (default)" : ""}\n`)
+  }
+  output.write("\n")
+  const raw = await new Promise<string>((resolve) => {
+    rl.question(`Select ${config.promptLabel} model [1-${choices.length} or custom, default: ${config.defaultModel}]: `, resolve)
+  })
+  return selectStartupModelFromChoices(provider, raw, choices)
+}
+
+function selectStartupModelFromChoices(provider: string, raw: string, choices: string[]) {
+  const config = startupModelConfig(provider)
+  if (!config) return undefined
+  const value = raw.trim()
+  if (!value) return config.defaultModel
+  const numeric = Number(value)
+  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= choices.length) return choices[numeric - 1]
+  const preset = choices.find((choice) => choice.toLowerCase() === value.toLowerCase())
+  return preset ?? value
+}
+
+function recentOpenAIModels(ids: string[]) {
+  const unique = [...new Set(ids)]
+  return unique
+    .filter((id) => /^gpt-\d+(?:\.\d+)?$/.test(id))
+    .sort(compareOpenAIVersionDesc)
+    .slice(0, 2)
+}
+
+function compareOpenAIVersionDesc(left: string, right: string) {
+  const a = left.slice(4).split(".").map((part) => Number(part))
+  const b = right.slice(4).split(".").map((part) => Number(part))
+  const length = Math.max(a.length, b.length)
+  for (let index = 0; index < length; index += 1) {
+    const diff = (b[index] ?? 0) - (a[index] ?? 0)
+    if (diff !== 0) return diff
+  }
+  return left.localeCompare(right)
+}
+
+function recentDeepSeekModels(ids: string[]) {
+  const unique = [...new Set(ids)]
+  return unique
+    .filter((id) => /^deepseek-v\d+-(?:pro|flash)$/.test(id))
+    .sort(compareDeepSeekVersionDesc)
+    .slice(0, 2)
+}
+
+function compareDeepSeekVersionDesc(left: string, right: string) {
+  const leftMatch = left.match(/^deepseek-v(\d+)-(pro|flash)$/)
+  const rightMatch = right.match(/^deepseek-v(\d+)-(pro|flash)$/)
+  if (!leftMatch || !rightMatch) return left.localeCompare(right)
+  const versionDiff = Number(rightMatch[1]) - Number(leftMatch[1])
+  if (versionDiff !== 0) return versionDiff
+  const rank = (variant: string) => (variant === "pro" ? 0 : 1)
+  return rank(leftMatch[2]) - rank(rightMatch[2])
 }
 
 async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {

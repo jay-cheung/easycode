@@ -344,11 +344,13 @@ EASYCODE_PROVIDER=deepseek
 
 # OpenAI
 OPENAI_API_KEY=sk-...
-# 默认模型 / Default model: gpt-4o
+OPENAI_MODEL=gpt-5.5
+# 启动向导回退预设 / Startup fallback presets: gpt-5.5, gpt-5.4
 
 # DeepSeek
 DEEPSEEK_API_KEY=sk-...
-# 默认模型 / Default model: deepseek-chat
+DEEPSEEK_MODEL=deepseek-v4-pro
+# 启动向导回退预设 / Startup fallback presets: deepseek-v4-pro, deepseek-v4-flash
 
 # OpenAI-Compatible
 OPENAI_COMPAT_API_KEY=sk-...
@@ -361,8 +363,8 @@ OPENAI_COMPAT_MODEL=your-model
 
 | Provider 名称 / Provider | 说明 / Description                                                   |
 | ------------------------ | -------------------------------------------------------------------- |
-| `openai`                 | OpenAI API（默认模型 gpt-4o / default model gpt-4o）                 |
-| `deepseek`               | DeepSeek API（默认模型 deepseek-chat / default model deepseek-chat） |
+| `openai`                 | OpenAI API（默认模型 gpt-5-mini；启动向导优先列最新 GPT 版本 / default model gpt-5-mini; setup prefers latest GPT versions） |
+| `deepseek`               | DeepSeek API（默认模型 deepseek-v4-pro / default model deepseek-v4-pro） |
 | `openai-compatible`      | 任何 OpenAI 兼容接口 / Any OpenAI-compatible API                     |
 | `fake`                   | 离线模拟（测试/开发用）/ Offline simulation (testing/development)    |
 | `simulated`              | 同 fake，模拟模式 / Same as fake, simulation mode                    |
@@ -383,6 +385,10 @@ bun run verify:full
   Heavier local gate. Adds `build` on top of dev gate; uses the same stable APIx gate cases, with full dataset reserved for `apix:eval`.
 - `bun run verify:provider -- --provider <name>`：真实 provider 就绪性 gate，会串起 smoke eval、APIx 子集、cache benchmark，并把报告写到 `.easycode/reports/quality-gate`。
   Real-provider readiness gate. Chains smoke eval, APIx subset, cache benchmark, writes report to `.easycode/reports/quality-gate`.
+- 不带 `--provider` 的 `bun run provider:gate` 默认检查 `deepseek`、`openai`、`openai-compatible`；缺少凭证时会记录为 `skipped`。
+  `bun run provider:gate` without `--provider` checks `deepseek`, `openai`, and `openai-compatible` by default; missing credentials are recorded as `skipped`.
+- 首次交互式配置 `deepseek` 或 `openai` 时，CLI 会优先调用各自官方 `GET /models` API 取最新可用模型，并只展示最近两个版本；如果请求失败，则回退到内置候选。仍然支持直接输入自定义 model。
+  During first-time interactive setup for `deepseek` or `openai`, the CLI first calls each provider's official `GET /models` API, keeps only the two most recent versions, and falls back to bundled presets on failure. Custom model input is still supported.
 
 如果只想单独跑某一类验证 / Run individual verification types:
 
@@ -399,6 +405,7 @@ bun run provider:gate -- --provider deepseek
 ```bash
 EASYCODE_TEST_PROVIDER=deepseek bun run test:real
 EASYCODE_TEST_PROVIDER=openai bun run test:real
+EASYCODE_TEST_PROVIDER=openai-compatible bun run test:real
 EASYCODE_TEST_PROVIDER=deepseek bun run eval:real
 EASYCODE_TEST_PROVIDER=openai bun run apix:real
 ```

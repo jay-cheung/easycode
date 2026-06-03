@@ -10,9 +10,9 @@ describe("quality gate", () => {
   })
 
   test("parses preset and provider arguments", () => {
-    expect(parseArgs(["--preset", "provider", "--providers", "openai,deepseek", "--apix-limit", "2", "--no-cache"])).toMatchObject({
+    expect(parseArgs(["--preset", "provider", "--providers", "openai,deepseek,openai-compatible", "--apix-limit", "2", "--no-cache"])).toMatchObject({
       preset: "provider",
-      providers: ["openai", "deepseek"],
+      providers: ["openai", "deepseek", "openai-compatible"],
       apixLimit: 2,
       providerCache: false,
     })

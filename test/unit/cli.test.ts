@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { loadEnvFile, mergeEnvText, missingProviderEnv, needsEnvSetup, parseArgs, parseEnvFile } from "../../src/cli"
+import { configuredStartupModel, fetchStartupModelChoices, loadEnvFile, mergeEnvText, missingProviderEnv, needsEnvSetup, parseArgs, parseEnvFile, recentStartupModels, selectStartupModel, startupModelChoices, startupProviders } from "../../src/cli"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-cli-"))
@@ -41,6 +41,12 @@ describe("cli env loading", () => {
     expect(missingProviderEnv("openai-compatible", { OPENAI_COMPAT_API_KEY: "sk-test" })).toEqual(["OPENAI_COMPAT_API_URL"])
   })
 
+  test("uses provider-specific startup model env keys", () => {
+    expect(configuredStartupModel("openai", { OPENAI_MODEL: "gpt-5" })).toBe("gpt-5")
+    expect(configuredStartupModel("deepseek", { DEEPSEEK_MODEL: "deepseek-chat" })).toBe("deepseek-chat")
+    expect(configuredStartupModel("openai", { EASYCODE_MODEL: "fallback-only" })).toBeUndefined()
+  })
+
   test("merges missing env values without replacing existing entries", () => {
     const merged = mergeEnvText("EASYCODE_PROVIDER=openai\nOPENAI_API_KEY=from-file\n", {
       EASYCODE_PROVIDER: "deepseek",
@@ -52,6 +58,47 @@ describe("cli env loading", () => {
     expect(merged).toContain("OPENAI_API_KEY=from-file")
     expect(merged).toContain('DEEPSEEK_API_KEY="sk test"')
     expect(merged).toContain("DEEPSEEK_MODEL=deepseek-v4-pro")
+  })
+})
+
+describe("cli startup model selection", () => {
+  test("lists only real startup providers", () => {
+    expect(startupProviders()).toEqual(["deepseek", "openai", "openai-compatible"])
+  })
+
+  test("offers default startup model choices", () => {
+    expect(startupModelChoices("deepseek")).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"])
+    expect(startupModelChoices("openai")).toEqual(["gpt-5.5", "gpt-5.4"])
+  })
+
+  test("accepts preset index, preset name, and custom startup models", () => {
+    expect(selectStartupModel("deepseek", "")).toBe("deepseek-v4-pro")
+    expect(selectStartupModel("deepseek", "2")).toBe("deepseek-v4-flash")
+    expect(selectStartupModel("openai", "gpt-5.4")).toBe("gpt-5.4")
+    expect(selectStartupModel("openai", "gpt-5.5-mini")).toBe("gpt-5.5-mini")
+  })
+
+  test("keeps only the two most recent versions from live model lists", () => {
+    expect(recentStartupModels("openai", ["gpt-5.4", "gpt-5", "gpt-5.5", "gpt-5.4-mini", "gpt-5.2"])).toEqual(["gpt-5.5", "gpt-5.4"])
+    expect(recentStartupModels("deepseek", ["deepseek-chat", "deepseek-v4-flash", "deepseek-v3-pro", "deepseek-v4-pro"])).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"])
+  })
+
+  test("fetches startup model choices from provider model APIs", async () => {
+    const models = await fetchStartupModelChoices(
+      "openai",
+      { OPENAI_API_KEY: "sk-test" },
+      async () => new Response(JSON.stringify({ data: [{ id: "gpt-5.1" }, { id: "gpt-5.5" }, { id: "gpt-5.4" }, { id: "gpt-5.5-codex" }] })),
+    )
+    expect(models).toEqual(["gpt-5.5", "gpt-5.4"])
+  })
+
+  test("falls back to bundled startup model choices when live fetch fails", async () => {
+    const models = await fetchStartupModelChoices(
+      "deepseek",
+      { DEEPSEEK_API_KEY: "sk-test" },
+      async () => new Response("boom", { status: 500 }),
+    )
+    expect(models).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"])
   })
 })
 

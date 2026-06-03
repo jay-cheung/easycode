@@ -5,6 +5,40 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { formatProviderGateReport, runProviderGate } from "../../dev/quality/provider-gate"
 
 describe("provider gate", () => {
+  test("defaults to all public real providers", async () => {
+    const previous = {
+      OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+      DEEPSEEK_API_KEY: process.env.DEEPSEEK_API_KEY,
+      OPENAI_COMPAT_API_KEY: process.env.OPENAI_COMPAT_API_KEY,
+      OPENAI_COMPAT_API_URL: process.env.OPENAI_COMPAT_API_URL,
+    }
+    delete process.env.OPENAI_API_KEY
+    delete process.env.DEEPSEEK_API_KEY
+    delete process.env.OPENAI_COMPAT_API_KEY
+    delete process.env.OPENAI_COMPAT_API_URL
+    try {
+      const { report } = await runProviderGate({
+        root: path.resolve(import.meta.dir, "../.."),
+        apix: false,
+        cache: false,
+        writeReport: false,
+      })
+
+      expect(report.status).toBe("skipped")
+      expect(report.providers.map((provider) => provider.provider)).toEqual(["deepseek", "openai", "openai-compatible"])
+      expect(report.providers.every((provider) => provider.status === "skipped")).toBe(true)
+    } finally {
+      if (previous.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
+      else process.env.OPENAI_API_KEY = previous.OPENAI_API_KEY
+      if (previous.DEEPSEEK_API_KEY === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous.DEEPSEEK_API_KEY
+      if (previous.OPENAI_COMPAT_API_KEY === undefined) delete process.env.OPENAI_COMPAT_API_KEY
+      else process.env.OPENAI_COMPAT_API_KEY = previous.OPENAI_COMPAT_API_KEY
+      if (previous.OPENAI_COMPAT_API_URL === undefined) delete process.env.OPENAI_COMPAT_API_URL
+      else process.env.OPENAI_COMPAT_API_URL = previous.OPENAI_COMPAT_API_URL
+    }
+  })
+
   test("records missing provider environment as an explicit skip", async () => {
     const previous = process.env.OPENAI_API_KEY
     delete process.env.OPENAI_API_KEY
