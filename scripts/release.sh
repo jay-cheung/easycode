@@ -15,10 +15,9 @@ set -euo pipefail
 #    1. Checks working tree is clean
 #    2. Bumps version in package.json (optional)
 #    3. Commits the version bump
-#    4. Runs the v1 verification gate
-#    5. Runs real-provider verification when matching credentials are configured
-#    6. Creates an annotated git tag (v*)
-#    7. Pushes commit + tag to origin
+#    4. Runs the unified gate (includes build + real-provider checks)
+#    5. Creates an annotated git tag (v*)
+#    6. Pushes commit + tag to origin
 #
 #  CI (GitHub Actions) will pick up the tag and build all
 #  platform binaries, then create a GitHub Release.
@@ -94,22 +93,8 @@ fi
 
 # Verify before tagging so failed builds do not leave pushed release tags behind.
 info "Running release verification..."
-bun run verify:v1
+bun run gate
 ok "Verification passed"
-
-CONFIGURED_PROVIDERS="$(node -e "const env = process.env; const providers = []; if (env.DEEPSEEK_API_KEY) providers.push('deepseek'); if (env.OPENAI_API_KEY) providers.push('openai'); if (env.OPENAI_COMPAT_API_KEY && env.OPENAI_COMPAT_API_URL) providers.push('openai-compatible'); process.stdout.write(providers.join(','));")"
-
-if [ -n "$CONFIGURED_PROVIDERS" ]; then
-  PROVIDER_VERIFY_ARGS=(--providers "$CONFIGURED_PROVIDERS")
-  if [ "${NODE_TLS_REJECT_UNAUTHORIZED:-}" = "0" ] || [ "${EASYCODE_REJECT_UNAUTHORIZED:-}" = "0" ]; then
-    PROVIDER_VERIFY_ARGS+=(--insecure)
-  fi
-  info "Running real-provider verification for: $CONFIGURED_PROVIDERS"
-  bun run verify:provider -- "${PROVIDER_VERIFY_ARGS[@]}"
-  ok "Real-provider verification passed"
-else
-  info "Skipping real-provider verification because no real-provider credentials are configured"
-fi
 
 # Create tag
 git tag -a "$TAG" -m "release $TAG"

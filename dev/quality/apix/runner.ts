@@ -1,5 +1,5 @@
 import path from "node:path"
-import { loadEnvFile } from "../../../src/cli"
+import { loadEnvFile } from "../../../src/cli/startup"
 import { ContextManager } from "../../../src/context"
 import { createProvider } from "../../../src/provider"
 import { textMessage } from "../../../src/message"

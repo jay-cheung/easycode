@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
-import { loadEnvFile } from "../../src/cli"
+import { loadEnvFile } from "../../src/cli/startup"
 import { easycodeDir } from "../../src/easycode-path"
 import { runEval } from "./eval"
 import { runAPIxEval } from "./apix"
@@ -10,13 +10,11 @@ import { runProviderGate } from "./provider-gate"
 import type { ProviderName } from "../../src/provider"
 
 type CheckStatus = "passed" | "failed" | "skipped"
-type QualityGatePreset = "dev" | "full" | "provider"
 type QualityGateCheckName =
   | "typecheck"
   | "tests"
   | "eval_fake"
   | "apix_subset"
-  | "apix_full"
   | "cache_benchmark"
   | "build"
   | "provider_gate"
@@ -33,16 +31,15 @@ export type QualityGateReport = {
   runID: string
   createdAt: string
   root: string
-  preset: QualityGatePreset
   status: CheckStatus
   checks: QualityGateCheck[]
 }
 
 export type QualityGateOptions = {
   root?: string
-  preset?: QualityGatePreset
   reportDir?: string
   providers?: ProviderName[]
+  checks?: QualityGateCheckName[]
   smokeTaskIDs?: string[]
   apixIDs?: string[]
   apixLimit?: number
@@ -51,7 +48,6 @@ export type QualityGateOptions = {
   writeReport?: boolean
 }
 
-const defaultPreset: QualityGatePreset = "dev"
 const defaultSubsetAPIxIDs = ["APIX-001", "APIX-004", "APIX-005"]
 
 function applyTlsCliOverrides(argv: string[]) {
@@ -60,33 +56,24 @@ function applyTlsCliOverrides(argv: string[]) {
   return insecure
 }
 
-export function plannedChecksForPreset(preset: QualityGatePreset): QualityGateCheckName[] {
-  switch (preset) {
-    case "dev":
-      return ["typecheck", "tests", "eval_fake", "apix_subset", "cache_benchmark"]
-    case "full":
-      return ["typecheck", "tests", "eval_fake", "apix_full", "cache_benchmark", "build"]
-    case "provider":
-      return ["provider_gate"]
-  }
+export function plannedChecks(): QualityGateCheckName[] {
+  return ["typecheck", "tests", "eval_fake", "apix_subset", "cache_benchmark", "build", "provider_gate"]
 }
 
 export async function runQualityGate(options: QualityGateOptions = {}) {
   const root = path.resolve(options.root ?? path.resolve(import.meta.dir, "../.."))
-  const preset = options.preset ?? defaultPreset
   await loadEnvFile(root)
   const checks: QualityGateCheck[] = []
 
-  for (const name of plannedChecksForPreset(preset)) {
+  for (const name of options.checks ?? plannedChecks()) {
     checks.push(await runCheck(name, root, options))
   }
 
   const report: QualityGateReport = {
     schemaVersion: 1,
-    runID: `${new Date().toISOString()}-quality-gate-${preset}`,
+    runID: `${new Date().toISOString()}-quality-gate`,
     createdAt: new Date().toISOString(),
     root,
-    preset,
     status: combinedStatus(checks.map((check) => check.status)),
     checks,
   }
@@ -108,8 +95,6 @@ async function runCheck(name: QualityGateCheckName, root: string, options: Quali
       return evalFakeCheck(root)
     case "apix_subset":
       return apixCheck("apix_subset", root, { ids: options.apixIDs ?? defaultSubsetAPIxIDs, limit: options.apixLimit })
-    case "apix_full":
-      return apixCheck("apix_full", root, { ids: options.apixIDs ?? defaultSubsetAPIxIDs, limit: options.apixLimit })
     case "cache_benchmark":
       return cacheBenchmarkCheck(root)
     case "provider_gate":
@@ -167,7 +152,7 @@ async function evalFakeCheck(root: string): Promise<QualityGateCheck> {
   }
 }
 
-async function apixCheck(name: "apix_subset" | "apix_full", root: string, options: { ids?: string[]; limit?: number }): Promise<QualityGateCheck> {
+async function apixCheck(name: "apix_subset", root: string, options: { ids?: string[]; limit?: number }): Promise<QualityGateCheck> {
   try {
     const report = await runAPIxEval({
       root,
@@ -253,7 +238,6 @@ export function formatQualityGateReport(report: QualityGateReport) {
   const lines = [
     `# Quality Gate ${report.createdAt}`,
     "",
-    `preset: ${report.preset}`,
     `status: ${report.status}`,
     `root: ${report.root}`,
     "",
@@ -266,8 +250,6 @@ export function formatQualityGateReport(report: QualityGateReport) {
 
 export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean; insecure?: boolean } {
   const insecure = applyTlsCliOverrides(argv)
-  const preset = (valueAfter(argv, "--preset") ?? defaultPreset) as QualityGatePreset
-  if (!["dev", "full", "provider"].includes(preset)) throw new Error("--preset must be dev, full, or provider")
   const provider = valueAfter(argv, "--provider")
   const providers = valueAfter(argv, "--providers")
   const apixIDs = valueAfter(argv, "--apix-ids")
@@ -275,7 +257,6 @@ export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean
   const parsedProviders = provider ? [provider] : providers ? splitCSV(providers) : undefined
   return {
     root: valueAfter(argv, "--root"),
-    preset,
     reportDir: valueAfter(argv, "--report-dir"),
     providers: parsedProviders as ProviderName[] | undefined,
     smokeTaskIDs: smokeTaskIDs ? splitCSV(smokeTaskIDs) : undefined,

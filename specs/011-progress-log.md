@@ -1,5 +1,41 @@
 # Progress Log
 
+## Step 19: Single Unified Gate
+
+- Scope: collapse the public verification surface to one `bun run gate` command and make it include the former full gate plus real-provider checks by default.
+- Implementation:
+  - Simplified `dev/quality/quality-gate.ts` to a single fixed check plan: typecheck, tests, fake eval, simulated APIx subset, simulated cache benchmark, build, and provider readiness.
+  - Removed public `gate:full`, `gate:provider`, `test:real`, `eval:real`, and `apix:real` scripts from `package.json`.
+  - Updated `scripts/release.sh`, README, acceptance criteria, and eval spec so the repo now documents one gate vocabulary and one release verification entrypoint.
+- Verification:
+  - `bun test test/unit/quality-gate.test.ts test/unit/provider-gate.test.ts`
+  - `bun run gate`
+- Notes: the provider-gate implementation still exists internally, but it is now only an engine behind the unified gate instead of a separate public workflow.
+
+## Step 18: Readability Refactor Roadmap
+
+- Scope: convert the readability discussion into a repo-grounded structural-refactor plan that improves code navigation, sequencing, and verification discipline without changing runtime behavior.
+- Implementation:
+  - Added `specs/014-readability-refactor-roadmap.md` as the source-of-truth plan for phased readability and architecture cleanup.
+  - Documented the current hotspot modules, target module boundaries, refactor ordering, per-phase risks, and required verification gates.
+  - Captured the rule that each structural slice remains single-theme, updates the progress log, and runs `bun run gate`.
+- Verification:
+  - Reviewed current hotspot files and current `specs/` structure to ground the roadmap in the existing repo layout and constraints.
+- Notes: this step is planning-only by design; it is intended to reduce future refactor risk and keep architecture work behavior-preserving rather than to change runtime semantics directly.
+
+## Step 17: Gate Command Cleanup
+
+- Scope: remove stage-specific verification aliases from the public CLI surface and make the repo speak one gate vocabulary consistently.
+- Implementation:
+  - Reduced `package.json` gate entrypoints to `bun run gate`, `bun run gate:full`, and `bun run gate:provider`.
+  - Updated `scripts/release.sh` to use the unified gate names for local and real-provider verification before tagging.
+  - Synchronized README and current specs so they no longer advertise `verify:v1`, `verify:full`, `verify:provider`, or the separate `provider:gate` entrypoint.
+- Verification:
+  - `bun run gate`
+  - `bun run gate:full`
+  - `bun run gate:provider -- --provider fake --no-apix --no-cache`
+- Notes: the underlying quality-gate presets and provider-gate implementation remain intact; only the public command surface was simplified.
+
 ## Step 16: Compaction Summary Prompt Hardening
 
 - Scope: make context-compaction summaries more production-safe by giving the summary subagent an explicit budget target, language/hypothesis preservation rules, stronger tool-noise distillation guidance, and safer malformed-output recovery.

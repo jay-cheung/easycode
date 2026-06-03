@@ -415,20 +415,12 @@ OPENAI_COMPAT_MODEL=your-model
 
 ```bash
 bun run gate
-bun run verify:v1
-bun run verify:full
 ```
 
-统一 gate 分层如下 / Unified gate hierarchy:
+统一 gate 入口如下 / Unified gate command:
 
-- `bun run gate` / `bun run verify:v1`：日常开发 gate。依次跑 `typecheck`、`bun test`、`fake eval`、经过校准的本地 `APIx` hard-gate 子集、`cache benchmark`。每次新需求开发完成后默认需要通过这一层。
-  Daily dev gate. Runs `typecheck`, `bun test`, `fake eval`, calibrated local `APIx` hard-gate subset, `cache benchmark`. Must pass after each feature development.
-- `bun run verify:full`：更重的本地 gate。在开发 gate 基础上追加 `build`；当前默认仍使用同一组稳定 APIx gate 用例，完整数据集继续保留给单独的 `apix:eval` 做能力盘点。
-  Heavier local gate. Adds `build` on top of dev gate; uses the same stable APIx gate cases, with full dataset reserved for `apix:eval`.
-- `bun run verify:provider -- --provider <name>`：真实 provider 就绪性 gate，会串起 smoke eval、APIx 子集、cache benchmark，并把报告写到 `.easycode/reports/quality-gate`。
-  Real-provider readiness gate. Chains smoke eval, APIx subset, cache benchmark, writes report to `.easycode/reports/quality-gate`.
-- 不带 `--provider` 的 `bun run provider:gate` 默认检查 `deepseek`、`openai`、`openai-compatible`；缺少凭证时会记录为 `skipped`。
-  `bun run provider:gate` without `--provider` checks `deepseek`, `openai`, and `openai-compatible` by default; missing credentials are recorded as `skipped`.
+- `bun run gate`：统一 gate。固定依次跑 `typecheck`、`bun test`、`fake eval`、经过校准的本地 `APIx` hard-gate 子集、`cache benchmark`、`build`，然后再尝试真实 provider gate。真实 provider 默认检查 `deepseek`、`openai`、`openai-compatible`；缺少凭证时会记录为 `skipped`，不会让整条 gate 失败。
+  Unified gate. Runs `typecheck`, `bun test`, `fake eval`, calibrated local `APIx` hard-gate subset, `cache benchmark`, `build`, then real-provider gate. Real providers default to `deepseek`, `openai`, and `openai-compatible`; missing credentials are recorded as `skipped` and do not fail the overall gate.
 - 首次交互式配置 `deepseek` 或 `openai` 时，CLI 会优先调用各自官方 `GET /models` API 取最新可用模型，并只展示最近两个版本；如果请求失败，则回退到内置候选。仍然支持直接输入自定义 model。
   During first-time interactive setup for `deepseek` or `openai`, the CLI first calls each provider's official `GET /models` API, keeps only the two most recent versions, and falls back to bundled presets on failure. Custom model input is still supported.
 
@@ -439,15 +431,13 @@ bun test
 bun run eval --provider fake
 bun run apix:eval --provider simulated --table
 bun run cache:bench -- --provider simulated --suite real --quiet
-bun run provider:gate -- --provider deepseek
+bun run gate -- --provider deepseek
 ```
 
-真实 provider 单项验证也可以显式启用 / Real-provider checks are opt-in:
+如果只想把统一 gate 限制到指定真实 provider，可以显式传参 / If you want the unified gate to target specific real providers only:
 
 ```bash
-EASYCODE_TEST_PROVIDER=deepseek bun run test:real
-EASYCODE_TEST_PROVIDER=openai bun run test:real
-EASYCODE_TEST_PROVIDER=openai-compatible bun run test:real
-EASYCODE_TEST_PROVIDER=deepseek bun run eval:real
-EASYCODE_TEST_PROVIDER=openai bun run apix:real
+bun run gate -- --provider deepseek
+bun run gate -- --providers openai,openai-compatible
+bun run gate -- --provider deepseek --no-apix
 ```

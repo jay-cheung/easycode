@@ -7,7 +7,7 @@ import type { AgentMode } from "../../src/message"
 import { createProvider, hasProvider, listProviders, type ProviderName } from "../../src/provider"
 import { createLogger, formatLogEvent } from "../../src/logger"
 import type { ToolContext, ToolRegistryLike, ToolResult } from "../../src/tool"
-import { loadEnvFile } from "../../src/cli"
+import { loadEnvFile } from "../../src/cli/startup"
 
 export type EvalTask = {
   id: string
