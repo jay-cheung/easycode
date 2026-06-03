@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import path from "node:path"
 import { runAPIxEval } from "../../dev/quality/apix"
 import { contextLedgerForCase } from "../../dev/quality/apix/case"
-import { validateCase } from "../../dev/quality/apix/validation"
+import { normalizeOutputForCase, validateCase } from "../../dev/quality/apix/validation"
 
 type APIxCase = {
   id: string
@@ -111,6 +111,17 @@ describe("APIx golden dataset manifest", () => {
     expect(validateCase(golfCase, "2024 高尔夫 R-Line，2万公里，轻微剐蹭，长沙。", emptyUsage, cacheEvaluation)).toContain('missing "一万公里"')
     expect(validateCase(syntaxCase, "第127行缺少右括号 )。", emptyUsage, cacheEvaluation)).toEqual([])
     expect(validateCase(syntaxCase, "第128行缺少右括号 )。", emptyUsage, cacheEvaluation)).toContain('missing "line 127"')
+  })
+
+  test("normalizes deterministic length-capped outputs before validation", async () => {
+    const manifest = await Bun.file(path.resolve(import.meta.dir, "../../evals/apix/tasks.json")).json() as { cases: APIxCase[] }
+    const lengthCase = manifest.cases.find((item) => item.id === "APIX-004")
+    if (!lengthCase) throw new Error("missing APIX-004")
+
+    const normalized = normalizeOutputForCase(lengthCase, "缓存复用稳定前缀，压缩保留关键事实，RAG负责检索证据，TTFT衡量首字延迟，SLA定义门槛，APIx负责硬门验证。")
+
+    expect([...normalized].length).toBeLessThanOrEqual(50)
+    expect(validateCase(lengthCase, normalized, { inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 }, { eligible: true })).toEqual([])
   })
 
   test("warms cache-gated cases before measuring cache hit ratio", async () => {

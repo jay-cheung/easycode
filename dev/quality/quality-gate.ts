@@ -54,6 +54,12 @@ export type QualityGateOptions = {
 const defaultPreset: QualityGatePreset = "dev"
 const defaultSubsetAPIxIDs = ["APIX-001", "APIX-004", "APIX-005"]
 
+function applyTlsCliOverrides(argv: string[]) {
+  const insecure = argv.includes("--insecure") || argv.includes("-k")
+  if (insecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+  return insecure
+}
+
 export function plannedChecksForPreset(preset: QualityGatePreset): QualityGateCheckName[] {
   switch (preset) {
     case "dev":
@@ -258,7 +264,8 @@ export function formatQualityGateReport(report: QualityGateReport) {
   return lines.join("\n").trimEnd()
 }
 
-export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean } {
+export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean; insecure?: boolean } {
+  const insecure = applyTlsCliOverrides(argv)
   const preset = (valueAfter(argv, "--preset") ?? defaultPreset) as QualityGatePreset
   if (!["dev", "full", "provider"].includes(preset)) throw new Error("--preset must be dev, full, or provider")
   const provider = valueAfter(argv, "--provider")
@@ -276,6 +283,7 @@ export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean
     apixLimit: valueAfter(argv, "--apix-limit") ? positiveInteger(valueAfter(argv, "--apix-limit") as string, "--apix-limit") : undefined,
     providerApix: argv.includes("--no-apix") ? false : undefined,
     providerCache: argv.includes("--no-cache") ? false : undefined,
+    insecure,
     json: argv.includes("--json"),
   }
 }

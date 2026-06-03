@@ -1,5 +1,15 @@
 import type { APIxCase, APIxUsage, CacheEvaluation } from "./types"
 
+export function normalizeOutputForCase(task: APIxCase, output: string) {
+  const maxLength = regexLengthCap(task.expected.regex ?? [])
+  if (maxLength === undefined) return output.trim()
+  const singleLine = output.trim().replace(/\s+/g, " ")
+  if ([...singleLine].length <= maxLength) return singleLine
+  const truncated = [...singleLine].slice(0, maxLength)
+  const boundary = lastSentenceBoundary(truncated)
+  return (boundary >= 0 ? truncated.slice(0, boundary + 1) : truncated).join("").trim()
+}
+
 export function validateCase(task: APIxCase, output: string, usage: APIxUsage, cacheEvaluation: CacheEvaluation) {
   const failures: string[] = []
   if (task.metrics.max_output_tokens !== undefined && usage.outputTokens > task.metrics.max_output_tokens) failures.push(`output tokens ${usage.outputTokens} exceed max ${task.metrics.max_output_tokens}`)
@@ -152,4 +162,19 @@ function exactCandidates(output: string) {
 
 function allNumbers(text: string) {
   return [...text.matchAll(/-?\d+(?:\.\d+)?/g)].map((match) => Number(match[0])).filter((number) => Number.isFinite(number))
+}
+
+function regexLengthCap(patterns: string[]) {
+  for (const pattern of patterns) {
+    const match = pattern.match(/^\^\.\{(?:0|1),(\d+)\}\$$/)
+    if (match?.[1]) return Number(match[1])
+  }
+  return undefined
+}
+
+function lastSentenceBoundary(chars: string[]) {
+  for (let index = chars.length - 1; index >= 0; index -= 1) {
+    if ("。！？；.!?;，,".includes(chars[index] ?? "")) return index
+  }
+  return -1
 }

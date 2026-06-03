@@ -170,7 +170,9 @@ export class TuiRenderer {
       this.statusText = `Prewarming repo map (${event.status})`
     } else if (event.type === "provider_metrics") {
       this.metrics = event.metrics
-      this.statusText = "Received provider metrics"
+      if (!event.interim) {
+        this.statusText = "Received provider metrics"
+      }
     } else if (event.type === "failure") {
       this.running = false
       this.streaming = false

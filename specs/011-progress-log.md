@@ -1,5 +1,33 @@
 # Progress Log
 
+## Step 11: Provider TLS Gate + Symbol-Aware Edit Planning
+
+- Scope: make real-provider verification usable in TLS-constrained environments, enforce that verification during release when credentials are configured, and require symbol-aware edit planning in both build and plan mode for symbol-affecting code changes.
+- Implementation:
+  - Added `--insecure` / `-k` handling to `bun run verify:provider` and the underlying provider-gate CLI so real-provider checks can reuse the same TLS override path as interactive CLI sessions.
+  - Updated `scripts/release.sh` to run `bun run verify:provider` automatically for any configured real providers before tagging, while still skipping explicitly when no real-provider credentials are present.
+  - Added stable build/plan prompt guidance that requires symbol-aware edit planning to identify target symbols, owning definitions, affected references/callers, excluded same-name matches, and verification before symbol-affecting work.
+  - Extended the shared code-exploration directive so symbol-aware edit planning is part of the normal semantic-navigation workflow rather than an ad hoc instruction.
+- Verification:
+  - `bun test test/unit/provider-gate.test.ts test/unit/quality-gate.test.ts test/unit/agent.test.ts test/unit/context.test.ts`
+  - `bun run verify:provider -- --provider deepseek --insecure`
+  - `bun run gate`
+- Notes: missing provider credentials remain an explicit skip, but once credentials are present the release path now expects a passing real-provider gate before tagging.
+
+## Step 10: Local MCP Test Server
+
+- Scope: add a standalone local MCP stdio fixture so MCP clients can be smoke-tested from this repository without changing EasyCode's own runtime contract.
+- Implementation:
+  - Added `dev/mcp/test-server.ts` as a dependency-light MCP server using `Content-Length` framed JSON-RPC over stdio.
+  - Exposed fixed test tools (`echo`, `sum`, `get_server_state`), resources (`sample://readme`, `sample://config`), and prompt (`summarize-change`).
+  - Added `bun run mcp:test:server` plus README usage docs and a dedicated spec for the fixture contract.
+  - Added an integration smoke test that spawns the server and verifies initialize, tool call, resource read, prompt get, and ping round-trips.
+- Verification:
+  - `bun test test/integration/mcp-test-server.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this fixture is intentionally separate from EasyCode's `.easycode/mcp.json` retrieval path; it exists to test external MCP client behavior, not to alter current EasyCode tool loading.
+
 ## Step 9: TTY Startup Coverage + Global Tavily Setup
 
 - Scope: cover the interactive startup branch in tests and make Tavily setup writable to the global EasyCode env instead of only hinting after startup.

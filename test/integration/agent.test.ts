@@ -162,9 +162,19 @@ describe("agent integration", () => {
     }
 
     const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event) }).run("Fix", "build")
-    const metrics = events.find((event): event is Extract<RunUiEvent, { type: "provider_metrics" }> => event.type === "provider_metrics")?.metrics
+    const metricsEvents = events.filter((e): e is Extract<RunUiEvent, { type: "provider_metrics" }> => e.type === "provider_metrics")
+    expect(metricsEvents.length).toBeGreaterThanOrEqual(2)
+
+    const interimMetrics = metricsEvents.filter(e => e.interim === true)
+    expect(interimMetrics.length).toBeGreaterThanOrEqual(1)
+    expect(interimMetrics[0].metrics.calls).toBe(1)
+    expect(interimMetrics[0].metrics.inputTokens).toBe(0)
+
+    const finalEvent = metricsEvents.find(e => !e.interim)
+    expect(finalEvent).toBeDefined()
+    const metrics = finalEvent!.metrics
     const doneIndex = events.findIndex((event) => event.type === "run_done")
-    const metricsIndex = events.findIndex((event) => event.type === "provider_metrics")
+    const metricsIndex = events.findIndex((event) => event.type === "provider_metrics" && !event.interim)
 
     expect(result.status).toBe("completed")
     expect(metricsIndex).toBeGreaterThanOrEqual(0)

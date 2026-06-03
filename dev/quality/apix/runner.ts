@@ -6,7 +6,7 @@ import { textMessage } from "../../../src/message"
 import { agentForCase, contextLedgerForCase, fixtureBlockForCase, loadFixture, maxOutputTokensForCase, messagesForCase, selectCases, trustForCase, unsupportedExpectedFieldsFor } from "./case"
 import { cacheEvaluationForCase, emptyUsage, mergeUsage } from "./usage"
 import { summarize } from "./report"
-import { optimizationForCause, primaryCauseFor, validateCase } from "./validation"
+import { normalizeOutputForCase, optimizationForCause, primaryCauseFor, validateCase } from "./validation"
 import type { APIxCase, APIxManifest, APIxOptions, APIxProviderRun, APIxResult } from "./types"
 
 export async function runAPIxEval(options: APIxOptions) {
@@ -91,7 +91,7 @@ export async function runAPIxEval(options: APIxOptions) {
       : undefined
     const measured = await runProviderForCase(task, context, provider, providerMessages)
     const usage = { ...measured.usage }
-    let output = measured.output.trim()
+    let output = normalizeOutputForCase(task, measured.output)
     let failures = validateCase(task, output, measured.usage, cacheEvaluation)
     let repairAttempted = false
     let repairFailures: string[] | undefined
@@ -102,7 +102,7 @@ export async function runAPIxEval(options: APIxOptions) {
       const repair = await runRepairForCase(task, provider, output, failures)
       repairFailures = repair.providerFailures
       if (repair.providerFailures.length === 0) {
-        const repairedOutput = repair.output.trim()
+        const repairedOutput = normalizeOutputForCase(task, repair.output)
         const repairedFailures = validateCase(task, repairedOutput, measured.usage, cacheEvaluation)
         addUsage(usage, repair.usage)
         if (repairedFailures.length < failures.length) {

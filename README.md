@@ -140,6 +140,48 @@ bun run src/cli.ts plan --provider fake
 bun run src/cli.ts build --provider fake --tui
 ```
 
+## 本地 MCP 测试服务 / Local MCP Test Server
+
+仓库内置了一个最小的本地 MCP stdio server，用来验证 MCP client 的初始化、工具调用、资源读取和 prompt 拉取，不依赖外部服务，也不会改动 EasyCode 运行时。
+
+This repository includes a minimal local MCP stdio server for validating MCP client initialization, tool calls, resource reads, and prompt retrieval without external services or runtime integration work.
+
+启动方式 / Start it:
+
+```bash
+bun run mcp:test:server
+```
+
+它支持的最小 MCP surface / Exposed surface:
+
+- `initialize`
+- `ping`
+- `tools/list`
+- `tools/call` (`echo`, `sum`, `get_server_state`)
+- `resources/list`
+- `resources/read` (`sample://readme`, `sample://config`)
+- `prompts/list`
+- `prompts/get` (`summarize-change`)
+
+示例 client 配置 / Example client config:
+
+```json
+{
+  "mcpServers": {
+    "easycode-local-test": {
+      "command": "bun",
+      "args": ["run", "/absolute/path/to/easycode/dev/mcp/test-server.ts"]
+    }
+  }
+}
+```
+
+如果只想验证这个 fixture 本身，可以直接跑仓库里的 smoke test / To validate the fixture itself:
+
+```bash
+bun test test/integration/mcp-test-server.test.ts
+```
+
 ## 数据源配置 / Data Sources
 
 数据源为 AI 提供额外的上下文（文档、代码规范、搜索结果、常用命令），以只读 JSON 文件配置在项目 `.easycode/` 目录下，**无需重启进程**即可生效。

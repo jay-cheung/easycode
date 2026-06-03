@@ -8,6 +8,7 @@
     "dev": "bun run src/cli.ts build --provider deepseek --logger -k",
     "dev:openai": "bun run src/cli.ts build --provider openai --logger",
     "dev:plan": "bun run src/cli.ts plan --provider deepseek --logger",
+    "mcp:test:server": "bun run dev/mcp/test-server.ts",
     "gate": "bun run dev/quality/quality-gate.ts",
     "test": "bun test",
     "test:real": "EASYCODE_TEST_PROVIDER=deepseek bun test test/integration/real-provider.test.ts",

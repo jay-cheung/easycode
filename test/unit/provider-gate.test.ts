@@ -2,9 +2,24 @@ import { describe, expect, test } from "bun:test"
 import os from "node:os"
 import path from "node:path"
 import { mkdtemp, rm } from "node:fs/promises"
-import { formatProviderGateReport, runProviderGate } from "../../dev/quality/provider-gate"
+import { formatProviderGateReport, parseArgs, runProviderGate } from "../../dev/quality/provider-gate"
 
 describe("provider gate", () => {
+  test("parses insecure TLS override flags", () => {
+    const originalValue = process.env.NODE_TLS_REJECT_UNAUTHORIZED
+    try {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      expect(parseArgs(["--provider", "deepseek", "--insecure"])).toMatchObject({
+        insecure: true,
+        providers: ["deepseek"],
+      })
+      expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED as string | undefined).toBe("0")
+    } finally {
+      if (originalValue === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalValue
+    }
+  })
+
   test("defaults to all public real providers", async () => {
     const previous = {
       OPENAI_API_KEY: process.env.OPENAI_API_KEY,

@@ -47,6 +47,12 @@ const defaultProviders = listProviders().filter((provider) => provider !== "fake
 const defaultSmokeTaskIDs = ["EC-REAL-001"]
 const defaultAPIxIDs = ["APIX-004", "APIX-011", "APIX-012"]
 
+function applyTlsCliOverrides(argv: string[]) {
+  const insecure = argv.includes("--insecure") || argv.includes("-k")
+  if (insecure) process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+  return insecure
+}
+
 export async function runProviderGate(options: ProviderGateOptions = {}) {
   const root = path.resolve(options.root ?? path.resolve(import.meta.dir, "../.."))
   await loadEnvFile(root)
@@ -234,7 +240,8 @@ function percent(value: number) {
   return `${(value * 100).toFixed(1)}%`
 }
 
-function parseArgs(argv: string[]): ProviderGateOptions & { json?: boolean } {
+export function parseArgs(argv: string[]): ProviderGateOptions & { json?: boolean; insecure?: boolean } {
+  const insecure = applyTlsCliOverrides(argv)
   const provider = valueAfter(argv, "--provider")
   const providers = valueAfter(argv, "--providers")
   const apixIDs = valueAfter(argv, "--apix-ids")
@@ -251,6 +258,7 @@ function parseArgs(argv: string[]): ProviderGateOptions & { json?: boolean } {
     apixIDs: apixIDs ? splitCSV(apixIDs) : undefined,
     apixLimit: apixLimit === undefined ? undefined : positiveInteger(apixLimit, "--apix-limit"),
     cache: !argv.includes("--no-cache"),
+    insecure,
     json: argv.includes("--json"),
   }
 }

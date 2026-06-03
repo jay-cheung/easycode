@@ -210,12 +210,18 @@ export class AgentRunner {
     let failureText: string | undefined
     const stopProviderProgress = this.startProviderProgressTimer()
     const metricCall = startProviderMetricCall(input.providerMetrics)
+    if (input.providerMetrics && this.onEvent) {
+      this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
+    }
     const currentText = () => textChunks.join("")
     const currentReasoning = () => reasoningChunks.join("")
     const xmlFilter = new StreamXmlFilter()
     try {
       for await (const event of this.provider.stream({ mode: input.agent.mode, prompt: input.prompt, messages: input.messages, providerMessages: input.providerMessages, tools, signal: input.signal })) {
         observeProviderMetricEvent(input.providerMetrics, metricCall, event)
+        if (event.type === "usage" && input.providerMetrics && this.onEvent) {
+          this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
+        }
         if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user.") }
         if (event.type === "reasoning_delta") {
           stopProviderProgress()
@@ -266,6 +272,9 @@ export class AgentRunner {
     } finally {
       finishProviderMetricCall(input.providerMetrics, metricCall)
       stopProviderProgress()
+      if (input.providerMetrics && this.onEvent) {
+        this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
+      }
     }
   }
 

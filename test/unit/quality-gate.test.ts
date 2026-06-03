@@ -19,6 +19,21 @@ describe("quality gate", () => {
     expect(() => parseArgs(["--preset", "bad"])).toThrow("--preset must be dev, full, or provider")
   })
 
+  test("parses insecure TLS override flags", () => {
+    const originalValue = process.env.NODE_TLS_REJECT_UNAUTHORIZED
+    try {
+      delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      expect(parseArgs(["--preset", "provider", "--provider", "deepseek", "--insecure"])).toMatchObject({
+        insecure: true,
+        providers: ["deepseek"],
+      })
+      expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED as string | undefined).toBe("0")
+    } finally {
+      if (originalValue === undefined) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
+      else process.env.NODE_TLS_REJECT_UNAUTHORIZED = originalValue
+    }
+  })
+
   test("formats a concise report", () => {
     const markdown = formatQualityGateReport({
       schemaVersion: 1,

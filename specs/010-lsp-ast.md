@@ -24,6 +24,7 @@ LSP/AST support improves EasyCode beyond text search by giving the agent code-st
 - Symbol lookup returns definitions and references for local TypeScript symbols.
 - Same-name symbols in different scopes are not conflated.
 - Symbol-aware edit proposals include affected files and references before writing.
+- Build and plan mode prompts require symbol-aware edit planning for symbol-affecting changes: target symbols, owning definitions, affected references/callers, excluded same-name matches, and edit boundaries.
 - Eval fixtures compare LSP/AST lookup against `grep` for same-name collision cases.
 
 ## Current Slice
@@ -32,3 +33,4 @@ LSP/AST support improves EasyCode beyond text search by giving the agent code-st
 - Reference and call edges skip names shadowed by local bindings, preventing false cross-file references.
 - Indented local declarations are no longer promoted to top-level TypeScript symbols.
 - The index cache generator version is bumped so stale regex-only indexes are rebuilt.
+- Agent prompts now treat symbol-aware edit planning as the default path for symbol-affecting build/plan work instead of relying on ad hoc text-match exploration.

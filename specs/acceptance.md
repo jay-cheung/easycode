@@ -10,8 +10,11 @@
 - `bun run provider:gate -- --provider <real-provider>` writes a JSON and Markdown report under `.easycode/reports/provider-gate`.
 - `bun run verify:provider -- --provider <real-provider>` writes a JSON and Markdown report under `.easycode/reports/quality-gate`.
 - Provider gates skip explicitly when required credentials are missing instead of reporting fabricated real-provider results.
+- Release verification runs `bun run verify:provider` automatically for any real providers whose required credentials are configured, and skips with an explicit message when no real-provider credentials are available.
 - `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
+- `easycode plan --once "..."` includes symbol-aware edit planning details for symbol-affecting code changes: target symbols, owning definitions, affected references/callers, excluded same-name matches, and edit boundaries.
 - `easycode build --once "..." --provider fake` can complete read -> edit -> bash.
+- `easycode build --once "..." --provider fake` uses symbol-aware edit planning before symbol-affecting edits and can explain when such planning is unnecessary.
 - `easycode build --provider fake` creates `default` when the project has no saved sessions.
 - `easycode build --provider fake` prompts for an existing or new session when saved sessions exist.
 - `easycode build --session demo --provider fake` starts the named interactive session.

@@ -180,6 +180,8 @@ describe("context", () => {
     const messages = context.compose({ agent: createAgent("build"), skills: [], tools: [readTool] })
 
     expect(messages[0].content).toContain("Code exploration order")
+    expect(messages[0].content).toContain("symbol-aware edit plan")
+    expect(messages[0].content).toContain("excluded same-name matches")
     expect(messages[0].content).not.toContain("Available tools:")
     expect(messages[0].content).not.toContain("- read:")
     expect(messages[0].content).not.toContain("input_schema")

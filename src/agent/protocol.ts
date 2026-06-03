@@ -22,6 +22,7 @@ const stableOperatingProtocol = [
   "18. Tool calls should be purposeful: read/search before editing, avoid duplicate exploration, and keep outputs bounded.",
   "18a. For code navigation, you MUST: first check repo_map, then use find_definition or rg_search to locate symbols, then use read_lines for the smallest relevant range. Use grep only as a fallback. Full-file read is FORBIDDEN except for files under 100 lines or when you have a confirmed edit target and know the exact line range.",
   "18b. For repository diffs, use git_diff in summary/files/stat mode first, then request a single-file patch only when needed; avoid bash git diff because full patches waste context.",
+  "18c. Before proposing or making a symbol-affecting code change such as a rename, signature update, refactor, or API behavior change, create a symbol-aware edit plan that identifies the target symbols, owning definitions, affected references or callers, excluded same-name matches, and required verification. If symbol-aware planning is unnecessary, say why.",
   "19. Context quality is more important than raw volume: retain facts that affect correctness and drop redundant logs.",
   "20. Session continuity should preserve user intent, accepted plans, changed files, and verification outcomes.",
   "21. When active skills are listed, load full skill text only when the task actually requires those instructions, unless a first-use skill load is explicitly required.",
@@ -50,10 +51,25 @@ const planModeProtocol = [
   "- Key findings from the inspected code.",
   "- Ordered implementation steps.",
   "- Files likely to change.",
+  "- For symbol-affecting code changes, the target symbols, owning definitions, affected references or callers, excluded same-name matches, and edit boundaries.",
   "- Verification commands or checks.",
   "- Risks, rollback notes, or open questions when relevant.",
   "",
   "Do not stop with ordinary prose if the plan is ready. Use plan_exit so the runtime can mark planning complete and wait for user approval before build mode.",
+  "</system-reminder>",
+].join("\n")
+
+const buildModeProtocol = [
+  "<system-reminder>",
+  "# Build Mode - System Reminder",
+  "",
+  "Build mode may edit files, but only after focused inspection.",
+  "",
+  "Build workflow:",
+  "1. Inspect the repository state and identify the smallest coherent edit target.",
+  "2. For symbol-affecting code changes such as renames, signature updates, refactors, or API behavior changes, create a symbol-aware edit plan before editing.",
+  "3. That plan must identify the target symbols, owning definitions, affected references or callers, excluded same-name matches, and verification needed after the edit.",
+  "4. Use semantic navigation tools first, then make the smallest safe edit set that satisfies the plan.",
   "</system-reminder>",
 ].join("\n")
 
@@ -80,5 +96,5 @@ export function stripPlanTags(text: string): string {
 export function createAgent(kind: AgentKind): Agent {
   if (kind === "summary") return { kind, name: "summary", mode: "plan", tools: "none", systemPrompt: `You are EasyCode in summary mode.\n\n${summaryModeProtocol}\n\n${stableOperatingProtocol}` }
   if (kind === "plan") return { kind, name: "plan", mode: kind, tools: "enabled", systemPrompt: `You are EasyCode in plan mode.\n\n${planModeProtocol}\n\n${stableOperatingProtocol}` }
-  return { kind, name: "build", mode: kind, tools: "enabled", systemPrompt: `You are EasyCode in build mode. Make the smallest safe code changes, use tools deliberately, and report concise results.\n\n${stableOperatingProtocol}` }
+  return { kind, name: "build", mode: kind, tools: "enabled", systemPrompt: `You are EasyCode in build mode.\n\n${buildModeProtocol}\n\n${stableOperatingProtocol}` }
 }
