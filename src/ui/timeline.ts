@@ -26,7 +26,7 @@ export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
   | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number }
   | { type: "provider_metrics"; metrics: ProviderRunMetrics; interim?: boolean }
-  | { type: "context_compaction"; status: "started" | "completed" | "failed"; inputMessages?: number; summaryChars?: number; elapsedMs?: number; error?: string }
+  | { type: "context_compaction"; status: "started" | "completed" | "failed"; inputMessages?: number; summaryChars?: number; summaryTokens?: number; elapsedMs?: number; error?: string }
   | { type: "repo_map"; status: "succeeded" | "failed"; cacheHit?: boolean; files?: number; relevantFiles?: number; cachePath?: string; error?: string }
   | { type: "reasoning_delta"; text: string }
   | { type: "text_delta"; text: string }
@@ -96,7 +96,8 @@ export class TimelineRenderer {
       } else if (event.status === "completed") {
         const elapsed = event.elapsedMs === undefined ? "" : ` (${formatDuration(event.elapsedMs)})`
         const summary = event.summaryChars === undefined ? "" : `, summary_chars=${event.summaryChars}`
-        this.output.write(`  ✓ ${this.title("tool", "Context compacted")}${elapsed}${summary}\n`)
+        const tokens = event.summaryTokens === undefined ? "" : `, summary_tokens=${event.summaryTokens}`
+        this.output.write(`  ✓ ${this.title("tool", "Context compacted")}${elapsed}${summary}${tokens}\n`)
       } else {
         const elapsed = event.elapsedMs === undefined ? "" : ` after ${formatDuration(event.elapsedMs)}`
         this.output.write(`  × ${this.title("tool", "Context compaction failed")}${elapsed}${event.error ? `: ${event.error}` : ""}\n`)

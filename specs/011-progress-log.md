@@ -1,5 +1,31 @@
 # Progress Log
 
+## Step 16: Compaction Summary Prompt Hardening
+
+- Scope: make context-compaction summaries more production-safe by giving the summary subagent an explicit budget target, language/hypothesis preservation rules, stronger tool-noise distillation guidance, and safer malformed-output recovery.
+- Implementation:
+  - Expanded `src/prompt/compact.ts` so the compaction prompt now encodes role weighting, tool-output distillation, summary-language continuity, stricter summary-instruction inheritance, and a minimal `<summary>` example.
+  - Added runtime prompt injection for `dynamicSummaryTokenBudget`, current active hypothesis, and latest-user language hints in `src/agent/runner.ts`.
+  - Replaced the all-or-nothing summary extraction fallback with `extractCompactSummary(...)`, which recovers from fenced output, partial `<summary>` wrappers, and stray `<analysis>` blocks.
+  - Added summary token telemetry to context-compaction timeline events and extended prompt/timeline/integration tests to lock the new behavior.
+- Verification:
+  - `bun test test/unit/prompt.test.ts test/unit/timeline.test.ts test/integration/agent.test.ts`
+  - `bun run gate`
+- Notes: this keeps the existing one-pass summary flow but makes the prompt contract and parser materially more robust for bilingual and tool-heavy coding sessions.
+
+## Step 15: CLI Structure Refactor
+
+- Scope: reduce `src/cli.ts` spaghetti by separating startup/env setup, session command handling, and line-reading primitives into dedicated modules without changing CLI behavior.
+- Implementation:
+  - Added `src/cli/line-reader.ts` for the readline queueing/abort mechanics so the entrypoint no longer owns low-level prompt plumbing.
+  - Added `src/cli/startup.ts` for `.env` parsing/loading, provider startup configuration, live model preset lookup, and interactive Tavily/provider setup.
+  - Added `src/cli/session-helpers.ts` for session selection, slash command handling, permission prompting, queued-input handling, and startup web-search hints.
+  - Reduced `src/cli.ts` to the main orchestration path plus public re-exports for the existing CLI helper API used by tests.
+- Verification:
+  - `bun test test/unit/cli.test.ts`
+  - `bun run gate`
+- Notes: this slice is intentionally structural; the public CLI contract, startup prompts, slash commands, and session workflow are meant to stay unchanged while future work can target smaller modules instead of a 1k-line entrypoint.
+
 ## Step 14: Prompt Dedup Pass
 
 - Scope: reduce repeated prompt guidance after centralization, focusing on the fixed agent prefix and duplicated selected-skill descriptions in context composition.

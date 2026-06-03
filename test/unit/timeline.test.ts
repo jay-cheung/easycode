@@ -44,11 +44,11 @@ describe("timeline renderer", () => {
     const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
 
     renderer.event({ type: "context_compaction", status: "started", inputMessages: 4 })
-    renderer.event({ type: "context_compaction", status: "completed", elapsedMs: 2_000, summaryChars: 128 })
+    renderer.event({ type: "context_compaction", status: "completed", elapsedMs: 2_000, summaryChars: 128, summaryTokens: 32 })
 
     expect(output).toContain("● Context compaction")
     expect(output).toContain("summarizing older context, messages=4")
-    expect(output).toContain("✓ Context compacted (2s), summary_chars=128")
+    expect(output).toContain("✓ Context compacted (2s), summary_chars=128, summary_tokens=32")
   })
 
   test("renders provider metrics with APIx usage and latency labels", () => {

@@ -1,4 +1,4 @@
-import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
+import { ContextManager, estimateTextTokens, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
 import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ProviderInputMessage, type ToolCall } from "../message"
 import { defaultPermissionRules, PermissionService } from "../permission"
 import { createProvider, ProviderError, StreamXmlFilter, textToolProtocolOutputToProviderEvents, type Provider, type ProviderName } from "../provider"
@@ -9,7 +9,7 @@ import { createBuiltinRegistry, type ToolDef, type ToolRegistryLike } from "../t
 import { CliCodeNavigator } from "../tool/code-navigator"
 import { createRunAspect, type RunAspect } from "../instrumentation"
 import type { Logger } from "../logger"
-import { buildCompactPrompt } from "../context/prompt"
+import { buildCompactPrompt, extractCompactSummary } from "../context/prompt"
 import * as protocol from "./protocol"
 import type { PermissionRule } from "../permission"
 import { defaultSessionSettings, type SessionSettings } from "../settings"
@@ -445,7 +445,14 @@ export class AgentRunner {
   private async runSummarySubagent(task: BackgroundAgentTask, providerMetrics?: ProviderMetricsAccumulator) {
     const providerMessages = [
       { role: "system" as const, content: `${task.agent.systemPrompt}\n\nMode: ${task.agent.mode}\nTools: none` },
-      { role: "user" as const, content: compactPrompt(task.snapshot.providerMessages) },
+      {
+        role: "user" as const,
+        content: compactPrompt(task.snapshot.providerMessages, {
+          tokenBudget: this.context.strategyState.dynamicSummaryTokenBudget,
+          preferredLanguage: summaryLanguageHint(this.context, task.snapshot.providerMessages),
+          activeHypothesis: this.activeHypothesis?.summary,
+        }),
+      },
     ]
     try {
       const turn = await this.runProviderTurn({
@@ -459,11 +466,18 @@ export class AgentRunner {
         observeContextUsage: false,
       })
       if (turn.failureText) throw new Error(turn.failureText)
-      const extracted = extractSummary(turn.text)
+      const extracted = extractCompactSummary(turn.text)
       const compacted = this.context.compactSnapshot(extracted, task.snapshot)
       if (compacted) {
+        const storedSummary = this.context.state.summary ?? extracted
         await this.onBackgroundContextUpdate?.()
-        this.onEvent?.({ type: "context_compaction", status: "completed", elapsedMs: Date.now() - task.startedAt, summaryChars: extracted.length })
+        this.onEvent?.({
+          type: "context_compaction",
+          status: "completed",
+          elapsedMs: Date.now() - task.startedAt,
+          summaryChars: storedSummary.length,
+          summaryTokens: estimateTextTokens(storedSummary),
+        })
       }
     } catch (error) {
       this.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: error instanceof Error ? error.message : String(error) })
@@ -759,13 +773,9 @@ function assistantMessage(reasoningText: string, text: string) {
   return createMessage("assistant", parts.length > 0 ? parts : [textPart("")])
 }
 
-function compactPrompt(messages: Array<{ role: string; content: string }>) {
+function compactPrompt(messages: Array<{ role: string; content: string }>, options?: Parameters<typeof buildCompactPrompt>[1]) {
   const transcript = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n")
-  return buildCompactPrompt(transcript)
-}
-
-function extractSummary(output: string) {
-  return output.match(/<summary>\s*([\s\S]*?)\s*<\/summary>/)?.[1]?.trim() ?? output.trim()
+  return buildCompactPrompt(transcript, options)
 }
 
 function isPlanApproval(prompt: string) {
@@ -773,6 +783,19 @@ function isPlanApproval(prompt: string) {
   // Remove common punctuation and whitespace for more robust matching
   const cleaned = text.replace(/[.!?，。！？、\s]+$/g, "").trim()
   return /^(执行吧|执行|确认|接受|同意|继续|开始|approve|accepted|approved|execute|go ahead|yes|yeah|yep|y|ok|okay|do it|let's go|sure|proceed)$/i.test(cleaned)
+}
+
+function summaryLanguageHint(context: ContextManagerLike, messages: Array<{ role: string; content: string }>) {
+  const currentRequest = context.state.ledger?.current?.find((record) => record.kind === "intent" && record.subject === "current_user_request")?.value
+  return detectLanguageHint(currentRequest) ?? detectLanguageHint([...messages].reverse().find((message) => message.role === "user" && message.content.trim())?.content)
+}
+
+function detectLanguageHint(text: string | undefined) {
+  if (!text) return undefined
+  if (/[\u3040-\u30ff]/u.test(text)) return "Japanese"
+  if (/[\uac00-\ud7af]/u.test(text)) return "Korean"
+  if (/[\u4e00-\u9fff]/u.test(text)) return "Chinese"
+  return undefined
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings }) {

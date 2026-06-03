@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { AgentRunner, createRunner } from "../../src/agent"
-import { ContextManager } from "../../src/context"
+import { ContextManager, estimateTextTokens } from "../../src/context"
 import { textMessage, toolResults } from "../../src/message"
 import { defaultPermissionRules, PermissionService } from "../../src/permission"
 import { FakeProvider } from "../../src/provider"
@@ -13,6 +13,7 @@ import { SessionStore } from "../../src/session"
 import { defaultSessionSettings } from "../../src/settings"
 import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
 import type { RunUiEvent } from "../../src/ui/timeline"
+import { ledgerRecord } from "../../src/agent/ledger"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -773,6 +774,10 @@ describe("agent integration", () => {
   test("context compaction asks provider for a summary", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    context.configureStrategy({ dynamicSummaryTokenBudget: 900 })
+    context.setLedger({
+      current: [ledgerRecord("decision", "active_hypothesis", "The bug is in src/add.ts.", "current", 1)],
+    })
     for (let i = 0; i < 4; i += 1) {
       context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
       context.add(textMessage("assistant", `old reply ${i}`))
@@ -797,19 +802,27 @@ describe("agent integration", () => {
       },
     }
     const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) })
-    const result = await runner.run("Fix the failing test", "build")
+    const result = await runner.run("修复失败测试", "build")
     await runner.waitForSummarySubagent()
     expect(result.status).toBe("completed")
     expect(summaryPrompt).toContain("Produce one durable working summary")
+    expect(summaryPrompt).toContain("Keep the summary under approximately 900 tokens.")
+    expect(summaryPrompt).toContain("Write the summary in Chinese.")
+    expect(summaryPrompt).toContain("Preserve the current active hypothesis if it is still supported: The bug is in src/add.ts.")
     expect(summaryPrompt).toContain("Conversation to summarize:")
+    expect(summaryPrompt).toContain("Example output:")
     expect(summaryPrompt).not.toContain("wrap your analysis")
-    expect(summaryPrompt).not.toContain("<example>")
     expect(summarySystemPrompt).toContain("# Summary Agent - System Reminder")
     expect(summaryMode).toBe("plan")
     expect(summaryToolCount).toBe(0)
     expect(context.state.summary).toBe("Model generated summary.")
     expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "started" }))
-    expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "completed", summaryChars: "Model generated summary.".length }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "context_compaction",
+      status: "completed",
+      summaryChars: "Model generated summary.".length,
+      summaryTokens: estimateTextTokens("Model generated summary."),
+    }))
     await rm(root, { recursive: true, force: true })
   })
 

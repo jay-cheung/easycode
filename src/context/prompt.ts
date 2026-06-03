@@ -1,1 +1,1 @@
-export { BASE_COMPACT_PROMPT, buildCompactPrompt } from "../prompt"
+export { BASE_COMPACT_PROMPT, buildCompactPrompt, extractCompactSummary, type CompactPromptOptions } from "../prompt"
