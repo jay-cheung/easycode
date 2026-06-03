@@ -1,109 +1,41 @@
 #!/usr/bin/env bun
 import path from "node:path"
-import os from "node:os"
-import { createInterface } from "node:readline"
-import type { Interface } from "node:readline"
-import { stdin as input, stdout as output } from "node:process"
+import { stdout as output } from "node:process"
 import { createRunner, hasProposedPlanText } from "./agent"
 import type { ContextManagerLike } from "./context"
-import { imageLabel, imagePartFromInput } from "./image"
 import { createLogger, emitLog } from "./logger"
 import type { AgentMode, ImagePart } from "./message"
-import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService, type PermissionRequest } from "./permission"
-import { createProvider, defaultProviderCapabilities, hasProvider, listProviders } from "./provider"
 import { savePlan } from "./plans"
+import { hasProvider, listProviders } from "./provider"
 import { SessionStore, type SessionTokenUsage } from "./session"
-import { isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "./settings"
-import { parseSlashCommand, slashHelpText, type SlashCommand } from "./slash"
+import { normalizeSessionSettings } from "./settings"
+import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
+import { LineReader, eofPrompt } from "./cli/line-reader"
+import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession } from "./cli/session-helpers"
+import { interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveWebSearchEnv } from "./cli/startup"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
 import { TuiRenderer } from "./ui/tui"
-import { hasConfiguredWebSearch, tavilySetupHint } from "./retrieval"
 
-type EnvTarget = {
-  [key: string]: string | undefined
-}
+export {
+  configuredStartupModel,
+  easycodeGlobalEnvHint,
+  fetchStartupModelChoices,
+  loadEnvFile,
+  mergeEnvText,
+  missingProviderEnv,
+  needsEnvSetup,
+  parseEnvFile,
+  recentStartupModels,
+  requiredEnvForProvider,
+  selectStartupModel,
+  startupModelChoices,
+  startupModelConfig,
+  startupProviders,
+} from "./cli/startup"
 
-const eofPrompt = "\0__easycode_eof__"
-const easycodeGlobalEnvHint = "~/.easycode/.env"
-
-type LinePriority = "foreground" | "background"
-
-type LineWaiter = {
-  resolve: (line: string) => void
-  signal?: AbortSignal
-  onAbort?: () => void
-}
-
-type RunRenderer = {
-  event(event: RunUiEvent): void
-  finish(): void
-}
-
-class LineReader {
-  private pending: string[] = []
-  private readonly foreground: LineWaiter[] = []
-  private readonly background: LineWaiter[] = []
-
-  constructor(private readonly rl: ReturnType<typeof createInterface>) {
-    this.rl.on("line", (line) => this.receive(line))
-    this.rl.on("close", () => this.closeWaiters())
-  }
-
-  question(prompt: string, priority: LinePriority = "foreground", signal?: AbortSignal) {
-    output.write(prompt)
-    return this.nextLine(priority, signal)
-  }
-
-  nextLine(priority: LinePriority = "foreground", signal?: AbortSignal) {
-    if (signal?.aborted) return Promise.resolve(eofPrompt)
-    const queued = priority === "foreground" ? this.pending.shift() : undefined
-    if (queued !== undefined) return Promise.resolve(queued)
-    return new Promise<string>((resolve) => {
-      const waiter: LineWaiter = { resolve, signal }
-      waiter.onAbort = () => {
-        this.removeWaiter(waiter)
-        resolve(eofPrompt)
-      }
-      signal?.addEventListener("abort", waiter.onAbort, { once: true })
-      ;(priority === "foreground" ? this.foreground : this.background).push(waiter)
-    })
-  }
-
-  close() {
-    this.rl.close()
-  }
-
-  private receive(line: string) {
-    const waiter = this.foreground.shift() ?? this.background.shift()
-    if (!waiter) {
-      this.pending.push(line)
-      return
-    }
-    if (waiter.onAbort) waiter.signal?.removeEventListener("abort", waiter.onAbort)
-    waiter.resolve(line)
-  }
-
-  private removeWaiter(waiter: LineWaiter) {
-    removeItem(this.foreground, waiter)
-    removeItem(this.background, waiter)
-  }
-
-  private closeWaiters() {
-    for (const waiter of [...this.foreground.splice(0), ...this.background.splice(0)]) {
-      if (waiter.onAbort) waiter.signal?.removeEventListener("abort", waiter.onAbort)
-      waiter.resolve(eofPrompt)
-    }
-  }
-}
-
-function removeItem<T>(items: T[], item: T) {
-  const index = items.indexOf(item)
-  if (index !== -1) items.splice(index, 1)
-}
-
-export function parseArgs(argv: string[]) {
+function parseArgs(argv: string[]) {
   const normalizedArgv = normalizeModeArgv(argv)
   const mode = normalizedArgv[0]
   if (mode !== "build" && mode !== "plan") throw new Error(usage())
@@ -160,65 +92,10 @@ function numericFlag(argv: string[], index: number, name: string) {
   return Math.round(value)
 }
 
-function unquoteEnvValue(value: string) {
-  const trimmed = value.trim()
-  if (trimmed.length < 2) return trimmed
-  const quote = trimmed[0]
-  if ((quote !== '"' && quote !== "'") || trimmed[trimmed.length - 1] !== quote) return trimmed
-  const inner = trimmed.slice(1, -1)
-  if (quote === "'") return inner
-  return inner.replaceAll("\\n", "\n").replaceAll("\\r", "\r").replaceAll("\\t", "\t").replaceAll('\\"', '"').replaceAll("\\\\", "\\")
-}
-
-export function parseEnvFile(text: string) {
-  const entries = new Map<string, string>()
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = rawLine.trim()
-    if (!line || line.startsWith("#")) continue
-    const assignment = line.startsWith("export ") ? line.slice("export ".length).trimStart() : line
-    const separator = assignment.indexOf("=")
-    if (separator <= 0) continue
-    const key = assignment.slice(0, separator).trim()
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) continue
-    entries.set(key, unquoteEnvValue(assignment.slice(separator + 1)))
-  }
-  return entries
-}
-
-export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
-  const localPath = path.join(root, ".env")
-  let loaded = 0
-
-  // 1. Load global .env (skip in test environment to preserve test isolation)
-  if (process.env.NODE_ENV !== "test") {
-    const globalPath = globalEasycodeEnvPath()
-    const globalFile = Bun.file(globalPath)
-    if (await globalFile.exists()) {
-      for (const [key, value] of parseEnvFile(await globalFile.text())) {
-        if (env[key] !== undefined) continue
-        env[key] = value
-        loaded += 1
-      }
-    }
-  }
-
-  // 2. Load local .env (backward compatibility)
-  const localFile = Bun.file(localPath)
-  if (await localFile.exists()) {
-    for (const [key, value] of parseEnvFile(await localFile.text())) {
-      if (env[key] !== undefined) continue
-      env[key] = value
-      loaded += 1
-    }
-  }
-
-  return loaded
-}
-
 async function main() {
   let args = parseArgs(process.argv.slice(2))
   const loadedEnvVars = await loadEnvFile(args.root)
-  // Use EASYCODE_PROVIDER from .env if --provider was not explicit
+
   if (!args.providerExplicit && process.env.EASYCODE_PROVIDER && hasProvider(process.env.EASYCODE_PROVIDER)) {
     args = { ...args, provider: process.env.EASYCODE_PROVIDER }
   }
@@ -230,6 +107,7 @@ async function main() {
     }
     await setupInteractiveWebSearchEnv(args.root, process.env)
   }
+
   const status = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
   return status === "completed" ? 0 : 1
 }
@@ -242,353 +120,12 @@ function formatCliError(error: unknown) {
   return `easycode failed: ${trimmed}`
 }
 
-function interactiveStartupEnabled(env: EnvTarget = process.env) {
-  return input.isTTY || env.EASYCODE_TEST_FORCE_TTY === "1"
-}
-
-export function requiredEnvForProvider(provider: string) {
-  if (provider === "deepseek") return ["DEEPSEEK_API_KEY"]
-  if (provider === "openai") return ["OPENAI_API_KEY"]
-  if (provider === "openai-compatible") return ["OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_API_URL"]
-  return []
-}
-
-export function missingProviderEnv(provider: string, env: EnvTarget = process.env) {
-  return requiredEnvForProvider(provider).filter((key) => !env[key])
-}
-
-export function needsEnvSetup(provider: string | undefined, env: EnvTarget = process.env) {
-  if (!provider) return true
-  if (provider === "fake") return false
-  return missingProviderEnv(provider, env).length > 0
-}
-
-type StartupModelConfig = {
-  provider: string
-  envKey: string
-  promptLabel: string
-  defaultModel: string
-  fallbackChoices: string[]
-  modelsURL: string
-  apiKeyEnv: string
-}
-
-const startupModelConfigs: Record<string, StartupModelConfig> = {
-  deepseek: {
-    provider: "deepseek",
-    envKey: "DEEPSEEK_MODEL",
-    promptLabel: "DeepSeek",
-    defaultModel: "deepseek-v4-pro",
-    fallbackChoices: ["deepseek-v4-pro", "deepseek-v4-flash"],
-    modelsURL: "https://api.deepseek.com/models",
-    apiKeyEnv: "DEEPSEEK_API_KEY",
-  },
-  openai: {
-    provider: "openai",
-    envKey: "OPENAI_MODEL",
-    promptLabel: "OpenAI",
-    defaultModel: "gpt-5.5",
-    fallbackChoices: ["gpt-5.5", "gpt-5.4"],
-    modelsURL: "https://api.openai.com/v1/models",
-    apiKeyEnv: "OPENAI_API_KEY",
-  },
-}
-
-type ModelsListResponse = {
-  data?: Array<{ id?: string }>
-}
-
-type ModelListFetcher = (input: string, init?: RequestInit) => Promise<Response>
-
-export function startupProviders() {
-  return listProviders().filter((provider) => provider !== "fake" && provider !== "simulated")
-}
-
-export function startupModelConfig(provider: string) {
-  return startupModelConfigs[provider]
-}
-
-export function startupModelChoices(provider: string) {
-  return startupModelConfig(provider)?.fallbackChoices ?? []
-}
-
-export function configuredStartupModel(provider: string, env: EnvTarget = process.env) {
-  const config = startupModelConfig(provider)
-  if (!config) return undefined
-  const value = env[config.envKey]
-  return typeof value === "string" && value.trim() ? value.trim() : undefined
-}
-
-export function selectStartupModel(provider: string, raw: string) {
-  const value = raw.trim()
-  const config = startupModelConfig(provider)
-  if (!config) return undefined
-  const choices = startupModelChoices(provider)
-  if (!value) return config.defaultModel
-  const numeric = Number(value)
-  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= choices.length) {
-    return choices[numeric - 1]
-  }
-  const preset = choices.find((choice) => choice.toLowerCase() === value.toLowerCase())
-  return preset ?? value
-}
-
-export function recentStartupModels(provider: string, ids: string[]) {
-  if (provider === "openai") return recentOpenAIModels(ids)
-  if (provider === "deepseek") return recentDeepSeekModels(ids)
-  return []
-}
-
-export async function fetchStartupModelChoices(
-  provider: string,
-  env: EnvTarget = process.env,
-  fetcher: ModelListFetcher = globalThis.fetch,
-): Promise<string[]> {
-  const config = startupModelConfig(provider)
-  const apiKey = config ? env[config.apiKeyEnv] : undefined
-  if (!config || !apiKey) return startupModelChoices(provider)
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 5_000)
-  try {
-    const response = await fetcher(config.modelsURL, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-    })
-    if (!response.ok) return startupModelChoices(provider)
-    const payload = await response.json() as ModelsListResponse
-    const ids = payload.data?.flatMap((item) => (typeof item.id === "string" ? [item.id] : [])) ?? []
-    const recent = recentStartupModels(provider, ids)
-    return recent.length > 0 ? recent : startupModelChoices(provider)
-  } catch {
-    return startupModelChoices(provider)
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-export function mergeEnvText(existing: string, entries: Record<string, string>) {
-  const lines = existing ? existing.replace(/\s*$/, "\n").split(/\n/) : []
-  const present = new Set(parseEnvFile(existing).keys())
-  for (const [key, value] of Object.entries(entries)) {
-    if (present.has(key) || !value) continue
-    lines.push(`${key}=${quoteEnvValue(value)}`)
-  }
-  return lines.join("\n").replace(/\n*$/, "\n")
-}
-
-function quoteEnvValue(value: string) {
-  if (/^[A-Za-z0-9_./:@-]+$/.test(value)) return value
-  return JSON.stringify(value)
-}
-
-function globalEasycodeEnvPath(homeDir = os.homedir()) {
-  return path.join(homeDir, ".easycode", ".env")
-}
-
-async function writeGlobalEnvEntries(entries: Record<string, string>) {
-  const envPath = globalEasycodeEnvPath()
-  const existing = await Bun.file(envPath).text().catch(() => "# easycode configuration\n")
-  await Bun.write(envPath, mergeEnvText(existing, entries))
-  return envPath
-}
-
-function applyEnvEntries(env: EnvTarget, entries: Record<string, string>) {
-  for (const [key, value] of Object.entries(entries)) {
-    env[key] = value
-  }
-}
-
-async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, preselectedProvider?: string): Promise<string | undefined> {
-  const initialProvider = preselectedProvider ?? (env.EASYCODE_PROVIDER && hasProvider(env.EASYCODE_PROVIDER) ? env.EASYCODE_PROVIDER : undefined)
-  if (!needsEnvSetup(initialProvider, env)) return initialProvider
-
-  const rl = createInterface({ input, output })
-  try {
-    output.write("\n⚠️  Provider environment is not configured for this project.\n")
-    output.write("   easycode can write the missing values to .env. Existing shell variables and .env entries are preserved.\n\n")
-
-    const answer = await new Promise<string>((resolve) => {
-      rl.question("Would you like to set up environment variables now? (Y/n): ", resolve)
-    })
-    if (answer.trim().toLowerCase() === "n") return initialProvider
-
-    const selectedProvider = initialProvider ?? await (async () => {
-      const realProviders = startupProviders()
-      output.write("\nAvailable providers:\n")
-      for (const p of realProviders) {
-        output.write(`  ${p}\n`)
-      }
-      output.write("\n")
-      const raw = await new Promise<string>((resolve) => {
-        rl.question(`Select provider [${realProviders.join("/")}]: `, resolve)
-      })
-      const p = raw.trim().toLowerCase() || "deepseek"
-      if (!hasProvider(p)) {
-        output.write(`Unknown provider: ${p}. Skipping setup.\n`)
-        return null as unknown as string
-      }
-      return p
-    })()
-    if (!hasProvider(selectedProvider)) return initialProvider
-
-    const entries: Record<string, string> = { EASYCODE_PROVIDER: selectedProvider }
-
-    if (selectedProvider === "deepseek") {
-      if (!env.DEEPSEEK_API_KEY) {
-        const apiKey = await new Promise<string>((resolve) => {
-          rl.question("DeepSeek API key (sk): ", resolve)
-        })
-        if (apiKey.trim()) entries.DEEPSEEK_API_KEY = apiKey.trim()
-      }
-      if (!configuredStartupModel(selectedProvider, env)) {
-        const model = await promptForStartupModel(selectedProvider, rl, { ...env, ...entries })
-        if (model) entries.DEEPSEEK_MODEL = model
-      }
-    } else if (selectedProvider === "openai") {
-      if (!env.OPENAI_API_KEY) {
-        const apiKey = await new Promise<string>((resolve) => {
-          rl.question("OpenAI API key (sk-): ", resolve)
-        })
-        if (apiKey.trim()) entries.OPENAI_API_KEY = apiKey.trim()
-      }
-      if (!configuredStartupModel(selectedProvider, env)) {
-        const model = await promptForStartupModel(selectedProvider, rl, { ...env, ...entries })
-        if (model) entries.OPENAI_MODEL = model
-      }
-    } else if (selectedProvider === "openai-compatible") {
-      if (!env.OPENAI_COMPAT_API_KEY) {
-        const apiKey = await new Promise<string>((resolve) => {
-          rl.question("OpenAI-compatible API key: ", resolve)
-        })
-        if (apiKey.trim()) entries.OPENAI_COMPAT_API_KEY = apiKey.trim()
-      }
-      if (!env.OPENAI_COMPAT_API_URL) {
-        const url = await new Promise<string>((resolve) => {
-          rl.question("OpenAI-compatible chat completions URL: ", resolve)
-        })
-        if (url.trim()) entries.OPENAI_COMPAT_API_URL = url.trim()
-      }
-      if (!env.OPENAI_COMPAT_MODEL) {
-        const model = await new Promise<string>((resolve) => {
-          rl.question("OpenAI-compatible model: ", resolve)
-        })
-        if (model.trim()) entries.OPENAI_COMPAT_MODEL = model.trim()
-      }
-    }
-
-    const envPath = await writeGlobalEnvEntries(entries)
-    applyEnvEntries(env, entries)
-    output.write(`\n✅ Configuration saved to ${envPath}\n`)
-
-    // Reload env vars so they're available immediately
-    await loadEnvFile(root, env)
-    return selectedProvider
-  } finally {
-    rl.close()
-  }
-}
-
-async function setupInteractiveWebSearchEnv(root: string, env: EnvTarget = process.env) {
-  if (await hasConfiguredWebSearch(root, env)) return
-
-  const rl = createInterface({ input, output })
-  try {
-    output.write("\n🔎 Live web search is not configured.\n")
-    output.write(`   easycode can save TAVILY_API_KEY to ${easycodeGlobalEnvHint} for all projects.\n\n`)
-
-    const answer = await new Promise<string>((resolve) => {
-      rl.question(`Would you like to configure TAVILY_API_KEY in ${easycodeGlobalEnvHint} now? (Y/n): `, resolve)
-    })
-    if (answer.trim().toLowerCase() === "n") return
-
-    const apiKey = await new Promise<string>((resolve) => {
-      rl.question("Tavily API key (tvly-, leave empty to skip): ", resolve)
-    })
-    if (!apiKey.trim()) return
-
-    const entries = { TAVILY_API_KEY: apiKey.trim() }
-    const envPath = await writeGlobalEnvEntries(entries)
-    applyEnvEntries(env, entries)
-    output.write(`\n✅ Configuration saved to ${envPath}\n`)
-    await loadEnvFile(root, env)
-  } finally {
-    rl.close()
-  }
-}
-
-async function promptForStartupModel(provider: string, rl: Interface, env: EnvTarget = process.env) {
-  const config = startupModelConfig(provider)
-  if (!config) return undefined
-  const choices = await fetchStartupModelChoices(provider, env)
-  output.write(`\n${config.promptLabel} model presets:\n`)
-  for (const [index, choice] of choices.entries()) {
-    output.write(`  ${index + 1}) ${choice}${choice === config.defaultModel ? " (default)" : ""}\n`)
-  }
-  output.write("\n")
-  const raw = await new Promise<string>((resolve) => {
-    rl.question(`Select ${config.promptLabel} model [1-${choices.length} or custom, default: ${config.defaultModel}]: `, resolve)
-  })
-  return selectStartupModelFromChoices(provider, raw, choices)
-}
-
-function selectStartupModelFromChoices(provider: string, raw: string, choices: string[]) {
-  const config = startupModelConfig(provider)
-  if (!config) return undefined
-  const value = raw.trim()
-  if (!value) return config.defaultModel
-  const numeric = Number(value)
-  if (Number.isInteger(numeric) && numeric >= 1 && numeric <= choices.length) return choices[numeric - 1]
-  const preset = choices.find((choice) => choice.toLowerCase() === value.toLowerCase())
-  return preset ?? value
-}
-
-function recentOpenAIModels(ids: string[]) {
-  const unique = [...new Set(ids)]
-  return unique
-    .filter((id) => /^gpt-\d+(?:\.\d+)?$/.test(id))
-    .sort(compareOpenAIVersionDesc)
-    .slice(0, 2)
-}
-
-function compareOpenAIVersionDesc(left: string, right: string) {
-  const a = left.slice(4).split(".").map((part) => Number(part))
-  const b = right.slice(4).split(".").map((part) => Number(part))
-  const length = Math.max(a.length, b.length)
-  for (let index = 0; index < length; index += 1) {
-    const diff = (b[index] ?? 0) - (a[index] ?? 0)
-    if (diff !== 0) return diff
-  }
-  return left.localeCompare(right)
-}
-
-function recentDeepSeekModels(ids: string[]) {
-  const unique = [...new Set(ids)]
-  return unique
-    .filter((id) => /^deepseek-v\d+-(?:pro|flash)$/.test(id))
-    .sort(compareDeepSeekVersionDesc)
-    .slice(0, 2)
-}
-
-function compareDeepSeekVersionDesc(left: string, right: string) {
-  const leftMatch = left.match(/^deepseek-v(\d+)-(pro|flash)$/)
-  const rightMatch = right.match(/^deepseek-v(\d+)-(pro|flash)$/)
-  if (!leftMatch || !rightMatch) return left.localeCompare(right)
-  const versionDiff = Number(rightMatch[1]) - Number(leftMatch[1])
-  if (versionDiff !== 0) return versionDiff
-  const rank = (variant: string) => (variant === "pro" ? 0 : 1)
-  return rank(leftMatch[2]) - rank(rightMatch[2])
-}
-
 async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   if (!args.prompt) throw new Error("Prompt is required")
   const logger = args.logger ? createLogger({ root: args.root, session: args.session ?? "once" }) : undefined
   emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session: args.session, once: args.once } })
   emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
-  const reader = new LineReader(createInterface({ input, output }))
+  const reader = new LineReader()
   const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
   const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: settings.provider, model: settings.model, session: args.session ?? "once", logger: args.logger }) : undefined
   const timeline = tui ?? new TimelineRenderer(output)
@@ -606,8 +143,19 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
 
 async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   const store = new SessionStore(args.root)
-  const reader = new LineReader(createInterface({ input, output }))
+  const reader = new LineReader()
   const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: args.provider, model: args.model, session: args.session, logger: args.logger }) : undefined
+  let exitRequested = false
+  let activeAbort: AbortController | undefined
+  const onSigint = () => {
+    if (exitRequested) {
+      process.exit(130)
+    }
+    exitRequested = true
+    activeAbort?.abort()
+    reader.close()
+  }
+  process.on("SIGINT", onSigint)
   try {
     const session = await selectSession(args.session, store, reader, tui)
     if (!session) return "completed"
@@ -620,11 +168,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const context = await store.context(session)
     const storedSettings = await store.settings(session, args.provider)
     const sessionData = await store.load(session)
-    let sessionTokenUsage: SessionTokenUsage = sessionData?.tokenUsage ?? {
-      inputTokens: 0,
-      outputTokens: 0,
-      calls: 0
-    }
+    let sessionTokenUsage: SessionTokenUsage = sessionData?.tokenUsage ?? { inputTokens: 0, outputTokens: 0, calls: 0 }
     tui?.setSessionTokenUsage(sessionTokenUsage)
 
     let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
@@ -634,10 +178,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const queuedPrompts: string[] = []
     let activeMode = args.mode
     let runner: ReturnType<typeof createRunner> | undefined
-    let activeAbort: AbortController | undefined
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
     const timeline = tui ?? new TimelineRenderer(output)
-    
+
     const runMetrics: { current?: ProviderRunMetrics } = {}
     const onEvent = (event: RunUiEvent) => {
       if (event.type === "provider_metrics") {
@@ -655,6 +198,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context) })
       return runner
     }
+
     while (true) {
       const prompt = (queuedPrompts.shift() ?? await question(reader, tui)).trim()
       if (prompt === eofPrompt) {
@@ -674,8 +218,10 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, session })
         if (changed.resetRunner) runner = undefined
         await saveSession(runner?.context ?? context)
+        if (exitRequested) return "completed"
         continue
       }
+
       const activeRunner = getRunner()
       const images = pendingImages
       pendingImages = []
@@ -690,30 +236,31 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         sessionTokenUsage = {
           inputTokens: sessionTokenUsage.inputTokens + metrics.inputTokens,
           outputTokens: sessionTokenUsage.outputTokens + metrics.outputTokens,
-          calls: sessionTokenUsage.calls + metrics.calls
+          calls: sessionTokenUsage.calls + metrics.calls,
         }
         tui?.setSessionTokenUsage(sessionTokenUsage)
       }
       runMetrics.current = undefined
       await saveSession(activeRunner.context)
+      if (exitRequested) return "completed"
       if (activeMode === "plan" && result.status === "completed" && hasProposedPlanText(result.text)) {
         savePlan(args.root, session, result.text).catch((err) => {
           emitLog(logger, { type: "error", name: "plan.save_failed", detail: { error: String(err) } })
-          console.error("⚠️ Failed to save plan file:", err)
+          console.error("Failed to save plan file:", err)
         })
         const choice = (await reader.question(
-          tui?.planApprovalPrompt() ?? `[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: `
+          tui?.planApprovalPrompt() ?? "[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: "
         )).trim().toLowerCase() || "a"
         tui?.resumeAfterPrompt()
         if (choice === "r" || choice.startsWith("reject")) {
-          // stay in plan mode
-        } else if (choice === "e" || choice.startsWith("edit")) {
+          continue
+        }
+        if (choice === "e" || choice.startsWith("edit")) {
           const editDesc = await reader.question("What would you like changed? ")
           if (editDesc) queuedPrompts.push(`Revise the plan: ${editDesc}`)
-        } else if (choice === "n" || choice.startsWith("new")) {
-          // just continue, no mode change
-        } else {
-          // default: approve
+          continue
+        }
+        if (!(choice === "n" || choice.startsWith("new"))) {
           activeMode = "build"
           tui?.configure({ mode: activeMode }, "approved")
           runner = undefined
@@ -723,284 +270,12 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       if (result.status !== "completed") continue
     }
   } finally {
+    process.off("SIGINT", onSigint)
     reader.close()
   }
 }
 
-async function maybeShowWebSearchSetupHint(root: string, tui?: TuiRenderer) {
-  if (await hasConfiguredWebSearch(root, process.env)) return
-  writeCliText(tui, `Live web search is not configured.\n${tavilySetupHint}`, "Web Search")
-}
-
-async function selectSession(explicitSession: string | undefined, store: SessionStore, reader: LineReader, tui?: TuiRenderer) {
-  if (explicitSession) return explicitSession
-  const sessions = await store.list()
-  if (sessions.length === 0) {
-    writeCliText(tui, "Starting new session: default", "Session")
-    return "default"
-  }
-  const sessionLines = [
-    "Select a session:",
-    ...sessions.map((session, index) => `  ${index + 1}. ${session.id}${session.messageCount ? ` (${session.messageCount} messages)` : ""}`),
-    "Press Enter for 1, enter a number, or type a new session id.",
-  ]
-  writeCliText(tui, sessionLines.join("\n"), "Sessions")
-  while (true) {
-    const answer = (await reader.question(tui?.sessionPrompt() ?? "session> ")).trim()
-    if (answer === eofPrompt) return undefined
-    if (!answer) return sessions[0].id
-    const selectedIndex = Number(answer)
-    if (Number.isInteger(selectedIndex)) {
-      if (selectedIndex >= 1 && selectedIndex <= sessions.length) return sessions[selectedIndex - 1].id
-      writeCliText(tui, `Choose 1-${sessions.length}, or type a non-numeric new session id.`, "Sessions")
-      continue
-    }
-    return answer
-  }
-}
-
-async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService; sessions?: SessionStore; currentSession?: string; tui?: TuiRenderer }) {
-  const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
-  let pendingImages = input.pendingImages
-  let resetRunner = false
-  input.tui?.slashCommand(command.type)
-  const write = (text: string, title = "Command") => writeCliText(input.tui, text, title)
-  switch (command.type) {
-    case "help":
-      write(slashHelpText(), "Help")
-      break
-    case "settings":
-      write(settingsText(next, pendingImages), "Settings")
-      break
-    case "sessions":
-      write(await sessionsText(input.sessions, input.currentSession), "Sessions")
-      break
-    case "unknown":
-      write(`Unknown command: /${command.name}. Use /help.`, "Command")
-      break
-    case "error":
-      write(command.message, "Command")
-      break
-    case "model":
-      next.model = command.model
-      resetRunner = true
-      write(`Model set to ${next.model}`, "Model")
-      break
-    case "provider":
-      if (!hasProvider(command.name)) write(`Unknown provider: ${command.name}. Available providers: ${listProviders().join(", ")}`, "Provider")
-      else {
-        next.provider = command.name
-        next.model = undefined
-        resetRunner = true
-        write(`Provider set to ${next.provider}`, "Provider")
-      }
-      break
-    case "thinking": {
-      const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-      if (!(provider.capabilities ?? defaultProviderCapabilities).supportsThinking) write(`Provider ${next.provider} does not support thinking controls.`, "Thinking")
-      else {
-        next.thinking = command.value === "on"
-        resetRunner = true
-        write(`${command.aliasUsed ? "Alias /thingking accepted; use /thinking next time. " : ""}Thinking ${next.thinking ? "on" : "off"}.`, "Thinking")
-      }
-      break
-    }
-    case "effort": {
-      if (!isReasoningEffort(command.value)) write("/effort requires low, medium, high, or max", "Effort")
-      else {
-        const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsReasoningEffort) write(`Provider ${next.provider} does not support effort controls.`, "Effort")
-        else {
-          next.effort = command.value
-          resetRunner = true
-          write(`Effort set to ${next.effort}${next.thinking ? "" : " (applies when /thinking is on)"}.`, "Effort")
-        }
-      }
-      break
-    }
-    case "image": {
-      if (command.action === "clear") {
-        pendingImages = []
-        write("Pending images cleared.", "Image")
-      } else {
-        const provider = createProvider(next.provider, { model: next.model, thinking: next.thinking, effort: next.effort })
-        if (!(provider.capabilities ?? defaultProviderCapabilities).supportsImages) write(`Provider ${next.provider} does not support image input. Use /model openai with a vision-capable model.`, "Image")
-        else {
-          try {
-            const part = await imagePartFromInput(command.value, input.root)
-            pendingImages = [...pendingImages, part]
-            write(`Attached image: ${imageLabel(part.source)}`, "Image")
-          } catch (error) {
-            write(error instanceof Error ? error.message : String(error), "Image")
-          }
-        }
-      }
-      break
-    }
-    case "skill": {
-      if (command.action === "list") {
-        const skills = await input.skills.available()
-        const lines: string[] = []
-        for (const skill of skills) {
-          lines.push(`${skill.id}\n  name: ${skill.name} — ${skill.description}`)
-        }
-        write(skills.length === 0 ? "No skills found." : lines.join("\n"), "Skills")
-      }
-      if (command.action === "clear") {
-        next.selectedSkills = []
-        next.pendingSkillLoads = []
-        resetRunner = true
-        write("Active skills cleared.", "Skills")
-      }
-      if (command.action === "use") {
-        const skill = await input.skills.load(command.name)
-        if (!skill) write(`Skill not found: ${command.name}`, "Skills")
-        else {
-          next.selectedSkills = [...new Set([...next.selectedSkills, skill.id])]
-          next.pendingSkillLoads = [...new Set([...(next.pendingSkillLoads ?? []), skill.id])]
-          resetRunner = true
-          write(`Skill active: ${skill.id}`, "Skills")
-        }
-      }
-      if (command.action === "remove") {
-        const removed = next.selectedSkills.filter((id) => id === command.name || id.endsWith(`/${command.name}`) || id.endsWith(`:${command.name}`))
-        if (removed.length === 0) {
-          write(`No active skill found: ${command.name}`, "Skills")
-        } else {
-          next.selectedSkills = next.selectedSkills.filter((id) => !removed.includes(id))
-          next.pendingSkillLoads = (next.pendingSkillLoads ?? []).filter((id) => !removed.includes(id))
-          resetRunner = true
-          write(`Skill removed: ${removed.join(", ")}`, "Skills")
-        }
-      }
-      break
-    }
-  }
-  return { settings: next, pendingImages, resetRunner }
-}
-
-async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined) {
-  if (!store) return "No session store is active."
-  const sessions = await store.list()
-  if (sessions.length === 0) return "No saved sessions."
-  return [
-    "Saved sessions:",
-    ...sessions.map((session, index) => {
-      const current = session.id === currentSession ? " (current)" : ""
-      const messages = session.messageCount === 1 ? "1 message" : `${session.messageCount} messages`
-      return `  ${index + 1}. ${session.id}${current} - ${messages}`
-    }),
-  ].join("\n")
-}
-
-function settingsText(settings: SessionSettings, images: ImagePart[]) {
-  return [
-    `provider: ${settings.provider}`,
-    `model: ${settings.model ?? "(provider default)"}`,
-    `thinking: ${settings.thinking ? "on" : "off"}`,
-    `effort: ${settings.effort}`,
-    "cache: every-step",
-    `maxTokens: ${settings.maxTokens}`,
-    `maxSteps: ${settings.maxSteps}`,
-    `skills: ${settings.selectedSkills.join(", ") || "(none)"}`,
-    `pendingSkillLoads: ${settings.pendingSkillLoads.join(", ") || "(none)"}`,
-    `pending images: ${images.length}`,
-  ].join("\n")
-}
-
-function writeCliText(tui: TuiRenderer | undefined, text: string, title: string) {
-  if (tui) {
-    tui.panel(title, text)
-    return
-  }
-  output.write(text.endsWith("\n") ? text : `${text}\n`)
-}
-
-function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[], tui?: TuiRenderer) {
-  const pumpAbort = new AbortController()
-  if (tui) tui.runInputHint()
-  else output.write("Type /cancel to stop this run; other input will run next.\n")
-  const done = (async () => {
-    while (!pumpAbort.signal.aborted) {
-      const line = await reader.nextLine("background", pumpAbort.signal)
-      if (line === eofPrompt) break
-      const text = line.trim()
-      if (!text) continue
-      if (isCancelInput(text)) {
-        if (tui) tui.cancelling()
-        else output.write("Cancelling current run...\n")
-        activeAbort.abort()
-        pumpAbort.abort()
-        break
-      }
-      queuedPrompts.push(text)
-      if (tui) tui.queued(shortPrompt(text))
-      else output.write(`Queued next input: ${shortPrompt(text)}\n`)
-    }
-  })()
-  return {
-    stop: () => {
-      pumpAbort.abort()
-      void done
-    },
-  }
-}
-
-async function question(reader: LineReader, tui?: TuiRenderer) {
-  return reader.question(tui?.inputPrompt() ?? "> ")
-}
-
-function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () => void, tui?: TuiRenderer) {
-  return new PermissionService(defaultPermissionRules(mode), async (request) => {
-    const basePrompt = permissionPrompt(request)
-    const answer = (await questionWithPrompt(reader, tui?.permissionPrompt(request, basePrompt) ?? basePrompt)).trim().toLowerCase()
-    tui?.resumeAfterPrompt()
-    if (answer === eofPrompt) return "reject"
-    if (isCancelInput(answer)) {
-      cancelRun?.()
-      if (tui) tui.cancelling()
-      else output.write("Cancelling current run...\n")
-      return "reject"
-    }
-    if (answer === "a" || answer === "always") return "always"
-    if (answer === "" || answer === "y" || answer === "yes" || answer === "once") return "once"
-    return "reject"
-  }, defaultPermissionAutoReviewer)
-}
-
-async function questionWithPrompt(reader: LineReader, prompt: string) {
-  output.write(`${prompt}\n`)
-  return reader.question("permission> ")
-}
-
-function isCancelInput(text: string) {
-  return ["/cancel", "cancel", ":cancel", "stop", "/stop"].includes(text.trim().toLowerCase())
-}
-
-function shortPrompt(text: string) {
-  return text.length <= 80 ? text : `${text.slice(0, 77)}...`
-}
-
-function permissionPrompt(request: PermissionRequest) {
-  const patterns = request.patterns.join(", ")
-  const scope = typeof request.metadata.approvalScope === "string" ? `\nScope: ${request.metadata.approvalScope}` : ""
-  if (request.permission === "bash" && typeof request.metadata.command === "string") {
-    return `Allow bash for ${request.metadata.command}?${scope}\n[Y]es/[a]lways/[n]o`
-  }
-  if (request.permission === "sandbox_bypass") {
-    const risk = typeof request.metadata.risk === "string" ? request.metadata.risk : "This command will be retried without the native write sandbox."
-    const reason = typeof request.metadata.reason === "string" ? `Reason: ${request.metadata.reason}\n` : ""
-    const command = typeof request.metadata.command === "string" ? request.metadata.command : patterns
-    const failure = typeof request.metadata.failure === "string" && request.metadata.failure ? `\nFailure: ${request.metadata.failure}` : ""
-    return `EasyCode sandbox blocked this command.
-${reason}Risk: ${risk}
-Command: ${command}${scope}${failure}
-Allow sandbox bypass for this command? [Y]es/[a]lways/[n]o`
-  }
-  return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
-}
-
-function timelineEventHandler(timeline: RunRenderer) {
+function timelineEventHandler(timeline: { event(event: RunUiEvent): void }) {
   return (event: RunUiEvent) => {
     timeline.event(event)
   }
@@ -1013,3 +288,5 @@ if (import.meta.main) {
   })
   process.exit(exitCode)
 }
+
+export { parseArgs }
