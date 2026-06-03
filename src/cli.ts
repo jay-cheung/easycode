@@ -26,6 +26,7 @@ type EnvTarget = {
 }
 
 const eofPrompt = "\0__easycode_eof__"
+const easycodeGlobalEnvHint = "~/.easycode/.env"
 
 type LinePriority = "foreground" | "background"
 
@@ -190,7 +191,7 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
 
   // 1. Load global .env (skip in test environment to preserve test isolation)
   if (process.env.NODE_ENV !== "test") {
-    const globalPath = path.join(os.homedir(), ".easycode", ".env")
+    const globalPath = globalEasycodeEnvPath()
     const globalFile = Bun.file(globalPath)
     if (await globalFile.exists()) {
       for (const [key, value] of parseEnvFile(await globalFile.text())) {
@@ -221,23 +222,16 @@ async function main() {
   if (!args.providerExplicit && process.env.EASYCODE_PROVIDER && hasProvider(process.env.EASYCODE_PROVIDER)) {
     args = { ...args, provider: process.env.EASYCODE_PROVIDER }
   }
-  if (input.isTTY) {
+  if (interactiveStartupEnabled()) {
     const preselectedProvider = args.providerExplicit && hasProvider(args.provider) ? args.provider : args.provider === "fake" ? undefined : args.provider
     const selectedProvider = await setupInteractiveEnv(args.root, process.env, preselectedProvider)
     if (!args.providerExplicit && selectedProvider && hasProvider(selectedProvider)) {
       args = { ...args, provider: selectedProvider }
     }
+    await setupInteractiveWebSearchEnv(args.root, process.env)
   }
   const status = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
   return status === "completed" ? 0 : 1
-}
-
-if (import.meta.main) {
-  const exitCode = await main().catch((error: unknown) => {
-    console.error(formatCliError(error))
-    return 1
-  })
-  process.exit(exitCode)
 }
 
 function formatCliError(error: unknown) {
@@ -246,6 +240,10 @@ function formatCliError(error: unknown) {
   if (!trimmed) return "easycode failed. Please try again."
   if (trimmed.startsWith("Usage:")) return trimmed
   return `easycode failed: ${trimmed}`
+}
+
+function interactiveStartupEnabled(env: EnvTarget = process.env) {
+  return input.isTTY || env.EASYCODE_TEST_FORCE_TTY === "1"
 }
 
 export function requiredEnvForProvider(provider: string) {
@@ -387,6 +385,23 @@ function quoteEnvValue(value: string) {
   return JSON.stringify(value)
 }
 
+function globalEasycodeEnvPath(homeDir = os.homedir()) {
+  return path.join(homeDir, ".easycode", ".env")
+}
+
+async function writeGlobalEnvEntries(entries: Record<string, string>) {
+  const envPath = globalEasycodeEnvPath()
+  const existing = await Bun.file(envPath).text().catch(() => "# easycode configuration\n")
+  await Bun.write(envPath, mergeEnvText(existing, entries))
+  return envPath
+}
+
+function applyEnvEntries(env: EnvTarget, entries: Record<string, string>) {
+  for (const [key, value] of Object.entries(entries)) {
+    env[key] = value
+  }
+}
+
 async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, preselectedProvider?: string): Promise<string | undefined> {
   const initialProvider = preselectedProvider ?? (env.EASYCODE_PROVIDER && hasProvider(env.EASYCODE_PROVIDER) ? env.EASYCODE_PROVIDER : undefined)
   if (!needsEnvSetup(initialProvider, env)) return initialProvider
@@ -465,14 +480,41 @@ async function setupInteractiveEnv(root: string, env: EnvTarget = process.env, p
       }
     }
 
-    const envPath = path.join(os.homedir(), ".easycode", ".env")
-    const existing = await Bun.file(envPath).text().catch(() => "# easycode configuration\n")
-    await Bun.write(envPath, mergeEnvText(existing, entries))
+    const envPath = await writeGlobalEnvEntries(entries)
+    applyEnvEntries(env, entries)
     output.write(`\n✅ Configuration saved to ${envPath}\n`)
 
     // Reload env vars so they're available immediately
     await loadEnvFile(root, env)
     return selectedProvider
+  } finally {
+    rl.close()
+  }
+}
+
+async function setupInteractiveWebSearchEnv(root: string, env: EnvTarget = process.env) {
+  if (await hasConfiguredWebSearch(root, env)) return
+
+  const rl = createInterface({ input, output })
+  try {
+    output.write("\n🔎 Live web search is not configured.\n")
+    output.write(`   easycode can save TAVILY_API_KEY to ${easycodeGlobalEnvHint} for all projects.\n\n`)
+
+    const answer = await new Promise<string>((resolve) => {
+      rl.question(`Would you like to configure TAVILY_API_KEY in ${easycodeGlobalEnvHint} now? (Y/n): `, resolve)
+    })
+    if (answer.trim().toLowerCase() === "n") return
+
+    const apiKey = await new Promise<string>((resolve) => {
+      rl.question("Tavily API key (tvly-, leave empty to skip): ", resolve)
+    })
+    if (!apiKey.trim()) return
+
+    const entries = { TAVILY_API_KEY: apiKey.trim() }
+    const envPath = await writeGlobalEnvEntries(entries)
+    applyEnvEntries(env, entries)
+    output.write(`\n✅ Configuration saved to ${envPath}\n`)
+    await loadEnvFile(root, env)
   } finally {
     rl.close()
   }
@@ -962,4 +1004,12 @@ function timelineEventHandler(timeline: RunRenderer) {
   return (event: RunUiEvent) => {
     timeline.event(event)
   }
+}
+
+if (import.meta.main) {
+  const exitCode = await main().catch((error: unknown) => {
+    console.error(formatCliError(error))
+    return 1
+  })
+  process.exit(exitCode)
 }

@@ -1,5 +1,19 @@
 # Progress Log
 
+## Step 9: TTY Startup Coverage + Global Tavily Setup
+
+- Scope: cover the interactive startup branch in tests and make Tavily setup writable to the global EasyCode env instead of only hinting after startup.
+- Implementation:
+  - Added a test-only forced-TTY startup path so CLI tests can execute the same interactive startup branch that production uses when `stdin` is a terminal.
+  - Added interactive `TAVILY_API_KEY` setup during startup and saved it to the global `~/.easycode/.env`.
+  - Applied saved startup env entries back into the current process immediately, so empty-string env placeholders do not block runtime use.
+  - Changed Tavily setup hints from repo-local `.env` wording to the global EasyCode env recommendation.
+- Verification:
+  - `bun test test/unit/cli.test.ts test/unit/retrieval.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: the new forced-TTY tests are prompt-driven instead of sleep-driven so startup coverage stays stable across multiple sequential readline prompts.
+
 ## Step 8: Provider Matrix + Startup Model Presets
 
 - Scope: align the default real-provider gate with the public provider surface and make interactive startup model selection less guessy for DeepSeek and OpenAI.

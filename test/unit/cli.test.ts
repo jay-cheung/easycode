@@ -8,6 +8,62 @@ async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-cli-"))
 }
 
+async function readPipe(pipe: ReadableStream<Uint8Array> | null, onChunk?: (text: string) => void) {
+  if (!pipe) return ""
+  const reader = pipe.getReader()
+  const decoder = new TextDecoder()
+  let text = ""
+  while (true) {
+    const { value, done } = await reader.read()
+    if (done) break
+    text += decoder.decode(value)
+    onChunk?.(text)
+  }
+  return text
+}
+
+async function waitForOutput(getText: () => string, expected: string, timeoutMs = 2_000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    if (getText().includes(expected)) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error(`Timed out waiting for output: ${expected}\nCurrent output:\n${getText()}`)
+}
+
+async function spawnCliForcedTTY(
+  args: string[],
+  steps: Array<{ waitFor: string; send: string; timeoutMs?: number }>,
+  env: Record<string, string | undefined>,
+) {
+  const child = Bun.spawn([process.execPath, "run", "src/cli.ts", ...args], {
+    cwd: path.resolve(import.meta.dir, "../.."),
+    stdin: "pipe",
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...env, EASYCODE_TEST_FORCE_TTY: "1" },
+  })
+
+  let stdout = ""
+  let stderr = ""
+  const stdoutDone = readPipe(child.stdout, (text) => {
+    stdout = text
+  })
+  const stderrDone = readPipe(child.stderr, (text) => {
+    stderr = text
+  })
+
+  for (const step of steps) {
+    await waitForOutput(() => stdout, step.waitFor, step.timeoutMs)
+    child.stdin.write(step.send)
+  }
+  child.stdin.end()
+  const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+  stdout = finalStdout
+  stderr = finalStderr
+  return { stdout, stderr, status }
+}
+
 describe("cli env loading", () => {
   test("parses dotenv entries", () => {
     const parsed = parseEnvFile(`
@@ -235,6 +291,60 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("forced tty startup covers interactive provider and tavily setup prompts", async () => {
+    const root = await tmpdir()
+    const home = await tmpdir()
+    const result = await spawnCliForcedTTY(["build", "--root", root], [
+      { waitFor: "Would you like to set up environment variables now? (Y/n): ", send: "n\n", timeoutMs: 5_000 },
+      { waitFor: "Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n): ", send: "n\n", timeoutMs: 5_000 },
+      { waitFor: "easycode> ", send: ":exit\n", timeoutMs: 5_000 },
+    ], {
+      ...process.env,
+      HOME: home,
+      EASYCODE_PROVIDER: "",
+      DEEPSEEK_API_KEY: "",
+      DEEPSEEK_MODEL: "",
+      OPENAI_API_KEY: "",
+      OPENAI_MODEL: "",
+      OPENAI_COMPAT_API_KEY: "",
+      OPENAI_COMPAT_API_URL: "",
+      OPENAI_COMPAT_MODEL: "",
+      TAVILY_API_KEY: "",
+    })
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("Would you like to set up environment variables now? (Y/n):")
+    expect(result.stdout).toContain("Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n):")
+    expect(result.stdout).toContain("Starting new session: default")
+    expect(result.stdout).toContain("Live web search is not configured.")
+    expect(result.stdout).toContain("~/.easycode/.env")
+    expect(result.stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }, { timeout: 12_000 })
+
+  test("forced tty startup can save TAVILY_API_KEY to the global easycode env", async () => {
+    const root = await tmpdir()
+    const home = await tmpdir()
+    const result = await spawnCliForcedTTY(["build", "--provider", "fake", "--root", root], [
+      { waitFor: "Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n): ", send: "\n", timeoutMs: 5_000 },
+      { waitFor: "Tavily API key (tvly-, leave empty to skip): ", send: "tvly-pty-test\n", timeoutMs: 5_000 },
+      { waitFor: "easycode> ", send: ":exit\n", timeoutMs: 5_000 },
+    ], {
+      ...process.env,
+      HOME: home,
+      TAVILY_API_KEY: "",
+    })
+    const envPath = path.join(home, ".easycode", ".env")
+    expect(result.status).toBe(0)
+    expect(result.stdout).toContain("Would you like to configure TAVILY_API_KEY in ~/.easycode/.env now? (Y/n):")
+    expect(result.stdout).toContain(`Configuration saved to ${envPath}`)
+    expect(result.stdout).not.toContain("Configure Tavily with TAVILY_API_KEY.")
+    expect(await Bun.file(envPath).text()).toContain("TAVILY_API_KEY=tvly-pty-test")
+    expect(result.stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+    await rm(home, { recursive: true, force: true })
+  }, { timeout: 12_000 })
+
   test("top-level cli errors are friendly", async () => {
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "unknown-provider"], {
       cwd: path.resolve(import.meta.dir, "../.."),
@@ -366,11 +476,23 @@ describe("cli args", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
+    let stdout = ""
+    let stderr = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr, (text) => {
+      stderr = text
+    })
     child.stdin.write("delayed answer\n")
-    await new Promise((resolve) => setTimeout(resolve, 150))
-    child.stdin.write("queued-ok\n:exit\n")
+    await waitForOutput(() => stdout, "Type /cancel to stop this run", 3_000)
+    child.stdin.write("queued-ok\n")
+    await waitForOutput(() => stdout, "Delayed done.", 3_000)
+    child.stdin.write(":exit\n")
     child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+    stderr = finalStderr
     expect(status).toBe(0)
     expect(stdout).toContain("Queued next input: queued-ok")
     expect(stdout).toContain("Delayed done.")
@@ -465,18 +587,28 @@ describe("cli args", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
+    let stdout = ""
+    let stderr = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr, (text) => {
+      stderr = text
+    })
     child.stdin.write("plan a harmless change\n")
-    await new Promise((resolve) => setTimeout(resolve, 180))
+    await waitForOutput(() => stdout, "[Plan] [A]pprove & execute", 5_000)
     child.stdin.write("r\n:exit\n")
     child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+    stderr = finalStderr
     expect(status).toBe(0)
     expect(stdout).toContain("[Plan] [A]pprove & execute")
     expect(stdout).toContain("[status] plan approval")
     expect(stdout).toContain("<proposed_plan>")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
-  })
+  }, { timeout: 12_000 })
 
   test("tui once mode remains compatible with session logs", async () => {
     const root = await tmpdir()

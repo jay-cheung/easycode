@@ -90,7 +90,7 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root, { env: {} })
 
-      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine. Configure Tavily with TAVILY_API_KEY. Set it in the repo root .env or your shell environment.")
+      await expect(service.search("codex", 5, { live: true })).rejects.toThrow("live web search requires a configured engine. Configure Tavily with TAVILY_API_KEY. Set it in ~/.easycode/.env or your shell environment.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -106,7 +106,7 @@ describe("web retrieval", () => {
       }))
       const service = new WebSearchService(root, { env: { GOOGLE_SEARCH_API_KEY: "google-token" } })
 
-      await expect(service.search("easycode", 5)).rejects.toThrow("web search engine google type google is not supported; only tavily is available. Configure Tavily with TAVILY_API_KEY. Set it in the repo root .env or your shell environment.")
+      await expect(service.search("easycode", 5)).rejects.toThrow("web search engine google type google is not supported; only tavily is available. Configure Tavily with TAVILY_API_KEY. Set it in ~/.easycode/.env or your shell environment.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -131,7 +131,7 @@ describe("web retrieval", () => {
         },
       })
 
-      await expect(service.search("easycode", 3)).rejects.toThrow("web search engine tavily requires TAVILY_API_KEY. Set it in the repo root .env or your shell environment.")
+      await expect(service.search("easycode", 3)).rejects.toThrow("web search engine tavily requires TAVILY_API_KEY. Set it in ~/.easycode/.env or your shell environment.")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

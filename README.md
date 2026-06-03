@@ -180,10 +180,10 @@ Data sources provide AI with extra context (docs, code conventions, search resul
   Omit search engines, or pass `live: false`: read local `results` fixtures for deterministic tests.
 - 如果未配置 `.easycode/websearch.json`，但环境里存在 `TAVILY_API_KEY`，运行时会自动使用 `tavily` 作为默认 live 引擎。
   If `.easycode/websearch.json` is absent but `TAVILY_API_KEY` is present in the environment, runtime falls back to `tavily` as the default live engine.
-- 交互式会话启动时，如果未配置 Tavily，CLI 会提示去仓库根目录 `.env` 或当前 shell 环境配置 `TAVILY_API_KEY`。
-  Interactive session startup prints a setup hint when Tavily is not configured.
+- 交互式会话启动时，如果未配置 Tavily，CLI 会优先提示把 `TAVILY_API_KEY` 写入全局 `~/.easycode/.env`；如果跳过，仍会保留后续提示。
+  Interactive startup first offers to save `TAVILY_API_KEY` into global `~/.easycode/.env`; if skipped, the later reminder still appears.
 
-推荐先在仓库根目录 `.env` 配置 / Recommended repo-root `.env`:
+推荐优先配置到全局 `~/.easycode/.env` / Recommended global `~/.easycode/.env`:
 
 ```dotenv
 TAVILY_API_KEY=tvly-...

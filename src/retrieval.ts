@@ -3,7 +3,7 @@ import { z } from "zod"
 import { easycodeDir } from "./easycode-path"
 import { getTlsConfig } from "./tls-config"
 
-const webSearchEnvHint = "Set it in the repo root .env or your shell environment."
+const webSearchEnvHint = "Set it in ~/.easycode/.env or your shell environment."
 export const tavilySetupHint = `Configure Tavily with TAVILY_API_KEY. ${webSearchEnvHint}`
 
 const McpResource = z.object({
