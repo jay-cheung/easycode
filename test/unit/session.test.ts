@@ -199,7 +199,7 @@ describe("session store", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("saves and restores the latest user turn instead of an assistant-only tail", async () => {
+  test("saves and restores the latest completed turn even when it exceeds the preserve budget", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)
     const latestUserText = "recent user " + "x".repeat(300)
@@ -215,12 +215,34 @@ describe("session store", () => {
     await store.save("demo", context)
 
     const saved = await store.load("demo")
+    expect(saved?.messages.map((message) => message.role)).toEqual(["user", "assistant"])
+    expect(saved?.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
+    expect(saved?.messages[1].parts[0]).toMatchObject({ type: "text", text: "recent assistant" })
+
+    const restored = await store.context("demo")
+    expect(restored.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
+    expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("keeps an unanswered latest user turn when no assistant reply exists yet", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const latestUserText = "recent user " + "x".repeat(300)
+    const context = new ContextManager({ preserveRecentUserTurns: 1, compactPreserveTokens: estimateMessages([textMessage("user", latestUserText)]) })
+
+    context.add(textMessage("user", "older user"))
+    context.add(textMessage("assistant", "older assistant"))
+    context.add(textMessage("user", latestUserText))
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
     expect(saved?.messages.map((message) => message.role)).toEqual(["user"])
     expect(saved?.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
 
     const restored = await store.context("demo")
     expect(restored.state.messages.map((message) => message.role)).toEqual(["user"])
-    expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: latestUserText })
     await rm(root, { recursive: true, force: true })
   })
 

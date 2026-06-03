@@ -522,6 +522,41 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("session saves cancellation state before exiting on SIGINT", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--no-tui", "--session", "sigint", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    let stdout = ""
+    let stderr = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr, (text) => {
+      stderr = text
+    })
+
+    child.stdin.write("delayed answer\n")
+    await waitForOutput(() => stdout, "Type /cancel to stop this run", 3_000)
+    process.kill(child.pid, "SIGINT")
+
+    const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+    stderr = finalStderr
+
+    expect(status).toBe(0)
+    expect(stdout).toContain("Run cancelled by user.")
+    expect(stderr).toBe("")
+
+    const session = JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "sigint.json")).text()) as { messages: Array<{ role: string; parts: Array<{ type: string; text?: string }> }> }
+    expect(session.messages.map((message) => message.role)).toContain("assistant")
+    expect(JSON.stringify(session.messages)).toContain("Run cancelled by user.")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("session asks before reading env files", async () => {
     const root = await tmpdir()
     await Bun.write(path.join(root, ".env"), "SECRET=hidden\n")
