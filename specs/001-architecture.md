@@ -17,6 +17,7 @@ CLI
 - `tool/code-navigator`: semantic navigation tools, repo-map cache, and code-index graph cache.
 - `permission`: deny/ask/allow evaluation and pending permission requests.
 - `context`: message selection, token estimation, summary insertion, compaction.
+- `prompt`: model-facing prompt templates and render helpers for agent, context, compaction, and text-tool protocol.
 - `message`: model-facing messages and parts.
 - `skill`: skill discovery and progressive prompt loading.
 - `provider`: fake and Codex/Responses streaming normalization.

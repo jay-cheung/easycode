@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 12: Unified Prompt Module
+
+- Scope: centralize EasyCode's model-facing prompt templates so agent protocol, context composition, compaction, and text-tool fallback no longer maintain separate prompt strings inline.
+- Implementation:
+  - Added `src/prompt/` as the shared prompt module for agent system prompts, context/system wrappers, compaction summary prompt, and text-tool protocol prompt generation.
+  - Changed `src/agent/protocol.ts`, `src/context/manager.ts`, and `src/provider/text-tool-protocol.ts` to consume shared prompt builders instead of owning prompt text directly.
+  - Kept `src/context/prompt.ts` as a compatibility re-export so existing imports continue to work while the source of truth moves under `src/prompt/`.
+- Verification:
+  - `bun test test/unit/agent.test.ts test/unit/context.test.ts test/unit/provider.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this is a structural consolidation; prompt content and ordering are intended to remain behaviorally stable so cache-prefix expectations and existing tests keep matching.
+
 ## Step 11: Provider TLS Gate + Symbol-Aware Edit Planning
 
 - Scope: make real-provider verification usable in TLS-constrained environments, enforce that verification during release when credentials are configured, and require symbol-aware edit planning in both build and plan mode for symbol-affecting code changes.

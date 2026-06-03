@@ -1,7 +1,7 @@
 import { defaultProviderCapabilities, type Provider, type ProviderCapabilities, type ProviderEvent, type ProviderInput } from "./types"
 import { parseProviderToolArguments } from "../tool/utils/arguments"
-import type { ProviderInputMessage, ToolCall } from "../message"
-import type { ToolDef } from "../tool"
+import type { ToolCall } from "../message"
+import { buildTextToolProtocolPrompt } from "../prompt"
 
 const toolCallPattern = /<easycode_tool_call\b([^>]*)>([\s\S]*?)<\/easycode_tool_call>/gi
 
@@ -60,7 +60,7 @@ export function textToolProtocolInput(input: ProviderInput): ProviderInput {
   if (input.tools.length === 0) return { ...input, tools: [] }
   return {
     ...input,
-    providerMessages: [textToolProtocolPrompt(input.tools), ...input.providerMessages],
+    providerMessages: [buildTextToolProtocolPrompt(input.tools), ...input.providerMessages],
     tools: [],
   }
 }
@@ -77,23 +77,6 @@ export function textToolProtocolOutputToProviderEvents(text: string): ProviderEv
   // No tool calls found, return as plain text
   if (text) return [{ type: "text_delta", text }]
   return []
-}
-
-function textToolProtocolPrompt(tools: ToolDef[]): ProviderInputMessage {
-  return {
-    role: "system",
-    content: [
-      "Text tool protocol:",
-      "This model endpoint does not receive native tool schemas. When a tool is needed, emit exactly one XML block and no markdown fence:",
-      '<easycode_tool_call name="tool_name" id="optional_call_id">{"argument":"value"}</easycode_tool_call>',
-      "Available tools:",
-      ...tools.map(formatTextTool),
-    ].join("\n"),
-  }
-}
-
-function formatTextTool(tool: ToolDef) {
-  return `- ${tool.name}: ${tool.description}\n  parameters: ${JSON.stringify(tool.jsonSchema)}`
 }
 
 function toolCallFromTextProtocol(attributes: string, rawArguments: string, index: number): ToolCall {
