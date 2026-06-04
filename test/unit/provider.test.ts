@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
+import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, StreamXmlFilter, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
 import { imagePart, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 import type { Provider, ProviderEvent } from "../../src/provider"
@@ -572,6 +572,22 @@ describe("provider", () => {
     expect(events).toEqual([
       { type: "tool_call", call: { id: "call_text_1", name: "bash", input: { command: "ls -la" }, rawArguments: '{"command":"ls -la"}' } },
     ])
+  })
+
+  test("text tool protocol parses singular tool_call XML wrappers", () => {
+    const input = 'Checking.\n<tool_call>\n<invoke_name>bash</invoke_name>\n<args>\n<invoke>git status --short</invoke>\n</args>\n</tool_call>'
+    const events = textToolProtocolOutputToProviderEvents(input)
+    expect(events).toEqual([
+      { type: "text_delta", text: "Checking.\n" },
+      { type: "tool_call", call: { id: "call_text_1", name: "bash", input: { command: "git status --short" }, rawArguments: '{"command":"git status --short"}' } },
+    ])
+  })
+
+  test("stream xml filter suppresses singular tool_call wrappers from visible text", () => {
+    const filter = new StreamXmlFilter()
+    expect(filter.feed("Checking.\n<tool_call>\n<invoke_name>bash</invoke_name>")).toBe("Checking.\n")
+    expect(filter.feed("\n<args>\n<invoke>git status --short</invoke>\n</args>\n</tool_call>")).toBe("")
+    expect(filter.flush()).toBe("")
   })
 
   test("text tool protocol parses multiple Anthropic-style invoke blocks", () => {

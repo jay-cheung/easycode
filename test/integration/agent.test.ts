@@ -1066,6 +1066,36 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("extracts singular tool_call XML wrappers from text fallback without rendering raw wrapper text", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield {
+            type: "text_delta",
+            text: 'Checking command.\n<tool_call>\n<invoke_name>bash</invoke_name>\n<args>\n<invoke>printf ok</invoke>\n</args>\n</tool_call>',
+          }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Checked." }
+        yield { type: "done" }
+      },
+    }
+    const result = await new AgentRunner({ root, provider, onEvent: (event) => events.push(event), settings: defaultSessionSettings("test-provider") }).run("Check command", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["bash"])
+    expect(result.text).toBe("Checked.")
+    expect(events.some((event) => event.type === "tool_call" && event.call.name === "bash")).toBe(true)
+    expect(events.filter((event) => event.type === "text_delta").every((event) => !event.text.includes("<tool_call>") && !event.text.includes("<invoke_name>"))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("extracts DSML-style XML tool calls from text fallback", async () => {
     const root = await fixture()
     let calls = 0

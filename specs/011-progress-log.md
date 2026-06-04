@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 21: Singular XML Tool-Call Fallback
+
+- Scope: recover tool execution when a model prints a single `<tool_call>...</tool_call>` wrapper instead of native tool calls, and suppress that wrapper from the visible TUI stream.
+- Implementation:
+  - Extended `src/provider/text-tool-protocol.ts` to parse singular XML wrappers that carry `<invoke_name>` plus nested `<args>` tags, including the observed `bash` + `<invoke>` command shape.
+  - Added stream-filter coverage for singular `<tool_call>` blocks so raw wrapper markup no longer leaks into live text deltas before fallback extraction runs.
+  - Added unit and integration coverage for the exact wrapper family that previously rendered verbatim instead of executing.
+- Verification:
+  - `bun test test/unit/provider.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this change is intentionally additive; the existing EasyCode text protocol, Anthropic-style XML fallback, and DSML variants remain unchanged.
+
 ## Step 20: TUI UI Language Selection
 
 - Scope: localize fixed interactive CLI/TUI copy across six languages and add durable language selection at first startup plus a `/lang` session command.

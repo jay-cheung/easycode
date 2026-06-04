@@ -4,6 +4,7 @@ import type { ToolCall } from "../message"
 import { buildTextToolProtocolPrompt } from "../prompt"
 
 const toolCallPattern = /<easycode_tool_call\b([^>]*)>([\s\S]*?)<\/easycode_tool_call>/gi
+const singularToolCallPattern = /<tool_call\b([^>]*)>([\s\S]*?)<\/tool_call>/gi
 
 // Anthropic/Claude-style: <invoke name="tool_name">...<parameter name="key">value</parameter>...</invoke>
 const invokePattern = /<(?:[|｜]{2}DSML[|｜]{2})?invoke\s+name\s*=\s*["']([^"']+)["'](?:\s+id\s*=\s*["']([^"']+)["'])?\s*>([\s\S]*?)<\/(?:[|｜]{2}DSML[|｜]{2})?invoke>/gi
@@ -70,6 +71,10 @@ export function textToolProtocolOutputToProviderEvents(text: string): ProviderEv
   const easycodeEvents = parseEasycodeToolCalls(text)
   if (easycodeEvents.some((event) => event.type === "tool_call")) return easycodeEvents
 
+  // Fall back to singular tool_call XML wrappers (<tool_call><invoke_name>...</invoke_name><args>...</args></tool_call>)
+  const singularEvents = parseSingularToolCalls(text)
+  if (singularEvents.some((event) => event.type === "tool_call")) return singularEvents
+
   // Fall back to Anthropic-style XML format (<tool_calls>/<invoke>/<parameter>)
   const anthropicEvents = parseAnthropicToolCalls(text)
   if (anthropicEvents.some((event) => event.type === "tool_call")) return anthropicEvents
@@ -107,6 +112,63 @@ function parseEasycodeToolCalls(text: string): ProviderEvent[] {
   const tail = text.slice(cursor)
   if (tail) events.push({ type: "text_delta", text: tail })
   return events.filter((event) => event.type !== "text_delta" || event.text.length > 0)
+}
+
+function parseSingularToolCalls(text: string): ProviderEvent[] {
+  const events: ProviderEvent[] = []
+  let cursor = 0
+  let index = 0
+  for (const match of text.matchAll(singularToolCallPattern)) {
+    const start = match.index ?? 0
+    const before = text.slice(cursor, start)
+    if (before) events.push({ type: "text_delta", text: before })
+    index += 1
+    events.push({ type: "tool_call", call: singularToolCallFromXml(match[1] ?? "", match[2] ?? "", index) })
+    cursor = start + match[0].length
+  }
+  const tail = text.slice(cursor)
+  if (tail) events.push({ type: "text_delta", text: tail })
+  return events.filter((event) => event.type !== "text_delta" || event.text.length > 0)
+}
+
+function singularToolCallFromXml(attributes: string, rawBody: string, index: number): ToolCall {
+  const name = attributeValue(attributes, "name") ?? simpleTagValue(rawBody, "invoke_name")?.trim() ?? "unknown"
+  const id = attributeValue(attributes, "id") ?? simpleTagValue(rawBody, "id")?.trim() ?? `call_text_${index}`
+  const trimmedBody = rawBody.trim()
+  if (trimmedBody.startsWith("{")) {
+    const parsed = parseProviderToolArguments(trimmedBody, name, id)
+    return { id, name, input: parsed.input, rawArguments: trimmedBody }
+  }
+  const argumentsText = parseSingularToolCallArguments(name, rawBody)
+  const parsed = parseProviderToolArguments(argumentsText, name, id)
+  return { id, name, input: parsed.input, rawArguments: argumentsText }
+}
+
+function parseSingularToolCallArguments(name: string, rawBody: string): string {
+  const argsBody = simpleTagValue(rawBody, "args")
+  const params = parseSimpleXmlArgumentTags(argsBody ?? rawBody, argsBody ? new Set() : new Set(["invoke_name", "id", "args"]))
+  if (name === "bash" && typeof params.invoke === "string" && typeof params.command !== "string") {
+    params.command = params.invoke
+    delete params.invoke
+  }
+  return Object.keys(params).length > 0 ? JSON.stringify(params) : "{}"
+}
+
+function parseSimpleXmlArgumentTags(text: string, ignoredTags = new Set<string>()): Record<string, unknown> {
+  const params: Record<string, unknown> = {}
+  const tagPattern = /<([a-zA-Z_][\w:-]*)>([\s\S]*?)<\/\1>/g
+  for (const match of text.matchAll(tagPattern)) {
+    const key = match[1] ?? ""
+    const rawValue = match[2] ?? ""
+    if (!key || ignoredTags.has(key)) continue
+    params[key] = coerceSimpleTagValue(rawValue)
+  }
+  return params
+}
+
+function simpleTagValue(text: string, tag: string): string | undefined {
+  const match = text.match(new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`, "i"))
+  return match?.[1]
 }
 
 function parseAnthropicToolCalls(text: string): ProviderEvent[] {
@@ -200,10 +262,17 @@ function coerceParameterValue(value: string): unknown {
   return value
 }
 
-const openTagRegex = /^<(?:[|｜]{2}DSML[|｜]{2})?(easycode_tool_call|tool_calls|invoke)\b/i
+function coerceSimpleTagValue(rawValue: string): unknown {
+  const trimmed = rawValue.trim()
+  if (trimmed !== rawValue && /[\r\n]|^\s|\s$/.test(rawValue)) return rawValue
+  return coerceParameterValue(trimmed)
+}
+
+const openTagRegex = /^<(?:[|｜]{2}DSML[|｜]{2})?(easycode_tool_call|tool_call|tool_calls|invoke)\b/i
 
 const targetPrefixes = [
   "<easycode_tool_call",
+  "<tool_call",
   "<tool_calls",
   "<invoke",
   "<||dsml||tool_calls",
@@ -245,6 +314,8 @@ export class StreamXmlFilter {
         let closeRegex: RegExp
         if (matchedOpening === "easycode_tool_call") {
           closeRegex = /<\/easycode_tool_call>/i
+        } else if (matchedOpening === "tool_call") {
+          closeRegex = /<\/tool_call>/i
         } else if (matchedOpening === "tool_calls") {
           closeRegex = /<\/(?:[|｜]{2}DSML[|｜]{2})?tool_calls>/i
         } else {
