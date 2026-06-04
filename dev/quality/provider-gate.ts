@@ -56,6 +56,9 @@ function applyTlsCliOverrides(argv: string[]) {
 export async function runProviderGate(options: ProviderGateOptions = {}) {
   const root = path.resolve(options.root ?? path.resolve(import.meta.dir, "../.."))
   await loadEnvFile(root)
+  if (process.env.EASYCODE_REJECT_UNAUTHORIZED === "0" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+  }
   const providers = options.providers ?? defaultProviders
   for (const provider of providers) {
     if (!hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: ${listProviders().join(", ")}`)

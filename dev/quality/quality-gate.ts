@@ -63,6 +63,9 @@ export function plannedChecks(): QualityGateCheckName[] {
 export async function runQualityGate(options: QualityGateOptions = {}) {
   const root = path.resolve(options.root ?? path.resolve(import.meta.dir, "../.."))
   await loadEnvFile(root)
+  if (process.env.EASYCODE_REJECT_UNAUTHORIZED === "0" || process.env.NODE_TLS_REJECT_UNAUTHORIZED === "0") {
+    process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0"
+  }
   const checks: QualityGateCheck[] = []
 
   for (const name of options.checks ?? plannedChecks()) {
