@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test"
+import { displayWidth, drawCard } from "../../src/ui/tui-ansi"
+import { buildPanelCard } from "../../src/ui/tui-cards"
+import { generateStatusPanelLines } from "../../src/ui/tui-status-panel"
 import { TuiRenderer } from "../../src/ui/tui"
 
 describe("tui renderer", () => {
@@ -44,5 +47,36 @@ describe("tui renderer", () => {
     expect(renderer.planApprovalPrompt()).toContain("[Plan]")
     expect(output).toContain("[status] permission: bash")
     expect(output).toContain("[status] plan approval")
+  })
+
+  test("keeps zh status panel borders aligned for tty rendering", () => {
+    const lines = generateStatusPanelLines({
+      context: {
+        root: "/tmp/project",
+        mode: "build",
+        provider: "fake",
+        session: "demo",
+      },
+      language: "zh",
+      columns: 88,
+      spinnerFrame: 0,
+      elapsedMs: 1_250,
+      statusText: "执行工具中",
+    })
+
+    const visibleWidths = lines.map((line) => displayWidth(line))
+    expect(new Set(visibleWidths).size).toBe(1)
+  })
+
+  test("keeps zh card headers aligned for tty rendering", () => {
+    const card = drawCard("实时状态", ["第一行", "第二行"], 88, { borderStyle: "round" })
+    const visibleWidths = card.split("\n").map((line) => displayWidth(line))
+    expect(new Set(visibleWidths).size).toBe(1)
+  })
+
+  test("keeps permission card borders aligned with emoji titles and truncated body", () => {
+    const card = buildPanelCard("🛡️ 权限确认", "Allow bash for curl -s \"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_StocksService.getKLineData\"", 88)
+    const visibleWidths = card.split("\n").map((line) => displayWidth(line))
+    expect(new Set(visibleWidths).size).toBe(1)
   })
 })

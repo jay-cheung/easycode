@@ -27,7 +27,7 @@ export function generateStatusPanelLines(input: {
   const lines: string[] = []
 
   const title = ` ${copy.liveMonitorTitle} `
-  lines.push(`${color}${chars.tl}${chars.h.repeat(2)}${title}${chars.h.repeat(Math.max(0, width - title.length - 4))}${chars.tr}${reset}`)
+  lines.push(drawBorderLine(title, width, { left: chars.tl, right: chars.tr, h: chars.h }, color, reset))
 
   const spinner = SPINNER_FRAMES[input.spinnerFrame]
   const modeBadge = input.context.mode === "build"
@@ -66,7 +66,7 @@ export function generateStatusPanelLines(input: {
   lines.push(padPanelLine(body, width, chars, color, reset))
 
   const hintText = ` ${copy.typeCancelHint} `
-  lines.push(`${color}${chars.bl}${chars.h.repeat(2)}${hintText}${chars.h.repeat(Math.max(0, width - hintText.length - 4))}${chars.br}${reset}`)
+  lines.push(drawBorderLine(hintText, width, { left: chars.bl, right: chars.br, h: chars.h }, color, reset))
   return lines
 }
 
@@ -78,6 +78,19 @@ function padPanelLine(
   reset: string,
 ) {
   const visibleLength = displayWidth(text)
-  const padded = text + " ".repeat(Math.max(0, width - visibleLength - 4))
+  const padded = text + " ".repeat(Math.max(0, width - visibleLength - 2))
   return `${color}${chars.v}${reset}${padded}${color}${chars.v}${reset}`
+}
+
+function drawBorderLine(
+  title: string,
+  width: number,
+  chars: { left: string; right: string; h: string },
+  color: string,
+  reset: string,
+) {
+  const prefix = chars.h.repeat(2)
+  const usedWidth = 1 + displayWidth(prefix) + displayWidth(title) + 1
+  const suffix = chars.h.repeat(Math.max(0, width - usedWidth))
+  return `${color}${chars.left}${prefix}${title}${suffix}${chars.right}${reset}`
 }

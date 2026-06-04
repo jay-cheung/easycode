@@ -1,9 +1,10 @@
 import type { PermissionRequest } from "../permission"
 import type { SessionTokenUsage } from "../session"
 import { uiText, type UiLanguage } from "../i18n"
-import { TimelineRenderer, type RunUiEvent, type ProviderRunMetrics } from "./timeline"
+import { TimelineRenderer, type RunUiEvent } from "./timeline"
 import { ensureTrailingNewline, formatDuration } from "./tui-ansi"
 import { buildConfiguredCard, buildFailureSummaryCard, buildPanelCard, buildSessionStartedCard, buildSuccessSummaryCard, buildWelcomeDashboardCard } from "./tui-cards"
+import { TuiState } from "./tui-state"
 import { generateStatusPanelLines, spinnerFrames } from "./tui-status-panel"
 import type { TuiContext, Writable } from "./tui-types"
 
@@ -29,31 +30,18 @@ class TuiWritable implements Writable {
 export class TuiRenderer {
   private readonly timeline: TimelineRenderer
   private context: TuiContext
-  private rendered = false
-  private lastStatus = "ready"
-  
-  // TUI State
-  private running = false
-  private streaming = false
-  private pausedForPrompt = false
-  private statusText = "ready"
-  private elapsedStart = 0
-  private elapsedMs = 0
-  private spinnerFrame = 0
+  private readonly state = new TuiState()
   private spinnerTimer: NodeJS.Timeout | undefined = undefined
-  private panelDrawnLines = 0
-  private panelDirty = false
-  private metrics: ProviderRunMetrics | undefined = undefined
-  private queuedPrompt: string | undefined = undefined
+  private lastPanelSnapshot = ""
   private sessionTokenUsage: SessionTokenUsage = { inputTokens: 0, outputTokens: 0, calls: 0 }
 
   getPausedForPrompt() {
-    return this.pausedForPrompt
+    return this.state.pausedForPrompt
   }
 
   resumeAfterPrompt() {
-    this.pausedForPrompt = false
-    if (this.running && !this.spinnerTimer) {
+    this.state.resolvePrompt()
+    if (this.state.running && !this.spinnerTimer) {
       this.startSpinnerTimer()
     }
   }
@@ -89,13 +77,13 @@ export class TuiRenderer {
     this.configure({ language })
   }
 
-  configure(context: Partial<TuiContext>, status = this.lastStatus) {
+  configure(context: Partial<TuiContext>, status = this.state.lastStatus) {
     this.context = { ...this.context, ...context }
     this.timeline.setLanguage(this.getLanguage())
-    this.lastStatus = status
+    this.state.lastStatus = status
     
     // If not running, display a beautiful compact settings card when settings change
-    if (!this.running && this.rendered) {
+    if (!this.state.running && this.state.rendered) {
       this.writeText(`\n${buildConfiguredCard(this.context, status, this.getColumns())}\n`)
     }
   }
@@ -108,69 +96,59 @@ export class TuiRenderer {
   event(event: RunUiEvent) {
     const copy = uiText(this.getLanguage())
     if (event.type === "run_start") {
-      this.running = true
-      this.streaming = false
-      this.pausedForPrompt = false
-      this.queuedPrompt = undefined
-      this.metrics = undefined
+      this.state.beginRun(copy.statusInitializing)
       this.context = { ...this.context, mode: event.mode, provider: event.provider, model: event.model }
-      this.statusText = copy.statusInitializing
-      this.elapsedStart = Date.now()
-      this.elapsedMs = 0
       this.startSpinnerTimer()
     } else if (event.type === "reasoning_delta" || event.type === "text_delta") {
-      this.pausedForPrompt = false // prompt is completed
-      if (!this.streaming) {
-        this.streaming = true
+      this.state.resolvePrompt()
+      if (!this.state.streaming) {
+        this.state.beginStreaming(event.type === "reasoning_delta" ? copy.statusThinking : copy.statusAnswering)
         this.eraseStatusPanel() // Cleanly erase panel when streaming starts to prevent any overlap
+      } else {
+        this.state.statusText = event.type === "reasoning_delta" ? copy.statusThinking : copy.statusAnswering
       }
-      this.statusText = event.type === "reasoning_delta" ? copy.statusThinking : copy.statusAnswering
     } else {
-      this.streaming = false
+      this.state.stopStreaming()
       
       // If we receive a state-changing event indicating prompt resolution
       if (["tool_call", "tool_result", "run_done", "failure"].includes(event.type)) {
-        this.pausedForPrompt = false
+        this.state.resolvePrompt()
       }
       
       // Restart spinner timer only if we are running and NOT paused for a prompt
-      if (this.running && !this.spinnerTimer && !this.pausedForPrompt) {
+      if (this.state.running && !this.spinnerTimer && !this.state.pausedForPrompt) {
         this.startSpinnerTimer()
       }
     }
 
     if (event.type === "provider_progress") {
-      this.statusText = copy.statusWaitingProvider(event.provider)
+      this.state.statusText = copy.statusWaitingProvider(event.provider)
     } else if (event.type === "tool_call") {
-      this.statusText = copy.statusExecutingTool(event.call.name)
+      this.state.statusText = copy.statusExecutingTool(event.call.name)
     } else if (event.type === "tool_progress") {
-      this.statusText = copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs))
+      this.state.statusText = copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs))
     } else if (event.type === "tool_result") {
-      this.statusText = copy.statusToolCompleted(event.toolName)
+      this.state.statusText = copy.statusToolCompleted(event.toolName)
     } else if (event.type === "context_compaction") {
       if (event.status === "started") {
-        this.statusText = copy.statusCompacting
+        this.state.statusText = copy.statusCompacting
       } else {
-        this.statusText = copy.statusCompactionDone(event.status)
+        this.state.statusText = copy.statusCompactionDone(event.status)
       }
     } else if (event.type === "repo_map") {
-      this.statusText = copy.statusRepoMap(event.status)
+      this.state.statusText = copy.statusRepoMap(event.status)
     } else if (event.type === "provider_metrics") {
-      this.metrics = event.metrics
+      this.state.metrics = event.metrics
       if (!event.interim) {
-        this.statusText = copy.statusProviderMetrics
+        this.state.statusText = copy.statusProviderMetrics
       }
     } else if (event.type === "failure") {
-      this.running = false
-      this.streaming = false
-      this.pausedForPrompt = false
+      this.state.finishRun()
       this.stopSpinnerTimer()
       this.eraseStatusPanel()
       this.renderFailureSummary(event.text)
     } else if (event.type === "run_done") {
-      this.running = false
-      this.streaming = false
-      this.pausedForPrompt = false
+      this.state.finishRun()
       this.stopSpinnerTimer()
       this.eraseStatusPanel()
       this.renderSuccessSummary()
@@ -189,10 +167,8 @@ export class TuiRenderer {
   }
 
   finish() {
-    if (this.running) {
-      this.running = false
-      this.streaming = false
-      this.pausedForPrompt = false
+    if (this.state.running) {
+      this.state.finishRun()
       this.stopSpinnerTimer()
       this.eraseStatusPanel()
     }
@@ -211,7 +187,7 @@ export class TuiRenderer {
 
   permissionPrompt(request: PermissionRequest, text: string) {
     // Set paused state before invoking status print to prevent immediate redraws
-    this.pausedForPrompt = true
+    this.state.pauseForPrompt()
     this.stopSpinnerTimer()
     this.eraseStatusPanel()
 
@@ -231,7 +207,7 @@ export class TuiRenderer {
   }
 
   planApprovalPrompt() {
-    this.pausedForPrompt = true
+    this.state.pauseForPrompt()
     this.stopSpinnerTimer()
     this.eraseStatusPanel()
 
@@ -249,14 +225,14 @@ export class TuiRenderer {
   queued(text: string) {
     const copy = uiText(this.getLanguage())
     this.status(copy.statusQueuedInput)
-    this.queuedPrompt = text
+    this.state.queuedPrompt = text
     this.writeText(`TUI: ${copy.queuedNextInput(text)}\n`)
   }
 
   cancelling() {
     const copy = uiText(this.getLanguage())
     this.status(copy.statusCancelling)
-    this.statusText = copy.cancellingRun
+    this.state.statusText = copy.cancellingRun
     this.writeText(`TUI: ${copy.cancellingRun}\n`)
   }
 
@@ -274,14 +250,14 @@ export class TuiRenderer {
   }
 
   status(status: string) {
-    this.lastStatus = status
+    this.state.lastStatus = status
     this.writeText(`[status] ${status}\n`)
   }
 
   // Helper to write text that handles dynamic panel erasure/redraw
   private writeText(text: string) {
-    if (this.running) {
-      if (this.streaming || this.pausedForPrompt) {
+    if (this.state.running) {
+      if (this.state.shouldWriteDirectly()) {
         this.output.write(text)
       } else {
         this.eraseStatusPanel()
@@ -295,8 +271,8 @@ export class TuiRenderer {
 
   // TUI Core Redrawing and Erasing Logics
   writeFromTimeline(text: string) {
-    if (this.running) {
-      if (this.streaming || this.pausedForPrompt) {
+    if (this.state.running) {
+      if (this.state.shouldWriteDirectly()) {
         // Direct print during active text delta streaming or manual prompts to prevent layout overlaps
         this.output.write(text)
       } else {
@@ -305,7 +281,7 @@ export class TuiRenderer {
         
         // If the printed text doesn't end with a newline, we can set panel as dirty
         if (!text.endsWith("\n")) {
-          this.panelDirty = true
+          this.state.panelDirty = true
         } else {
           this.drawStatusPanel()
         }
@@ -318,13 +294,12 @@ export class TuiRenderer {
   private startSpinnerTimer() {
     this.stopSpinnerTimer()
     this.spinnerTimer = setInterval(() => {
-      this.spinnerFrame = (this.spinnerFrame + 1) % spinnerFrames().length
-      this.elapsedMs = Date.now() - this.elapsedStart
-      if (this.running && !this.streaming && !this.pausedForPrompt) {
+      this.state.tickSpinner(spinnerFrames().length)
+      if (this.state.shouldRenderPanel()) {
         this.drawStatusPanel()
-        this.panelDirty = false
+        this.state.panelDirty = false
       }
-    }, 80)
+    }, 1_000)
   }
 
   private stopSpinnerTimer() {
@@ -335,45 +310,49 @@ export class TuiRenderer {
   }
 
   private eraseStatusPanel() {
-    if (!this.panelDrawnLines) return
-    for (let i = 0; i < this.panelDrawnLines; i++) {
+    if (!this.state.panelDrawnLines) return
+    for (let i = 0; i < this.state.panelDrawnLines; i++) {
       this.output.write("\x1b[1A\x1b[2K\r")
     }
-    this.panelDrawnLines = 0
+    this.state.panelDrawnLines = 0
+    this.lastPanelSnapshot = ""
   }
 
   private drawStatusPanel() {
-    if (!this.running || this.streaming || this.pausedForPrompt) return
-    
-    // Safety check to ensure we clean up the previous lines
-    this.eraseStatusPanel()
-    
+    if (!this.state.shouldRenderPanel()) return
+
     const lines = generateStatusPanelLines({
       context: this.context,
       language: this.getLanguage(),
       columns: this.getColumns(),
-      spinnerFrame: this.spinnerFrame,
-      elapsedMs: this.elapsedMs,
-      statusText: this.statusText,
-      queuedPrompt: this.queuedPrompt,
-      metrics: this.metrics,
+      spinnerFrame: this.state.spinnerFrame,
+      elapsedMs: this.state.elapsedMs,
+      statusText: this.state.statusText,
+      queuedPrompt: this.state.queuedPrompt,
+      metrics: this.state.metrics,
     })
+    const snapshot = lines.join("\n")
+    if (snapshot === this.lastPanelSnapshot && this.state.panelDrawnLines > 0) return
+
+    // Safety check to ensure we clean up the previous lines
+    this.eraseStatusPanel()
     for (const line of lines) {
       this.output.write(line + "\n")
     }
-    this.panelDrawnLines = lines.length
+    this.state.panelDrawnLines = lines.length
+    this.lastPanelSnapshot = snapshot
   }
 
   private renderWelcomeDashboard() {
-    this.output.write(`\n${buildWelcomeDashboardCard(this.context, this.lastStatus, this.getColumns())}\n`)
-    this.rendered = true
+    this.output.write(`\n${buildWelcomeDashboardCard(this.context, this.state.lastStatus, this.getColumns())}\n`)
+    this.state.rendered = true
   }
 
   private renderSuccessSummary() {
-    this.writeText(`\n${buildSuccessSummaryCard(this.getLanguage(), this.elapsedMs, this.metrics, this.sessionTokenUsage, this.getColumns())}\n`)
+    this.writeText(`\n${buildSuccessSummaryCard(this.getLanguage(), this.state.elapsedMs, this.state.metrics, this.sessionTokenUsage, this.getColumns())}\n`)
   }
 
   private renderFailureSummary(reason: string) {
-    this.writeText(`\n${buildFailureSummaryCard(this.getLanguage(), this.elapsedMs, this.metrics, this.sessionTokenUsage, reason, this.getColumns())}\n`)
+    this.writeText(`\n${buildFailureSummaryCard(this.getLanguage(), this.state.elapsedMs, this.state.metrics, this.sessionTokenUsage, reason, this.getColumns())}\n`)
   }
 }

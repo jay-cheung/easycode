@@ -11,7 +11,7 @@ export function compactPath(input: string, width: number) {
 export function displayWidth(text: string) {
   let width = 0
   for (const char of text.replace(/\x1b\[[0-9;]*m/g, "")) {
-    width += isWideCharacter(char) ? 2 : 1
+    width += charDisplayWidth(char)
   }
   return width
 }
@@ -36,7 +36,7 @@ export function truncateToWidth(text: string, width: number): string {
       continue
     }
 
-    const charWidth = isWideCharacter(char) ? 2 : 1
+    const charWidth = charDisplayWidth(char)
     if (visibleLen + charWidth + 3 > width) {
       result += "..."
       result += "\x1b[0m"
@@ -62,7 +62,8 @@ export function drawCard(
   const borderStyle = options.borderStyle ?? "single"
   const minWidth = options.minWidth ?? 60
   const maxContentLength = lines.reduce((max, line) => Math.max(max, displayWidth(line)), 0)
-  const headerMinLength = title.length + 8
+  const titledHeader = ` [${title}] `
+  const headerMinLength = displayWidth(titledHeader) + 4
   const columns = Math.max(
     minWidth,
     Math.min(
@@ -78,10 +79,7 @@ export function drawCard(
   }[borderStyle]
 
   const maxLineWidth = columns - 4
-  const titledHeader = ` [${title}] `
-  const headerLeft = chars.h.repeat(2)
-  const headerRight = chars.h.repeat(Math.max(0, columns - titledHeader.length - 4))
-  const topBorder = `${color}${chars.tl}${headerLeft}${titledHeader}${headerRight}${chars.tr}\x1b[0m`
+  const topBorder = drawHorizontalBorder(titledHeader, columns, chars, color)
 
   const formattedLines = lines.map((line) => {
     const visibleLength = displayWidth(line)
@@ -98,6 +96,18 @@ export function drawCard(
   return [topBorder, ...formattedLines, bottomBorder].join("\n")
 }
 
+function drawHorizontalBorder(
+  title: string,
+  columns: number,
+  chars: { tl: string; tr: string; h: string },
+  color: string,
+) {
+  const prefix = chars.h.repeat(2)
+  const usedWidth = 1 + displayWidth(prefix) + displayWidth(title) + 1
+  const suffix = chars.h.repeat(Math.max(0, columns - usedWidth))
+  return `${color}${chars.tl}${prefix}${title}${suffix}${chars.tr}\x1b[0m`
+}
+
 export function formatDuration(durationMs: number) {
   if (!Number.isFinite(durationMs) || durationMs < 0) return "0s"
   if (durationMs < 1_000) return `${Math.max(1, Math.round(durationMs))}ms`
@@ -108,7 +118,7 @@ export function formatDuration(durationMs: number) {
 
 function isWideCharacter(char: string) {
   const code = char.codePointAt(0) ?? 0
-  return code >= 0x1100 && (
+  return isEmojiCharacter(char) || (code >= 0x1100 && (
     code <= 0x115f ||
     code === 0x2329 ||
     code === 0x232a ||
@@ -119,5 +129,28 @@ function isWideCharacter(char: string) {
     (code >= 0xfe30 && code <= 0xfe6f) ||
     (code >= 0xff00 && code <= 0xff60) ||
     (code >= 0xffe0 && code <= 0xffe6)
+  ))
+}
+
+function charDisplayWidth(char: string) {
+  if (isZeroWidthCharacter(char)) return 0
+  return isWideCharacter(char) ? 2 : 1
+}
+
+function isZeroWidthCharacter(char: string) {
+  const code = char.codePointAt(0) ?? 0
+  return (
+    code === 0x200d || // zero-width joiner
+    code === 0xfe0e || // text presentation selector
+    code === 0xfe0f || // emoji presentation selector
+    (code >= 0x0300 && code <= 0x036f) ||
+    (code >= 0x1ab0 && code <= 0x1aff) ||
+    (code >= 0x1dc0 && code <= 0x1dff) ||
+    (code >= 0x20d0 && code <= 0x20ff) ||
+    (code >= 0xfe20 && code <= 0xfe2f)
   )
+}
+
+function isEmojiCharacter(char: string) {
+  return /\p{Extended_Pictographic}/u.test(char)
 }

@@ -205,12 +205,12 @@ function isSafeSkillName(value: string) {
 }
 
 function isAutoApprovedReadonlyBashPattern(pattern: string) {
-  return /^bash:readonly:(git:(?:status|diff|log)|pwd|ls|find|wc):/.test(pattern)
+  return /^bash:readonly:(git:(?:status|diff|log)|pwd|ls|find|wc|cat|rg|grep|sed|curl:(?:get|head)):/i.test(pattern)
 }
 
 function containsSensitivePath(value: string) {
   const normalized = value.replaceAll("\\", "/").toLowerCase()
-  return /(^|[/\s"'=])\.env(?:[.\s"'=/]|$)/.test(normalized) || /(^|[/\s"'=])secrets?(?:[/\s"'=]|$)/.test(normalized)
+  return /(^|[/\s"'=])\.env(?:[^/\s"'=]*)?(?:[/\s"'=]|$)/.test(normalized) || /(^|[/\s"'=])secrets?(?:[/\s"'=]|$)/.test(normalized)
 }
 
 export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[] {
@@ -234,7 +234,7 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "sandbox_bypass", pattern: "*", action: "ask" },
     { permission: "skill", pattern: "*", action: "ask" },
     { permission: "mcp", pattern: "*", action: "allow" },
-    { permission: "web_search", pattern: "*", action: "ask" },
+    { permission: "web_search", pattern: "*", action: "allow" },
     { permission: "plan_exit", pattern: "*", action: mode === "plan" ? "allow" : "deny" },
   ]
   if (mode === "build") return base
