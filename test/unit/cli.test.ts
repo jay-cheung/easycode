@@ -89,6 +89,22 @@ describe("cli env loading", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("can skip global easycode env loading explicitly", async () => {
+    const root = await tmpdir()
+    const originalFlag = process.env.EASYCODE_DISABLE_GLOBAL_ENV
+    try {
+      process.env.EASYCODE_DISABLE_GLOBAL_ENV = "1"
+      const env: Record<string, string | undefined> = {}
+      expect(await loadEnvFile(root, env)).toBe(0)
+      expect(env.DEEPSEEK_API_KEY).toBeUndefined()
+      expect(env.OPENAI_API_KEY).toBeUndefined()
+    } finally {
+      if (originalFlag === undefined) delete process.env.EASYCODE_DISABLE_GLOBAL_ENV
+      else process.env.EASYCODE_DISABLE_GLOBAL_ENV = originalFlag
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("detects missing provider environment", () => {
     expect(needsEnvSetup(undefined, {})).toBe(true)
     expect(needsEnvSetup("fake", {})).toBe(false)

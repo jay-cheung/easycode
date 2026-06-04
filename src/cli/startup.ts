@@ -69,7 +69,7 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
   const localPath = path.join(root, ".env")
   let loaded = 0
 
-  if (process.env.NODE_ENV !== "test") {
+  if (process.env.NODE_ENV !== "test" && process.env.EASYCODE_DISABLE_GLOBAL_ENV !== "1") {
     const globalPath = globalEasycodeEnvPath()
     const globalFile = Bun.file(globalPath)
     if (await globalFile.exists()) {

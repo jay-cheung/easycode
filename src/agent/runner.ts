@@ -396,6 +396,7 @@ export class AgentRunner {
     if (!this.onEvent || this.providerProgressIntervalMs <= 0) return () => {}
     const startedAt = Date.now()
     let stopped = false
+    this.onEvent?.({ type: "provider_progress", provider: this.provider.name, model: this.provider.model, elapsedMs: 0 })
     const timer = setInterval(() => {
       if (stopped) return
       this.onEvent?.({ type: "provider_progress", provider: this.provider.name, model: this.provider.model, elapsedMs: Date.now() - startedAt })

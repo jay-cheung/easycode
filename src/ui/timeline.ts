@@ -84,6 +84,7 @@ export class TimelineRenderer {
       return
     }
     if (event.type === "provider_progress") {
+      if (event.elapsedMs <= 0) return
       const model = event.model ? ` ${event.model}` : ""
       this.output.write(copy.timelineWaitingFor(this.title("thought", `${event.provider}${model}`), formatDuration(event.elapsedMs)))
       return

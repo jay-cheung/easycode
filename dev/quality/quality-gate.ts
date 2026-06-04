@@ -104,11 +104,14 @@ async function runCheck(name: QualityGateCheckName, root: string, options: Quali
 
 async function runCommandCheck(name: Extract<QualityGateCheckName, "typecheck" | "tests" | "build">, cmd: string[], cwd: string): Promise<QualityGateCheck> {
   const startedAt = Date.now()
+  const env = name === "tests"
+    ? testCommandEnv()
+    : process.env
   const proc = Bun.spawn(cmd, {
     cwd,
     stdout: "pipe",
     stderr: "pipe",
-    env: process.env,
+    env,
   })
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -128,6 +131,28 @@ async function runCommandCheck(name: Extract<QualityGateCheckName, "typecheck" |
       stderrTail: tailLines(stderr),
     },
   }
+}
+
+function testCommandEnv() {
+  const env: Record<string, string | undefined> = { ...process.env, EASYCODE_DISABLE_GLOBAL_ENV: "1" }
+  for (const key of Object.keys(env)) {
+    if (
+      key === "EASYCODE_DISABLE_GLOBAL_ENV" ||
+      key === "EASYCODE_TEST_FORCE_TTY"
+    ) {
+      continue
+    }
+    if (
+      key.startsWith("EASYCODE_") ||
+      key.startsWith("DEEPSEEK_") ||
+      key.startsWith("OPENAI_") ||
+      key.startsWith("OPENAI_COMPAT_") ||
+      key === "TAVILY_API_KEY"
+    ) {
+      delete env[key]
+    }
+  }
+  return env
 }
 
 async function evalFakeCheck(root: string): Promise<QualityGateCheck> {

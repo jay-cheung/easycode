@@ -1,5 +1,31 @@
 # Progress Log
 
+## Step 23: Immediate Provider Wait State After Tool Completion
+
+- Scope: remove the misleading “工具已完成” stall after a tool returns by surfacing the next provider-wait state immediately, without adding extra waiting spam to the timeline transcript.
+- Implementation:
+  - Updated `src/agent/runner.ts` so each provider turn emits an immediate `provider_progress` event with `elapsedMs: 0` before the timed progress loop starts.
+  - Updated `src/ui/timeline.ts` to treat that zero-elapsed wait event as status-only, so the TUI panel refreshes while the textual timeline stays quiet.
+  - Added `test/unit/runner.test.ts` to lock the event ordering after a successful `skill` tool result.
+- Verification:
+  - `bun test test/unit/runner.test.ts test/unit/tui.test.ts test/unit/timeline.test.ts`
+- Notes: this change does not alter provider/tool execution semantics; it only fixes the handoff state the user sees between tool completion and the next model turn.
+
+## Step 22: TUI Helper Extraction
+
+- Scope: execute Phase 1 of the readability roadmap by shrinking `src/ui/tui.ts` into a clearer renderer façade while preserving the existing TUI contract and timeline behavior.
+- Implementation:
+  - Added `src/ui/tui-types.ts` for shared TUI context/output types.
+  - Added `src/ui/tui-ansi.ts` for width, truncation, card, duration, and newline helpers that were previously embedded in `tui.ts`.
+  - Added `src/ui/tui-cards.ts` for configured/session/welcome/success/failure card construction.
+  - Added `src/ui/tui-status-panel.ts` for live monitor line generation and spinner-frame ownership.
+  - Reduced `src/ui/tui.ts` so it focuses on state transitions, event handling, prompt status, and output orchestration instead of also owning the full rendering helper stack.
+- Verification:
+  - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts`
+  - `bun test test/unit/cli.test.ts`
+  - `bun run gate`
+- Notes: this slice is intentionally structural; `RunUiEvent`, prompt strings, TUI interaction flow, and session/timeline wiring are intended to remain behaviorally stable.
+
 ## Step 21: Singular XML Tool-Call Fallback
 
 - Scope: recover tool execution when a model prints a single `<tool_call>...</tool_call>` wrapper instead of native tool calls, and suppress that wrapper from the visible TUI stream.
