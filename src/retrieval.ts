@@ -2,6 +2,9 @@ import path from "node:path"
 import { z } from "zod"
 import { easycodeDir } from "./easycode-path"
 import { getTlsConfig } from "./tls-config"
+import { clampLimit, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, rankResources, rankWebResults, webCitation } from "./retrieval-format"
+import { apiKeyFor, headersFor, normalizeEngine, parseEngineResults, requestFor } from "./retrieval-live"
+import { selectEngine, withImplicitDefaults } from "./retrieval-config"
 
 const webSearchEnvHint = "Set it in ~/.easycode/.env or your shell environment."
 export const tavilySetupHint = `Configure Tavily with TAVILY_API_KEY. ${webSearchEnvHint}`
@@ -119,7 +122,7 @@ export class WebSearchService {
   async search(query: string, limit = 5, options: { engine?: string; live?: boolean; signal?: AbortSignal } = {}): Promise<WebSearchResponse> {
     const file = Bun.file(this.configPath)
     const loaded = (await file.exists()) ? WebSearchConfig.parse(JSON.parse(await file.text())) : WebSearchConfig.parse({})
-    const config = withImplicitDefaults(loaded, this.options.env ?? process.env)
+    const config = withImplicitDefaults(loaded, this.options.env ?? process.env, WebSearchEngine.parse)
     const selectedEngineName = options.engine ?? config.defaultEngine
     const engine = selectEngine(config.engines, selectedEngineName)
     if (options.engine && !engine) throw new Error(`web search engine not found: ${options.engine}`)
@@ -140,10 +143,10 @@ export class WebSearchService {
   }
 
   private async searchLive(engine: WebSearchEngine, query: string, limit: number, signal?: AbortSignal) {
-    const normalized = normalizeEngine(engine)
-    const apiKey = apiKeyFor(normalized, this.options.env ?? process.env)
+    const normalized = normalizeEngine(engine, tavilySetupHint)
+    const apiKey = apiKeyFor(normalized, this.options.env ?? process.env, webSearchEnvHint)
     const headers = headersFor(normalized, apiKey)
-    const request = requestFor(normalized, query, clampLimit(limit), headers, apiKey, signal)
+    const request = requestFor(normalized, query, clampLimit(limit), headers, signal)
     const fetcher = this.options.fetch ?? fetch
 
     const tlsConfig = getTlsConfig()
@@ -159,106 +162,6 @@ export class WebSearchService {
     } finally {
       request.cleanup()
     }
-  }
-}
-
-export function mcpCitation(resource: McpResource): CitedSource {
-  return {
-    type: "mcp",
-    id: `${resource.server}:${resource.uri}`,
-    title: resource.title,
-    uri: resource.uri,
-    retrievedAt: new Date().toISOString(),
-  }
-}
-
-export function webCitation(result: WebSearchResult): CitedSource {
-  return {
-    type: "web",
-    id: result.url,
-    title: result.title,
-    url: result.url,
-    retrievedAt: result.retrievedAt ?? new Date().toISOString(),
-  }
-}
-
-export function formatMcpResources(resources: McpResource[]) {
-  if (resources.length === 0) return "No MCP resources found."
-  return resources.map((resource, index) => {
-    const description = resource.description ? `\nsummary: ${resource.description}` : ""
-    return `[mcp:${index + 1}] ${resource.title}\nserver: ${resource.server}\nuri: ${resource.uri}${description}`
-  }).join("\n\n")
-}
-
-export function formatMcpResource(resource: McpResource) {
-  const description = resource.description ? `\nsummary: ${resource.description}` : ""
-  const text = resource.text ? `\n\n${resource.text}` : ""
-  return `[mcp] ${resource.title}\nserver: ${resource.server}\nuri: ${resource.uri}${description}${text}`
-}
-
-export function formatWebResults(results: WebSearchResult[]) {
-  if (results.length === 0) return "No web search results found."
-  return results.map((result, index) => {
-    const retrievedAt = result.retrievedAt ? `\nretrievedAt: ${result.retrievedAt}` : ""
-    const source = result.source ? `\nsource: ${result.source}` : ""
-    return `[web:${index + 1}] ${result.title}\nurl: ${result.url}${source}${retrievedAt}\nsnippet: ${result.snippet}`
-  }).join("\n\n")
-}
-
-function rankResources(resources: McpResource[], query: string | undefined) {
-  if (!query?.trim()) return resources
-  const terms = queryTerms(query)
-  return resources.map((resource) => ({ resource, score: scoreText(`${resource.title} ${resource.description ?? ""} ${resource.text ?? ""}`, terms) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.resource.title.localeCompare(b.resource.title))
-    .map((item) => item.resource)
-}
-
-function rankWebResults(results: WebSearchResult[], query: string) {
-  const terms = queryTerms(query)
-  return results.map((result) => ({ result, score: scoreText(`${result.title} ${result.snippet} ${result.url}`, terms) }))
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score || a.result.title.localeCompare(b.result.title))
-    .map((item) => item.result)
-}
-
-function selectEngine(engines: WebSearchEngine[], name: string | undefined) {
-  if (!name) return undefined
-  return engines.find((engine) => engine.name === name)
-}
-
-function withImplicitDefaults(config: z.infer<typeof WebSearchConfig>, env: Record<string, string | undefined>) {
-  const tavilyConfigured = Boolean(env.TAVILY_API_KEY)
-  const existingTavily = config.engines.find((engine) => engine.name === "tavily")
-  const engines = [...config.engines]
-  if (!existingTavily && tavilyConfigured) {
-    engines.push(WebSearchEngine.parse({
-      name: "tavily",
-      type: "tavily",
-      apiKeyEnv: "TAVILY_API_KEY",
-    }))
-  }
-  return {
-    ...config,
-    defaultEngine: config.defaultEngine ?? (engines.some((engine) => engine.name === "tavily") ? "tavily" : undefined),
-    engines,
-  }
-}
-
-function normalizeEngine(engine: WebSearchEngine): Required<Pick<WebSearchEngine, "name" | "type" | "method" | "endpoint" | "queryParam" | "limitParam" | "resultsPath" | "titlePath" | "urlPath" | "snippetPath">> & WebSearchEngine {
-  if (engine.type !== "tavily") {
-    throw new Error(`web search engine ${engine.name} type ${engine.type} is not supported; only tavily is available. ${tavilySetupHint}`)
-  }
-  return {
-    ...engine,
-    endpoint: engine.endpoint ?? "https://api.tavily.com/search",
-    method: engine.method ?? "POST",
-    queryParam: engine.queryParam ?? "query",
-    limitParam: engine.limitParam ?? "max_results",
-    resultsPath: engine.resultsPath ?? "results",
-    titlePath: engine.titlePath ?? "title",
-    urlPath: engine.urlPath ?? "url",
-    snippetPath: engine.snippetPath ?? "content",
   }
 }
 
@@ -279,99 +182,4 @@ export async function hasConfiguredWebSearch(root: string, env: Record<string, s
   }
 }
 
-function apiKeyFor(engine: WebSearchEngine, env: Record<string, string | undefined>) {
-  if (engine.apiKey) return engine.apiKey
-  if (!engine.apiKeyEnv) return undefined
-  const value = env[engine.apiKeyEnv]
-  if (!value) throw new Error(`web search engine ${engine.name} requires ${engine.apiKeyEnv}. ${webSearchEnvHint}`)
-  return value
-}
-
-function headersFor(engine: WebSearchEngine, apiKey: string | undefined) {
-  const headers: Record<string, string> = { Accept: "application/json", ...engine.headers }
-  if (!apiKey) return substituteHeaderTokens(headers, "")
-  const headerName = engine.apiKeyHeader ?? "Authorization"
-  if (headerName) headers[headerName] = `${engine.apiKeyPrefix ?? "Bearer "}${apiKey}`
-  return substituteHeaderTokens(headers, apiKey)
-}
-
-function substituteHeaderTokens(headers: Record<string, string>, apiKey: string) {
-  return Object.fromEntries(Object.entries(headers).map(([key, value]) => [key, value.replaceAll("${API_KEY}", apiKey)]))
-}
-
-function requestFor(engine: ReturnType<typeof normalizeEngine>, query: string, limit: number, headers: Record<string, string>, apiKey: string | undefined, signal: AbortSignal | undefined) {
-  const params = { ...engine.extraParams, [engine.queryParam]: query, [engine.limitParam]: limit }
-  const timeout = timeoutSignal(signal, engine.timeoutMs)
-  if (engine.method === "POST") {
-    return {
-      url: engine.endpoint,
-      init: { method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(params), signal: timeout.signal },
-      cleanup: timeout.cleanup,
-    }
-  }
-  const url = new URL(engine.endpoint)
-  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value))
-  return { url, init: { method: "GET", headers, signal: timeout.signal }, cleanup: timeout.cleanup }
-}
-
-function parseEngineResults(payload: unknown, engine: ReturnType<typeof normalizeEngine>) {
-  const rawResults = readPath(payload, engine.resultsPath)
-  if (!Array.isArray(rawResults)) return [] as WebSearchResult[]
-  const retrievedAt = new Date().toISOString()
-  return rawResults.flatMap((item) => {
-    const title = stringAt(item, engine.titlePath)
-    const url = stringAt(item, engine.urlPath)
-    const snippet = stringAt(item, engine.snippetPath)
-    if (!title || !url || !snippet) return []
-    const source = engine.sourcePath ? stringAt(item, engine.sourcePath) : hostnameFor(url)
-    return [{ title, url, snippet, source, retrievedAt }]
-  })
-}
-
-function readPath(value: unknown, dottedPath: string): unknown {
-  return dottedPath.split(".").reduce<unknown>((current, segment) => {
-    if (!current || typeof current !== "object") return undefined
-    return (current as Record<string, unknown>)[segment]
-  }, value)
-}
-
-function stringAt(value: unknown, dottedPath: string) {
-  const found = readPath(value, dottedPath)
-  return typeof found === "string" && found.trim() ? found : undefined
-}
-
-function hostnameFor(url: string) {
-  try {
-    return new URL(url).hostname
-  } catch {
-    return undefined
-  }
-}
-
-function timeoutSignal(signal: AbortSignal | undefined, timeoutMs: number | undefined) {
-  if (!timeoutMs) return { signal, cleanup: () => {} }
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const abort = () => controller.abort()
-  const cleanup = () => {
-    clearTimeout(timer)
-    signal?.removeEventListener("abort", abort)
-  }
-  signal?.addEventListener("abort", abort, { once: true })
-  controller.signal.addEventListener("abort", cleanup, { once: true })
-  return { signal: controller.signal, cleanup }
-}
-
-function queryTerms(query: string) {
-  return query.toLowerCase().split(/[^a-z0-9\u4e00-\u9fa5_.-]+/).filter(Boolean)
-}
-
-function scoreText(text: string, terms: string[]) {
-  const lower = text.toLowerCase()
-  return terms.reduce((score, term) => score + (lower.includes(term) ? 1 : 0), 0)
-}
-
-function clampLimit(limit: number) {
-  if (!Number.isFinite(limit)) return 5
-  return Math.max(1, Math.min(20, Math.round(limit)))
-}
+export { clampLimit, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, webCitation }

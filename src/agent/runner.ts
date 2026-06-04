@@ -1,63 +1,35 @@
-import { ContextManager, estimateTextTokens, type ContextCompactionSnapshot, type ContextManagerLike, type LedgerRecord } from "../context"
-import { createMessage, reasoningPart, textPart, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type Message, type MessagePart, type ProviderInputMessage, type ToolCall } from "../message"
+import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike } from "../context"
+import { userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../message"
 import { defaultPermissionRules, PermissionService } from "../permission"
-import { createProvider, ProviderError, StreamXmlFilter, textToolProtocolOutputToProviderEvents, type Provider, type ProviderName } from "../provider"
+import { createProvider, type Provider, type ProviderName } from "../provider"
 import { Sandbox } from "../sandbox"
 import { SkillService, type SkillServiceLike } from "../skill"
 import { InstructionService, type InstructionServiceLike } from "../instruction"
-import { createBuiltinRegistry, type ToolDef, type ToolRegistryLike } from "../tool"
-import { CliCodeNavigator } from "../tool/code-navigator"
+import { createBuiltinRegistry, type ToolRegistryLike } from "../tool"
 import { createRunAspect, type RunAspect } from "../instrumentation"
 import type { Logger } from "../logger"
-import { buildCompactPrompt, extractCompactSummary } from "../context/prompt"
 import * as protocol from "./protocol"
-import type { PermissionRule } from "../permission"
 import { defaultSessionSettings, type SessionSettings } from "../settings"
 import type { RunUiEvent } from "../ui/timeline"
 import { createAgent } from "./protocol"
 import type { Agent, AgentRunResult, AgentRunnerOptions } from "./types"
-import { createProviderMetrics, finalizeProviderMetrics, finishProviderMetricCall, observeProviderMetricEvent, startProviderMetricCall, type ProviderMetricsAccumulator } from "./metrics"
-import { ledgerRecord, toolScopeFiles } from "./ledger"
-import { evaluateHypothesisTurn, normalizeHypothesis, type ActiveHypothesis, type HypothesisViolation } from "./hypothesis"
+import { createProviderMetrics, finalizeProviderMetrics, type ProviderMetricsAccumulator } from "./metrics"
+import { evaluateHypothesisTurn, type ActiveHypothesis, type HypothesisViolation } from "./hypothesis"
+import { emitProviderTurnEvents, runProviderTurnStream, type ProviderTurnInput, type ProviderTurnResult } from "./provider-turn"
+import { createSummaryTask, runSummarySubagentTask, type BackgroundAgentTask } from "./summary-subagent"
+import { refreshRepoMapCache } from "./repo-map-refresh"
+import { emitToolResultEvent, recordToolOutcome as recordToolOutcomeSideEffect, runToolCall } from "./tool-execution"
+import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypothesisCorrectionMessage, recordHypothesisViolationState, recordRunIntentState, truncateForLedger, updateActiveHypothesisState } from "./hypothesis-state"
+import { effectiveModeForPrompt, markSkillLoadedInSettings, pendingSelectedSkillsForSettings, permissionServiceForMode, selectedSkillsForSettings } from "./runner-support"
+import { runValidatedProviderTurnLoop } from "./validated-provider-turn"
+import { appendOutput, assistantMessage, compactPrompt, explorationSummaryReadinessMessage, explorationSummaryStep, summaryLanguageHint } from "./runner-helpers"
+import { createCancelledRunResult } from "./runner-outcomes"
+import { prepareProviderTurnRequest } from "./runner-turn-prep"
+import { runFailureText } from "./failure-policy"
+import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
-
-type BackgroundAgentTask = {
-  kind: "summary"
-  id: number
-  startedAt: number
-  agent: Agent
-  snapshot: ContextCompactionSnapshot
-  promise: Promise<void>
-}
-
-type ProviderTurnResult = {
-  text: string
-  reasoningText: string
-  toolCalls: ToolCall[]
-  failureText?: string
-  cancelledOutput?: string
-  replayEvents: Array<
-    | { type: "reasoning_delta"; text: string }
-    | { type: "text_delta"; text: string }
-    | { type: "tool_call"; call: ToolCall }
-    | { type: "failure"; text: string }
-  >
-}
-
-type ProviderTurnInput = {
-  agent: Agent
-  prompt: string
-  messages: Message[]
-  providerMessages: ProviderInputMessage[]
-  tools: ToolDef[]
-  signal?: AbortSignal
-  providerMetrics?: ProviderMetricsAccumulator
-  emitDeltas?: boolean
-  observeContextUsage?: boolean
-}
-
 
 export class AgentRunner {
   readonly root: string
@@ -142,19 +114,26 @@ export class AgentRunner {
         throw error
       }
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-      const plan = this.context.planRequest({ step, agent, instructions, skills, selectedSkills, pendingSkillLoads: this.pendingSelectedSkills(selectedSkills), tools })
-      const shouldCheckSummaryReadiness = usedTools.length > 0 && step >= explorationSummaryStep(this.maxSteps)
-      const providerMessages = shouldCheckSummaryReadiness
-        ? [...plan.providerMessages, ...this.activeHypothesisMessages(), explorationSummaryReadinessMessage(step + 1, this.maxSteps)]
-        : [...plan.providerMessages, ...this.activeHypothesisMessages()]
-      const availableTools = shouldCheckSummaryReadiness ? [] : tools
+      const preparedTurn = prepareProviderTurnRequest({
+        context: this.context,
+        step,
+        maxSteps: this.maxSteps,
+        agent,
+        instructions,
+        skills,
+        selectedSkills,
+        pendingSkillLoads: this.pendingSelectedSkills(selectedSkills),
+        tools,
+        usedTools,
+        activeHypothesisMessages: this.activeHypothesisMessages(),
+      })
       state = this.aspect.transition("streaming", { step: step + 1 })
       const turn = await this.runValidatedProviderTurn({
         agent,
         prompt,
         messages: this.context.state.messages,
-        providerMessages,
-        tools: availableTools,
+        providerMessages: preparedTurn.providerMessages,
+        tools: preparedTurn.availableTools,
         signal: input.signal,
         providerMetrics,
       })
@@ -183,18 +162,26 @@ export class AgentRunner {
       for (const toolCall of turn.toolCalls) {
         usedTools.push(toolCall.name)
         state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
-        const result = await this.runTool(toolCall, effectiveMode, input.signal)
+        const result = await runToolCall({
+          registry: this.registry,
+          sandbox: this.sandbox,
+          permission: this.permission,
+          permissionFor: (mode) => this.permissionFor(mode),
+          skills: this.skills,
+          context: this.context,
+          onEvent: this.onEvent,
+          toolProgressIntervalMs: this.toolProgressIntervalMs,
+        }, toolCall, effectiveMode, input.signal)
         if (toolCall.name === "skill" && result.metadata.status === "succeeded") this.markSkillLoaded(toolCall.input)
         this.recordToolOutcome(toolCall, result, prompt)
         this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
         this.noteExternalEvidence()
-        this.onEvent?.({ type: "tool_result", callID: toolCall.id, toolName: toolCall.name, title: result.title, status: String(result.metadata.status ?? "failed"), output: result.output, durationMs: numericMetadata(result.metadata.durationMs) })
+        emitToolResultEvent({ onEvent: this.onEvent }, toolCall, result)
         if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
         if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
           const output = result.output
           const displayText = protocol.stripPlanTags(result.output)
-          this.onEvent?.({ type: "text_delta", text: displayText })
-          this.onTextDelta?.(displayText)
+          emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
           this.hasProposedPlan = true
           this.context.add(assistantMessage(reasoningTranscript, output))
           state = this.aspect.transition("completed", { usedTools })
@@ -215,206 +202,49 @@ export class AgentRunner {
   }
 
   private async runProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
-    const textChunks: string[] = []
-    const reasoningChunks: string[] = []
-    const toolCalls: ToolCall[] = []
-    const replayEvents: ProviderTurnResult["replayEvents"] = []
-    const tools = input.agent.tools === "none" ? [] : input.tools
-    const emitDeltas = input.emitDeltas ?? true
-    const observeContextUsage = input.observeContextUsage ?? true
-    let failureText: string | undefined
-    const stopProviderProgress = this.startProviderProgressTimer()
-    const metricCall = startProviderMetricCall(input.providerMetrics)
-    if (input.providerMetrics && this.onEvent) {
-      this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
-    }
-    const currentText = () => textChunks.join("")
-    const currentReasoning = () => reasoningChunks.join("")
-    const xmlFilter = new StreamXmlFilter()
-    try {
-      for await (const event of this.provider.stream({ mode: input.agent.mode, prompt: input.prompt, messages: input.messages, providerMessages: input.providerMessages, tools, signal: input.signal })) {
-        observeProviderMetricEvent(input.providerMetrics, metricCall, event)
-        if (event.type === "usage" && input.providerMetrics && this.onEvent) {
-          this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
-        }
-        if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
-        if (event.type === "reasoning_delta") {
-          stopProviderProgress()
-          reasoningChunks.push(event.text)
-          replayEvents.push({ type: "reasoning_delta", text: event.text })
-          if (emitDeltas) {
-            this.onEvent?.({ type: "reasoning_delta", text: event.text })
-            this.onTextDelta?.(event.text)
-          }
-        }
-        if (event.type === "text_delta") {
-          stopProviderProgress()
-          textChunks.push(event.text)
-          replayEvents.push({ type: "text_delta", text: event.text })
-          if (emitDeltas) {
-            const safeText = xmlFilter.feed(event.text)
-            if (safeText) {
-              this.onEvent?.({ type: "text_delta", text: safeText })
-              this.onTextDelta?.(safeText)
-            }
-          }
-        }
-        if (event.type === "failure") {
-          stopProviderProgress()
-          failureText = runFailureText(event.error.output || event.error.message, "provider_error")
-          replayEvents.push({ type: "failure", text: failureText })
-          if (emitDeltas) {
-            this.onEvent?.({ type: "failure", text: failureText })
-            this.onTextDelta?.(failureText)
-          }
-        }
-        if (event.type === "tool_call") {
-          stopProviderProgress()
-          toolCalls.push(event.call)
-          replayEvents.push({ type: "tool_call", call: event.call })
-          if (emitDeltas) this.onEvent?.({ type: "tool_call", call: event.call })
-        }
-        if (event.type === "usage" && observeContextUsage) this.context.observeUsage(event)
-      }
-      const leftover = xmlFilter.flush()
-      if (emitDeltas && leftover) {
-        this.onEvent?.({ type: "text_delta", text: leftover })
-        this.onTextDelta?.(leftover)
-      }
-      if (leftover) replayEvents.push({ type: "text_delta", text: leftover })
-      return this.extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, replayEvents }, emitDeltas)
-    } catch (error) {
-      if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
-      if (!(error instanceof ProviderError)) throw error
-      const failureText = runFailureText(providerFailureText(error), "provider_error")
-      replayEvents.push({ type: "failure", text: failureText })
-      if (emitDeltas) this.onEvent?.({ type: "failure", text: failureText })
-      return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, replayEvents }
-    } finally {
-      finishProviderMetricCall(input.providerMetrics, metricCall)
-      stopProviderProgress()
-      if (input.providerMetrics && this.onEvent) {
-        this.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
-      }
-    }
-  }
-
-  private extractFallbackToolCalls(result: ProviderTurnResult, emitDeltas: boolean): ProviderTurnResult {
-    if (result.toolCalls.length > 0 || !result.text || result.failureText || result.cancelledOutput) return result
-    const events = textToolProtocolOutputToProviderEvents(result.text)
-    const extractedCalls = events.filter((e): e is { type: "tool_call"; call: ToolCall } => e.type === "tool_call").map((e) => e.call)
-    if (extractedCalls.length === 0) return result
-    const textParts = events.filter((e): e is { type: "text_delta"; text: string } => e.type === "text_delta").map((e) => e.text)
-    const replayEvents: ProviderTurnResult["replayEvents"] = [...result.replayEvents.filter((event) => event.type === "reasoning_delta")]
-    for (const event of events) {
-      if (event.type === "text_delta") replayEvents.push({ type: "text_delta", text: event.text })
-      if (event.type === "tool_call") replayEvents.push({ type: "tool_call", call: event.call })
-    }
-    if (emitDeltas) {
-      for (const call of extractedCalls) this.onEvent?.({ type: "tool_call", call })
-    }
-    return { ...result, text: textParts.join(""), toolCalls: extractedCalls, replayEvents }
+    return runProviderTurnStream(
+      {
+        provider: this.provider,
+        providerProgressIntervalMs: this.providerProgressIntervalMs,
+        onEvent: this.onEvent,
+        onTextDelta: this.onTextDelta,
+        onUsage: (event) => this.context.observeUsage(event),
+      },
+      input,
+      (text) => runFailureText(text, "provider_error"),
+    )
   }
 
   private async runValidatedProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
-    let correction: string | undefined
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const providerMessages = correction ? [...input.providerMessages, { role: "system" as const, content: correction }] : input.providerMessages
-      const turn = await this.runProviderTurn({ ...input, providerMessages, emitDeltas: false })
-      const validation = evaluateHypothesisTurn({
-        reasoningText: turn.reasoningText,
-        text: turn.text,
-        toolCallCount: turn.toolCalls.length,
+    return runValidatedProviderTurnLoop(
+      {
+        runProviderTurn: (nextInput) => this.runProviderTurn(nextInput),
+        emitProviderTurn: (turn) => this.emitProviderTurn(turn),
+        updateActiveHypothesis: (summary, normalized) => this.updateActiveHypothesis(summary, normalized),
+        recordHypothesisViolation: (violation) => this.recordHypothesisViolation(violation),
+        hypothesisCorrectionMessage,
         activeHypothesis: this.activeHypothesis,
         evidenceRevision: this.evidenceRevision,
-      })
-      if (!validation.violation) {
-        if (validation.nextHypothesis) this.updateActiveHypothesis(validation.nextHypothesis.summary, validation.nextHypothesis.normalized)
-        this.emitProviderTurn(turn)
-        return turn
-      }
-      this.recordHypothesisViolation(validation.violation)
-      correction = hypothesisCorrectionMessage(validation.violation, this.activeHypothesis)
-    }
-    const failureText = runFailureText("Hypothesis drift blocked. Keep the current diagnosis or cite new evidence before changing it.", "provider_error")
-    const failedTurn: ProviderTurnResult = { text: "", reasoningText: "", toolCalls: [], failureText, replayEvents: [{ type: "failure", text: failureText }] }
-    this.emitProviderTurn(failedTurn)
-    return failedTurn
+        failureText: (text) => runFailureText(text, "provider_error"),
+      },
+      input,
+    )
   }
 
   private emitProviderTurn(turn: ProviderTurnResult) {
-    for (const event of turn.replayEvents) {
-      if (event.type === "reasoning_delta") {
-        this.onEvent?.({ type: "reasoning_delta", text: event.text })
-        this.onTextDelta?.(event.text)
-        continue
-      }
-      if (event.type === "text_delta") {
-        this.onEvent?.({ type: "text_delta", text: event.text })
-        this.onTextDelta?.(event.text)
-        continue
-      }
-      if (event.type === "tool_call") {
-        this.onEvent?.({ type: "tool_call", call: event.call })
-        continue
-      }
-      this.onEvent?.({ type: "failure", text: event.text })
-      this.onTextDelta?.(event.text)
-    }
-  }
-
-  private async runTool(call: ToolCall, mode: AgentMode, signal?: AbortSignal) {
-    let progressTimer: ReturnType<typeof setInterval> | undefined
-    try {
-      return await this.registry.run(call.name, call.input, {
-        agentMode: mode,
-        sandbox: this.sandbox,
-        permission: this.permissionFor(mode),
-        skills: this.skills,
-        messages: this.context.state.messages,
-        context: this.context,
-        signal,
-        onExecuteStart: () => {
-          progressTimer = this.startToolProgressTimer(call, Date.now())
-        },
-      })
-    } catch (error) {
-      return { title: call.name, output: error instanceof Error ? error.message : String(error), metadata: { status: "failed", error: error instanceof Error ? error.name : "UnknownError" } }
-    } finally {
-      if (progressTimer) clearInterval(progressTimer)
-    }
-  }
-
-  private startToolProgressTimer(call: ToolCall, startedAt: number) {
-    if (!this.onEvent || call.name !== "bash" || this.toolProgressIntervalMs <= 0) return undefined
-    return setInterval(() => {
-      this.onEvent?.({ type: "tool_progress", callID: call.id, toolName: call.name, elapsedMs: Date.now() - startedAt })
-    }, this.toolProgressIntervalMs)
-  }
-
-  private startProviderProgressTimer() {
-    if (!this.onEvent || this.providerProgressIntervalMs <= 0) return () => {}
-    const startedAt = Date.now()
-    let stopped = false
-    this.onEvent?.({ type: "provider_progress", provider: this.provider.name, model: this.provider.model, elapsedMs: 0 })
-    const timer = setInterval(() => {
-      if (stopped) return
-      this.onEvent?.({ type: "provider_progress", provider: this.provider.name, model: this.provider.model, elapsedMs: Date.now() - startedAt })
-    }, this.providerProgressIntervalMs)
-    return () => {
-      if (stopped) return
-      stopped = true
-      clearInterval(timer)
-    }
+    emitProviderTurnEvents(turn, { onEvent: this.onEvent, onTextDelta: this.onTextDelta })
   }
 
   private cancelledResult(reasoningTranscript: string, usedTools: string[], output = "Run cancelled by user.", providerMetrics?: ProviderMetricsAccumulator) {
-    const text = appendOutput(output.trim(), "Continue with another message when ready.")
-    this.onEvent?.({ type: "failure", text })
-    this.context.add(assistantMessage(reasoningTranscript, text))
-    const state = this.aspect.transition("cancelled", { usedTools })
-    this.emitRunDone("cancelled", providerMetrics)
-    return { status: "cancelled" as const, failureReason: "cancelled" as const, text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+    return createCancelledRunResult({
+      aspect: this.aspect,
+      context: this.context,
+      onEvent: this.onEvent,
+      reasoningTranscript,
+      usedTools,
+      output,
+      providerMetrics,
+    })
   }
 
   private async compactContext(providerMetrics?: ProviderMetricsAccumulator) {
@@ -429,14 +259,7 @@ export class AgentRunner {
   }
 
   private startSummarySubagent(snapshot: ContextCompactionSnapshot, providerMetrics?: ProviderMetricsAccumulator) {
-    const task: BackgroundAgentTask = {
-      kind: "summary",
-      id: this.nextSummarySubagentID++,
-      startedAt: Date.now(),
-      agent: createAgent("summary"),
-      snapshot,
-      promise: Promise.resolve(),
-    }
+    const task = createSummaryTask(this.nextSummarySubagentID++, createAgent("summary"), snapshot)
     this.summarySubagent = task
     this.onEvent?.({ type: "context_compaction", status: "started", inputMessages: snapshot.providerMessages.length })
     task.promise = this.runSummarySubagent(task, providerMetrics)
@@ -444,183 +267,64 @@ export class AgentRunner {
   }
 
   private async runSummarySubagent(task: BackgroundAgentTask, providerMetrics?: ProviderMetricsAccumulator) {
-    const providerMessages = [
-      { role: "system" as const, content: `${task.agent.systemPrompt}\n\nMode: ${task.agent.mode}\nTools: none` },
-      {
-        role: "user" as const,
-        content: compactPrompt(task.snapshot.providerMessages, {
-          tokenBudget: this.context.strategyState.dynamicSummaryTokenBudget,
-          preferredLanguage: summaryLanguageHint(this.context, task.snapshot.providerMessages),
-          activeHypothesis: this.activeHypothesis?.summary,
-        }),
-      },
-    ]
     try {
-      const turn = await this.runProviderTurn({
-        agent: task.agent,
-        prompt: "Summarize conversation for context compaction",
-        messages: [],
-        providerMessages,
-        tools: [],
-        providerMetrics,
-        emitDeltas: false,
-        observeContextUsage: false,
-      })
-      if (turn.failureText) throw new Error(turn.failureText)
-      const extracted = extractCompactSummary(turn.text)
-      const compacted = this.context.compactSnapshot(extracted, task.snapshot)
-      if (compacted) {
-        const storedSummary = this.context.state.summary ?? extracted
-        await this.onBackgroundContextUpdate?.()
-        this.onEvent?.({
-          type: "context_compaction",
-          status: "completed",
-          elapsedMs: Date.now() - task.startedAt,
-          summaryChars: storedSummary.length,
-          summaryTokens: estimateTextTokens(storedSummary),
-        })
-      }
-    } catch (error) {
-      this.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: error instanceof Error ? error.message : String(error) })
+      await runSummarySubagentTask({
+        context: this.context,
+        onEvent: this.onEvent,
+        onBackgroundContextUpdate: this.onBackgroundContextUpdate,
+        activeHypothesisSummary: this.activeHypothesis?.summary,
+        compactPrompt,
+        summaryLanguageHint,
+        runProviderTurn: (input) => this.runProviderTurn({
+          ...input,
+          messages: [],
+          tools: [],
+        }),
+      }, task, providerMetrics)
     } finally {
       if (this.summarySubagent?.id === task.id) this.summarySubagent = undefined
     }
   }
 
   private emitRunDone(status: string, providerMetrics: ProviderMetricsAccumulator | undefined) {
-    if (providerMetrics && providerMetrics.calls > 0) this.onEvent?.({ type: "provider_metrics", metrics: finalizeProviderMetrics(providerMetrics) })
-    this.onEvent?.({ type: "run_done", status })
+    emitRunDoneEvent(this.onEvent, status, providerMetrics)
   }
 
   private async selectedSkills() {
-    const selected = this.settings.selectedSkills ?? []
-    if (selected.length === 0) return []
-    const skills = await this.skills.available()
-    const nameSet = new Set(selected)
-    const idSet = new Set(selected)
-    // Match by id first, then by name (backward compat with old name-based settings)
-    const matched = skills.filter((s) => idSet.has(s.id) || nameSet.has(s.name))
-    // Load full content for matched skills
-    return (await Promise.all(matched.map((s) => this.skills.load(s.id)))).filter((s): s is NonNullable<typeof s> => Boolean(s))
+    return selectedSkillsForSettings(this.skills, this.settings)
   }
 
   private pendingSelectedSkills(selectedSkills: Awaited<ReturnType<AgentRunner["selectedSkills"]>>) {
-    const pending = new Set(this.settings.pendingSkillLoads ?? [])
-    if (pending.size === 0) return []
-    return selectedSkills.filter((skill) => pending.has(skill.id) || pending.has(skill.name))
+    return pendingSelectedSkillsForSettings(this.settings, selectedSkills)
   }
 
   private markSkillLoaded(input: unknown) {
-    if (!input || typeof input !== "object") return
-    const name = (input as { name?: unknown }).name
-    if (typeof name !== "string") return
-    this.settings.pendingSkillLoads = (this.settings.pendingSkillLoads ?? []).filter((s) => s !== name)
+    markSkillLoadedInSettings(this.settings, input)
   }
 
   private effectiveMode(prompt: string, mode: AgentMode): AgentMode {
-    if (mode !== "plan") return mode
-    if (!isPlanApproval(prompt)) return mode
-    return this.hasProposedPlan ? "build" : mode
+    return effectiveModeForPrompt(prompt, mode, this.hasProposedPlan)
   }
 
   private permissionFor(mode: AgentMode) {
-    const rules = defaultPermissionRules(mode)
-    if (samePermissionRules(this.permission.rules, rules)) return this.permission
-    return this.permission.withRules(rules)
+    return permissionServiceForMode(this.permission, mode)
   }
 
   private recordRunIntent(prompt: string) {
-    const normalized = compactLine(prompt)
-    if (!normalized) return
-    const turn = this.context.state.messages.length
-    this.context.updateLedger({
-      current: [
-        ledgerRecord("intent", "current_user_request", truncateForLedger(normalized, 240), "current", turn, { evidence: { source: "user", messageIndex: Math.max(0, turn - 1) } }),
-        ledgerRecord("constraint", "main_objective", "complete latest request end-to-end; do not shrink scope unless user changes it.", "current", turn),
-        ledgerRecord("constraint", "efficient_tool_usage", "do not repeatedly call read or search on the same path/query; reuse previous results and trust your findings.", "current", turn),
-        ledgerRecord("constraint", "failure_recovery_rule", "after tool failure, keep objective and take nearest safe recovery.", "current", turn),
-        ledgerRecord("constraint", "full_scope_finality", "do not treat probes, subsets, or dry runs as final for full-scope requests.", "current", turn),
-        ledgerRecord("constraint", "evidence_grounding", "do not claim evidence unless it is in messages, summary, ledger, files, or tool outputs.", "current", turn),
-        ledgerRecord("constraint", "hypothesis_lock", "once a concrete diagnosis or change hypothesis is formed, keep it until new user or tool evidence justifies changing it.", "current", turn),
-      ],
-    })
+    recordRunIntentState(this.context, prompt)
   }
 
   private async refreshRepoMap(signal: AbortSignal | undefined, prompt?: string) {
-    if (signal?.aborted) return
-    const turn = this.context.state.messages.length
-    try {
-      const map = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({})
-
-      let checkpointText = `repo_map ${map.cache.hit ? "cache hit" : "refreshed"}: ${map.entries.length} files at ${map.cache.path}`
-      let dynamicMapRecord: LedgerRecord | undefined
-      let relevantFiles: number | undefined
-
-      if (prompt) {
-        const filteredMap = await new CliCodeNavigator(this.sandbox, { signal }).repoMap({ query: prompt })
-        if (filteredMap.entries.length > 0) {
-          relevantFiles = filteredMap.entries.length
-          checkpointText += ` (query-targeted subset containing ${filteredMap.entries.length} relevant files)`
-          dynamicMapRecord = ledgerRecord(
-            "checkpoint",
-            "query_targeted_repo_map",
-            `query-targeted repo_map prepared: ${filteredMap.entries.length} relevant files. Use repo_map with query="${truncateForLedger(prompt, 80)}" to fetch the current skeleton instead of reading whole files.`,
-            "current",
-            turn,
-            { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }
-          )
-        }
-      }
-      this.onEvent?.({ type: "repo_map", status: "succeeded", cacheHit: map.cache.hit, files: map.entries.length, relevantFiles, cachePath: map.cache.path })
-
-      this.context.updateLedger({
-        current: [
-          ledgerRecord("checkpoint", "repo_map_cache", checkpointText, "current", turn, { evidence: { source: "assistant" }, scope: { files: [map.cache.path], topics: ["repo_map", "code_navigation"] } }),
-          ledgerRecord("constraint", "code_navigation_entrypoint", "repo_map cache is prewarmed at conversation start; prefer repo_map, find_definition, rg_search, and read_lines before grep or full-file read.", "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
-          ...(dynamicMapRecord ? [dynamicMapRecord] : []),
-        ],
-      })
-    } catch (error) {
-      this.onEvent?.({ type: "repo_map", status: "failed", error: error instanceof Error ? error.message : String(error) })
-      this.context.updateLedger({
-        current: [
-          ledgerRecord("failure", "repo_map_prewarm_failure", error instanceof Error ? error.message : String(error), "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
-          ledgerRecord("constraint", "code_navigation_fallback", "repo_map prewarm failed; use find_definition, rg_search, read_lines, and grep fallback with bounded results.", "current", turn, { evidence: { source: "assistant" }, scope: { topics: ["repo_map", "code_navigation"] } }),
-        ],
-      })
-    }
+    await refreshRepoMapCache({
+      sandbox: this.sandbox,
+      context: this.context,
+      onEvent: this.onEvent,
+      truncateForLedger,
+    }, signal, prompt)
   }
 
-  private recordToolOutcome(call: ToolCall, result: Awaited<ReturnType<AgentRunner["runTool"]>>, prompt: string) {
-    const turn = this.context.state.messages.length
-    if (result.metadata.status === "succeeded") {
-      const files = toolScopeFiles(call, result)
-      const toolEvidence = { source: "tool" as const }
-      const current: LedgerRecord[] = [
-        ledgerRecord("failure", "last_tool_failure", `resolved by ${call.name}`, "resolved", turn, { reason: "a later tool call succeeded", evidence: toolEvidence }),
-      ]
-      if (files.length) {
-        current.push(ledgerRecord("file", files.join(","), `${call.name} succeeded: ${truncateForLedger(result.title, 160)}`, "current", turn, { evidence: toolEvidence, scope: { files } }))
-      } else {
-        current.push(ledgerRecord("checkpoint", "last_successful_tool", `${call.name} ${truncateForLedger(result.title, 120)}`, "current", turn, { evidence: toolEvidence }))
-      }
-      this.context.updateLedger({
-        current,
-      })
-      return
-    }
-
-    const summary = toolFailureSummary(call, result)
-    const recovery = recoveryHintForToolFailure(call, result)
-    const failureEvidence = { source: "tool" as const }
-    this.context.updateLedger({
-      current: [
-        ledgerRecord("failure", "last_tool_failure", summary, "current", turn, { evidence: failureEvidence, scope: toolScopeFiles(call, result).length ? { files: toolScopeFiles(call, result) } : undefined }),
-        ledgerRecord("constraint", "tool_failure_scope_rule", "tool failure requires recovery, not abandoning or silently shrinking scope.", "current", turn),
-        ledgerRecord("intent", "main_objective_still_active", truncateForLedger(compactLine(prompt), 200), "current", turn, { evidence: { source: "user" } }),
-        ledgerRecord("constraint", "next_recovery_action", recovery, "current", turn),
-      ],
-    })
+  private recordToolOutcome(call: ToolCall, result: { title: string; output: string; metadata: Record<string, unknown> }, prompt: string) {
+    recordToolOutcomeSideEffect({ context: this.context }, call, result, prompt, { truncateForLedger, compactLine })
   }
 
   private noteExternalEvidence() {
@@ -628,175 +332,16 @@ export class AgentRunner {
   }
 
   private activeHypothesisMessages() {
-    if (!this.activeHypothesis) return []
-    return [{
-      role: "system" as const,
-      content: `Active hypothesis: ${this.activeHypothesis.summary}\nKeep executing this hypothesis unless new user or tool evidence appears. Do not replace it without citing the new evidence first.`,
-    }]
+    return activeHypothesisMessages(this.activeHypothesis)
   }
 
   private updateActiveHypothesis(summary: string, normalized: string) {
-    const turn = this.context.state.messages.length
-    this.activeHypothesis = {
-      summary,
-      normalized,
-      evidenceRevision: this.evidenceRevision,
-      updatedAtTurn: turn,
-    }
-    this.context.updateLedger({
-      current: [
-        ledgerRecord("decision", "active_hypothesis", truncateForLedger(summary, 220), "current", turn, {
-          reason: `evidence revision ${this.evidenceRevision}`,
-          evidence: { source: "assistant" },
-        }),
-      ],
-    })
+    this.activeHypothesis = updateActiveHypothesisState(this.context, this.activeHypothesis, summary, normalized, this.evidenceRevision)
   }
 
   private recordHypothesisViolation(violation: HypothesisViolation) {
-    const turn = this.context.state.messages.length
-    this.context.updateLedger({
-      current: [
-        ledgerRecord("failure", "hypothesis_drift_violation", truncateForLedger(violation.message, 240), "current", turn, {
-          evidence: { source: "assistant" },
-          scope: { topics: ["hypothesis_lock"] },
-        }),
-        ...(this.activeHypothesis
-          ? [ledgerRecord("decision", "active_hypothesis", truncateForLedger(this.activeHypothesis.summary, 220), "current", turn, {
-              reason: "kept active after drift violation",
-              evidence: { source: "assistant" },
-            })]
-          : []),
-      ],
-    })
+    recordHypothesisViolationState(this.context, this.activeHypothesis, violation)
   }
-}
-
-
-function samePermissionRules(left: PermissionRule[], right: PermissionRule[]) {
-  if (left.length !== right.length) return false
-  return left.every((rule, index) => {
-    const other = right[index]
-    return other && rule.permission === other.permission && rule.pattern === other.pattern && rule.action === other.action
-  })
-}
-
-function providerFailureText(error: ProviderError) {
-  return error.output?.trim() || error.message
-}
-
-function explorationSummaryStep(maxSteps: number) {
-  const defaultExplorationSteps = 12;
-  return Math.min(defaultExplorationSteps, Math.ceil(maxSteps * 0.7))
-}
-
-function explorationSummaryReadinessMessage(step: number, maxSteps: number) {
-  return {
-    role: "user" as const,
-    content: [
-      `Exploration checkpoint reached at step ${step}/${maxSteps}.`,
-      "Before calling another tool, decide whether the information already gathered is enough to answer the user's request.",
-      "If it is enough, stop exploring and provide the summary now.",
-      "If it is not enough, do not call tools. Ask the user whether to continue exploring or summarize with the current evidence.",
-    ].join("\n"),
-  }
-}
-
-function runFailureText(text: string, reason: "provider_error" | "max_steps") {
-  const trimmed = text.trim()
-  const guidance = reason === "max_steps" ? "Continue with another message to keep going." : "Run failed. Continue with another message to retry or provide more direction."
-  return appendOutput(trimmed, guidance)
-}
-
-function numericMetadata(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
-function appendOutput(output: string, part: string) {
-  if (!part) return output
-  if (!output || output.endsWith("\n")) return `${output}${part}`
-  return `${output}\n${part}`
-}
-
-function compactLine(text: string) {
-  return text.replace(/\s+/g, " ").trim()
-}
-
-function truncateForLedger(text: string, maxLength: number) {
-  return text.length <= maxLength ? text : `${text.slice(0, Math.max(0, maxLength - 15))}...[truncated]`
-}
-
-function toolFailureSummary(call: ToolCall, result: { title: string; output: string; metadata: Record<string, unknown> }) {
-  const status = String(result.metadata.status ?? "failed")
-  const error = typeof result.metadata.error === "string" ? ` ${result.metadata.error}` : ""
-  const output = compactLine(result.output)
-  return `${call.name} ${status}${error}: ${truncateForLedger(output || result.title, 220)}`
-}
-
-function recoveryHintForToolFailure(call: ToolCall, result: { output: string; metadata: Record<string, unknown> }) {
-  const output = `${result.output}\n${JSON.stringify(result.metadata)}\n${JSON.stringify(call.input)}`
-  if (call.name === "bash" && /SandboxPathEscapeError|path_boundary_escape|Path escapes project root|\/tmp|\/dev\/null|Operation not permitted|native_write_sandbox_denial/i.test(output)) {
-    return "next_recovery_action: keep command goal; use project-local paths like .easycode/tmp or .easycode/reports; avoid /tmp and /dev/null; request bypass only with user approval."
-  }
-  if (call.name === "bash" && /JSON\.parse|Unexpected token|SyntaxError/i.test(output)) {
-    return "next_recovery_action: keep requested scope; separate runner noise from machine JSON; parse project-local report or direct script output."
-  }
-  if (call.name === "bash" && /timed out|timeout/i.test(output)) {
-    return "next_recovery_action: keep requested scope; use longer timeout or label any subset as diagnostic before full rerun."
-  }
-  return "next_recovery_action: inspect failure, preserve requested scope, choose smallest safe recovery."
-}
-
-function activeHypothesisFromLedger(ledger: ContextManagerLike["state"]["ledger"]): ActiveHypothesis | undefined {
-  const record = ledger?.current?.find((item) => item.kind === "decision" && item.subject === "active_hypothesis")
-  if (!record) return undefined
-  const normalized = normalizeHypothesis(record.value)
-  if (!normalized) return undefined
-  return { summary: record.value, normalized, evidenceRevision: 0, updatedAtTurn: record.updatedAtTurn }
-}
-
-function hypothesisCorrectionMessage(violation: HypothesisViolation, activeHypothesis: ActiveHypothesis | undefined) {
-  const active = activeHypothesis ? `Current active hypothesis: "${activeHypothesis.summary}".` : "No replacement hypothesis is allowed without new evidence."
-  return [
-    "Hypothesis discipline violation detected.",
-    violation.message,
-    active,
-    "Return one concrete hypothesis only.",
-    "If you need to change it, first cite the new user or tool evidence that justifies the change.",
-  ].join("\n")
-}
-
-
-function assistantMessage(reasoningText: string, text: string) {
-  const parts: MessagePart[] = []
-  if (reasoningText) parts.push(reasoningPart(reasoningText))
-  if (text) parts.push(textPart(text))
-  return createMessage("assistant", parts.length > 0 ? parts : [textPart("")])
-}
-
-function compactPrompt(messages: Array<{ role: string; content: string }>, options?: Parameters<typeof buildCompactPrompt>[1]) {
-  const transcript = messages.map((message) => `${message.role}: ${message.content}`).join("\n\n")
-  return buildCompactPrompt(transcript, options)
-}
-
-function isPlanApproval(prompt: string) {
-  const text = prompt.trim().toLowerCase()
-  // Remove common punctuation and whitespace for more robust matching
-  const cleaned = text.replace(/[.!?，。！？、\s]+$/g, "").trim()
-  return /^(执行吧|执行|确认|接受|同意|继续|开始|approve|accepted|approved|execute|go ahead|yes|yeah|yep|y|ok|okay|do it|let's go|sure|proceed)$/i.test(cleaned)
-}
-
-function summaryLanguageHint(context: ContextManagerLike, messages: Array<{ role: string; content: string }>) {
-  const currentRequest = context.state.ledger?.current?.find((record) => record.kind === "intent" && record.subject === "current_user_request")?.value
-  return detectLanguageHint(currentRequest) ?? detectLanguageHint([...messages].reverse().find((message) => message.role === "user" && message.content.trim())?.content)
-}
-
-function detectLanguageHint(text: string | undefined) {
-  if (!text) return undefined
-  if (/[\u3040-\u30ff]/u.test(text)) return "Japanese"
-  if (/[\uac00-\ud7af]/u.test(text)) return "Korean"
-  if (/[\u4e00-\u9fff]/u.test(text)) return "Chinese"
-  return undefined
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings }) {

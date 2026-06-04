@@ -3,6 +3,7 @@ import { displayWidth, drawCard } from "../../src/ui/tui-ansi"
 import { buildPanelCard } from "../../src/ui/tui-cards"
 import { generateStatusPanelLines } from "../../src/ui/tui-status-panel"
 import { TuiRenderer } from "../../src/ui/tui"
+import { TuiState } from "../../src/ui/tui-state"
 
 describe("tui renderer", () => {
   test("renders session context, command bar, timeline events, and status updates", () => {
@@ -78,5 +79,63 @@ describe("tui renderer", () => {
     const card = buildPanelCard("🛡️ 权限确认", "Allow bash for curl -s \"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_StocksService.getKLineData\"", 88)
     const visibleWidths = card.split("\n").map((line) => displayWidth(line))
     expect(new Set(visibleWidths).size).toBe(1)
+  })
+
+  test("tracks panel elapsed per phase instead of across the whole run", () => {
+    const originalNow = Date.now
+    let now = 1_000
+    Date.now = () => now
+
+    try {
+      const state = new TuiState()
+      state.beginRun("初始化中")
+
+      now = 5_000
+      state.tickSpinner(10)
+      expect(state.runElapsedMs).toBe(4_000)
+      expect(state.phaseElapsedMs).toBe(4_000)
+
+      state.setStatus("等待 deepseek 响应...", "provider:deepseek:deepseek-v4-flash")
+      now = 9_000
+      state.tickSpinner(10)
+      expect(state.runElapsedMs).toBe(8_000)
+      expect(state.phaseElapsedMs).toBe(4_000)
+
+      state.setStatus("等待 deepseek 响应...", "provider:deepseek:deepseek-v4-flash")
+      now = 11_000
+      state.tickSpinner(10)
+      expect(state.phaseElapsedMs).toBe(6_000)
+
+      state.setStatus("运行工具：bash（3s）", "tool:call_1:progress")
+      now = 14_000
+      state.tickSpinner(10)
+      expect(state.runElapsedMs).toBe(13_000)
+      expect(state.phaseElapsedMs).toBe(3_000)
+    } finally {
+      Date.now = originalNow
+    }
+  })
+
+  test("resets phase elapsed timer on consecutive provider calls via unique phase keys", () => {
+    let output = ""
+    const renderer = new TuiRenderer({ write: (text) => { output += text }, isTTY: false }, {
+      root: "/tmp/project",
+      mode: "build",
+      provider: "fake",
+    })
+
+    renderer.event({ type: "run_start", mode: "build", provider: "fake" })
+    
+    // First provider call start
+    renderer.event({ type: "provider_progress", provider: "fake", model: "deepseek", elapsedMs: 0 })
+    const state = (renderer as any).state
+    const firstKey = state.phaseKey
+    expect(firstKey).toBe("provider:fake:deepseek:1")
+
+    // Second provider call start (elapsedMs = 0)
+    renderer.event({ type: "provider_progress", provider: "fake", model: "deepseek", elapsedMs: 0 })
+    const secondKey = state.phaseKey
+    expect(secondKey).toBe("provider:fake:deepseek:2")
+    expect(secondKey).not.toBe(firstKey)
   })
 })

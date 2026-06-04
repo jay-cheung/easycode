@@ -5,7 +5,8 @@ import { TimelineRenderer, type RunUiEvent } from "./timeline"
 import { ensureTrailingNewline, formatDuration } from "./tui-ansi"
 import { buildConfiguredCard, buildFailureSummaryCard, buildPanelCard, buildSessionStartedCard, buildSuccessSummaryCard, buildWelcomeDashboardCard } from "./tui-cards"
 import { TuiState } from "./tui-state"
-import { generateStatusPanelLines, spinnerFrames } from "./tui-status-panel"
+import { spinnerFrames } from "./tui-status-panel"
+import { drawStatusPanel, eraseStatusPanel, renderFailureSummary, renderSuccessSummary, renderWelcomeDashboard, writeTextWithPanel, writeTimelineText } from "./tui-render-loop"
 import type { TuiContext, Writable } from "./tui-types"
 
 class TuiWritable implements Writable {
@@ -34,6 +35,8 @@ export class TuiRenderer {
   private spinnerTimer: NodeJS.Timeout | undefined = undefined
   private lastPanelSnapshot = ""
   private sessionTokenUsage: SessionTokenUsage = { inputTokens: 0, outputTokens: 0, calls: 0 }
+  private providerCallCount = 0
+  private currentProviderPhaseKey = ""
 
   getPausedForPrompt() {
     return this.state.pausedForPrompt
@@ -98,6 +101,8 @@ export class TuiRenderer {
     if (event.type === "run_start") {
       this.state.beginRun(copy.statusInitializing)
       this.context = { ...this.context, mode: event.mode, provider: event.provider, model: event.model }
+      this.providerCallCount = 0
+      this.currentProviderPhaseKey = ""
       this.startSpinnerTimer()
     } else if (event.type === "reasoning_delta" || event.type === "text_delta") {
       this.state.resolvePrompt()
@@ -122,25 +127,29 @@ export class TuiRenderer {
     }
 
     if (event.type === "provider_progress") {
-      this.state.statusText = copy.statusWaitingProvider(event.provider)
+      if (event.elapsedMs === 0 || !this.currentProviderPhaseKey) {
+        this.providerCallCount++
+        this.currentProviderPhaseKey = `provider:${event.provider}:${event.model ?? "unknown"}:${this.providerCallCount}`
+      }
+      this.state.setStatus(copy.statusWaitingProvider(event.provider), this.currentProviderPhaseKey)
     } else if (event.type === "tool_call") {
-      this.state.statusText = copy.statusExecutingTool(event.call.name)
+      this.state.setStatus(copy.statusExecutingTool(event.call.name), `tool:${event.call.id}:call`)
     } else if (event.type === "tool_progress") {
-      this.state.statusText = copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs))
+      this.state.setStatus(copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs)), `tool:${event.callID}:progress`)
     } else if (event.type === "tool_result") {
-      this.state.statusText = copy.statusToolCompleted(event.toolName)
+      this.state.setStatus(copy.statusToolCompleted(event.toolName), `tool:${event.callID}:result`)
     } else if (event.type === "context_compaction") {
       if (event.status === "started") {
-        this.state.statusText = copy.statusCompacting
+        this.state.setStatus(copy.statusCompacting, "context_compaction:started")
       } else {
-        this.state.statusText = copy.statusCompactionDone(event.status)
+        this.state.setStatus(copy.statusCompactionDone(event.status), `context_compaction:${event.status}`)
       }
     } else if (event.type === "repo_map") {
-      this.state.statusText = copy.statusRepoMap(event.status)
+      this.state.setStatus(copy.statusRepoMap(event.status), `repo_map:${event.status}`)
     } else if (event.type === "provider_metrics") {
       this.state.metrics = event.metrics
       if (!event.interim) {
-        this.state.statusText = copy.statusProviderMetrics
+        this.state.setStatus(copy.statusProviderMetrics, "provider_metrics:final")
       }
     } else if (event.type === "failure") {
       this.state.finishRun()
@@ -232,7 +241,7 @@ export class TuiRenderer {
   cancelling() {
     const copy = uiText(this.getLanguage())
     this.status(copy.statusCancelling)
-    this.state.statusText = copy.cancellingRun
+    this.state.setStatus(copy.cancellingRun, "run:cancelling")
     this.writeText(`TUI: ${copy.cancellingRun}\n`)
   }
 
@@ -256,39 +265,26 @@ export class TuiRenderer {
 
   // Helper to write text that handles dynamic panel erasure/redraw
   private writeText(text: string) {
-    if (this.state.running) {
-      if (this.state.shouldWriteDirectly()) {
-        this.output.write(text)
-      } else {
-        this.eraseStatusPanel()
-        this.output.write(text)
-        this.drawStatusPanel()
-      }
-    } else {
-      this.output.write(text)
-    }
+    this.lastPanelSnapshot = writeTextWithPanel({
+      output: this.output,
+      state: this.state,
+      context: this.context,
+      language: this.getLanguage(),
+      columns: this.getColumns(),
+      lastPanelSnapshot: this.lastPanelSnapshot,
+    }, text)
   }
 
   // TUI Core Redrawing and Erasing Logics
   writeFromTimeline(text: string) {
-    if (this.state.running) {
-      if (this.state.shouldWriteDirectly()) {
-        // Direct print during active text delta streaming or manual prompts to prevent layout overlaps
-        this.output.write(text)
-      } else {
-        this.eraseStatusPanel()
-        this.output.write(text)
-        
-        // If the printed text doesn't end with a newline, we can set panel as dirty
-        if (!text.endsWith("\n")) {
-          this.state.panelDirty = true
-        } else {
-          this.drawStatusPanel()
-        }
-      }
-    } else {
-      this.output.write(text)
-    }
+    this.lastPanelSnapshot = writeTimelineText({
+      output: this.output,
+      state: this.state,
+      context: this.context,
+      language: this.getLanguage(),
+      columns: this.getColumns(),
+      lastPanelSnapshot: this.lastPanelSnapshot,
+    }, text)
   }
 
   private startSpinnerTimer() {
@@ -310,49 +306,31 @@ export class TuiRenderer {
   }
 
   private eraseStatusPanel() {
-    if (!this.state.panelDrawnLines) return
-    for (let i = 0; i < this.state.panelDrawnLines; i++) {
-      this.output.write("\x1b[1A\x1b[2K\r")
-    }
-    this.state.panelDrawnLines = 0
+    eraseStatusPanel(this.output, this.state)
     this.lastPanelSnapshot = ""
   }
 
   private drawStatusPanel() {
-    if (!this.state.shouldRenderPanel()) return
-
-    const lines = generateStatusPanelLines({
+    this.lastPanelSnapshot = drawStatusPanel({
+      output: this.output,
+      state: this.state,
       context: this.context,
       language: this.getLanguage(),
       columns: this.getColumns(),
-      spinnerFrame: this.state.spinnerFrame,
-      elapsedMs: this.state.elapsedMs,
-      statusText: this.state.statusText,
-      queuedPrompt: this.state.queuedPrompt,
-      metrics: this.state.metrics,
+      lastPanelSnapshot: this.lastPanelSnapshot,
     })
-    const snapshot = lines.join("\n")
-    if (snapshot === this.lastPanelSnapshot && this.state.panelDrawnLines > 0) return
-
-    // Safety check to ensure we clean up the previous lines
-    this.eraseStatusPanel()
-    for (const line of lines) {
-      this.output.write(line + "\n")
-    }
-    this.state.panelDrawnLines = lines.length
-    this.lastPanelSnapshot = snapshot
   }
 
   private renderWelcomeDashboard() {
-    this.output.write(`\n${buildWelcomeDashboardCard(this.context, this.state.lastStatus, this.getColumns())}\n`)
+    renderWelcomeDashboard(this.output, this.context, this.state.lastStatus, this.getColumns())
     this.state.rendered = true
   }
 
   private renderSuccessSummary() {
-    this.writeText(`\n${buildSuccessSummaryCard(this.getLanguage(), this.state.elapsedMs, this.state.metrics, this.sessionTokenUsage, this.getColumns())}\n`)
+    renderSuccessSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.sessionTokenUsage, this.getColumns())
   }
 
   private renderFailureSummary(reason: string) {
-    this.writeText(`\n${buildFailureSummaryCard(this.getLanguage(), this.state.elapsedMs, this.state.metrics, this.sessionTokenUsage, reason, this.getColumns())}\n`)
+    renderFailureSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.sessionTokenUsage, reason, this.getColumns())
   }
 }

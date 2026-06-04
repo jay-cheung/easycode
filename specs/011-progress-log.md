@@ -424,3 +424,343 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts test/unit/cli.test.ts`: 53 pass, 0 fail.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 11: Builtin Tool Registry Family Split
+
+- Scope: reduce `src/tool/builtins.ts` from a single long registration file into focused family modules without changing any tool names, input schemas, permissions, or runtime behavior.
+- Implementation:
+  - Kept `createBuiltinRegistry()` as the only public entrypoint in `src/tool/builtins.ts`.
+  - Split filesystem/code navigation tools into `src/tool/builtins/code-tools.ts`.
+  - Split git workflow tools into `src/tool/builtins/git-tools.ts`.
+  - Split edit/bash/memory/connector tools into `src/tool/builtins/workspace-tools.ts`.
+  - Split MCP/web search/skill/plan tools into `src/tool/builtins/retrieval-tools.ts`.
+  - Centralized small shared schema helpers in `src/tool/builtins/common.ts`.
+- Code Complete review result:
+  - Correctness: registration order and tool contracts stayed stable because the public registry constructor still wires the same definitions into one `ToolRegistry`.
+  - Maintainability: adding or auditing a tool family no longer requires editing a 500+ line mixed-responsibility file.
+  - Verification: focused regression coverage was kept at the registry/tool/provider layer so the move stayed behavior-preserving rather than snapshot-driven.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+
+## Step 12: Runner Provider-Turn And Background Task Split
+
+- Scope: start decomposing `src/agent/runner.ts` by extracting low-risk orchestration-adjacent responsibilities while keeping the main run loop behavior stable.
+- Implementation:
+  - Extracted provider stream consumption, XML-safe delta replay, fallback text-to-tool-call parsing, and provider progress handling into `src/agent/provider-turn.ts`.
+  - Extracted background summary compaction task creation/execution into `src/agent/summary-subagent.ts`.
+  - Extracted repo-map prewarm and query-targeted repo-map ledger/event updates into `src/agent/repo-map-refresh.ts`.
+  - Kept hypothesis validation and the top-level run loop in `runner.ts`, so this slice changed structure without rewriting core step semantics.
+- Code Complete review result:
+  - Correctness: provider replay events, cancellation behavior, summary compaction, and repo-map warmup stayed behind the same `AgentRunner` call sites.
+  - Maintainability: `runner.ts` now focuses more on orchestration and less on embedded IO/event helper logic.
+  - Verification: validated at provider, tool, context, and runner layers after each extraction step instead of relying on one broad smoke test.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 13: Runner Tool Execution And Hypothesis Side-Effect Split
+
+- Scope: continue shrinking `runner.ts` by moving tool-execution plumbing and hypothesis/intent ledger side effects behind focused helpers, without changing tool loop order or ledger semantics.
+- Implementation:
+  - Extracted tool execution, bash progress timing, tool-result UI event emission, and tool outcome ledger updates into `src/agent/tool-execution.ts`.
+  - Extracted active hypothesis hydration/messages, hypothesis drift ledger updates, run-intent ledger setup, and shared ledger string helpers into `src/agent/hypothesis-state.ts`.
+  - Rewired `runner.ts` to call those helpers while preserving the same tool loop, hypothesis discipline checks, and cancellation paths.
+- Code Complete review result:
+  - Correctness: tool result ordering, plan-exit handling, and hypothesis correction prompting stayed in the same run-loop sequence.
+  - Maintainability: `runner.ts` no longer mixes orchestration with repetitive ledger-side-effect construction and tool-progress boilerplate.
+  - Verification: repeated the same focused regression set and full gate after each extraction to catch structural drift early.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 14: Runner Support Helper Split
+
+- Scope: remove the remaining low-level settings and mode/permission helper logic from `runner.ts` so the class focuses more narrowly on orchestration.
+- Implementation:
+  - Extracted selected-skill resolution, pending-skill filtering, skill-load bookkeeping, effective plan/build mode switching, and permission-service mode selection into `src/agent/runner-support.ts`.
+  - Kept the existing `AgentRunner` call sites and return shapes unchanged, so the move is structural rather than behavioral.
+- Code Complete review result:
+  - Correctness: skill selection, plan approval mode switching, and permission rule reuse still flow through the same run loop decisions.
+  - Maintainability: runner support logic is now isolated from the main execution class, which makes future policy changes easier to review independently.
+  - Verification: reran the same focused provider/tool/context/runner suite and full gate after the extraction.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 15: Runner Validation Loop And Helper Extraction
+
+- Scope: keep shrinking `src/agent/runner.ts` by moving the hypothesis-validation retry loop and trailing pure helper functions into focused support modules, without changing run-loop semantics.
+- Implementation:
+  - Extracted validated provider-turn retry and hypothesis-correction orchestration into `src/agent/validated-provider-turn.ts`.
+  - Extracted pure helper functions for failure text shaping, assistant message assembly, exploration checkpoint prompts, compact-summary prompt building, and summary-language hinting into `src/agent/runner-helpers.ts`.
+  - Rewired `runner.ts` to delegate to those helpers while preserving the same event emission, hypothesis discipline, and context-compaction behavior.
+- Code Complete review result:
+  - Correctness: provider-turn validation still retries at most once, emits the same replayed output, and returns the same synthetic failure when hypothesis drift remains unresolved.
+  - Maintainability: `runner.ts` is now closer to a lifecycle/orchestration class instead of carrying policy-neutral text and prompt helper utilities inline.
+  - Verification: reran the focused runner/provider/context/tool suite after each extraction step, then revalidated through the unified local gate.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 16: Context Manager Helper Split
+
+- Scope: reduce `src/context/manager.ts` by moving pure cache-window, prefix-budget, and summary truncation helpers into a dedicated support module, without changing any context composition or compaction behavior.
+- Implementation:
+  - Extracted `WindowStats` plus static-prefix sizing, cache-window accumulation, strategy cloning, effective window cost, and summary token-budget truncation helpers into `src/context/manager-helpers.ts`.
+  - Kept `ContextManager` state transitions and budgeting decisions unchanged; the class now delegates to the helper module for pure calculations.
+  - Fixed an intermediate import regression during the extraction by sourcing `estimateTextTokens` from `src/context/tokens.ts`, then reran the same focused suite to re-establish a clean baseline.
+- Code Complete review result:
+  - Correctness: planning, cache accounting, and summary truncation still use the same formulas and thresholds because only the function location changed.
+  - Maintainability: `ContextManager` now keeps mutation and policy logic local while moving calculation-only helpers into a dedicated file that can be reused or reviewed independently.
+  - Verification: validated the structural move with focused provider/tool/context/runner tests after fixing the helper import issue, then re-ran the unified local gate.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 17: Instrumentation Provider Logging Split
+
+- Scope: reduce `src/instrumentation.ts` by extracting provider-specific logging, transcript rendering, cache-hit markup, and provider-error shaping helpers into a focused module, without changing `RunAspect` behavior.
+- Implementation:
+  - Added `src/instrumentation-provider.ts` for provider input token estimation, usage normalization, provider event logging, transcript emission, cache-hit input marking, raw response error detection, and provider error detail formatting.
+  - Rewired `LoggingRunAspect.instrumentProvider()` to delegate to those helpers while keeping the same emitted log event names and detail shapes.
+  - Fixed an intermediate regression where `ProviderError` was no longer imported in `src/instrumentation.ts`, then reran the focused suite to restore a clean baseline.
+- Code Complete review result:
+  - Correctness: provider transcript logging, usage logging, and provider error shaping still run at the same stream lifecycle points because only the helper location changed.
+  - Maintainability: `instrumentation.ts` now keeps the aspect wrappers and control flow visible while moving provider-formatting noise into a dedicated helper file.
+  - Verification: reran the focused provider/tool/context/runner suite after the import fix, then revalidated through the unified local gate.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 18: Instrumentation Context Decorator Split
+
+- Scope: finish the low-risk `instrumentation` decomposition by extracting the logging context decorator and its snapshot helpers into a dedicated module, without changing any emitted context log event names or detail shapes.
+- Implementation:
+  - Added `src/instrumentation-context.ts` for `LoggingContextDecorator`, context snapshot capture, and ledger detail formatting.
+  - Rewired `LoggingRunAspect.instrumentContext()` to instantiate the extracted decorator while leaving `RunAspect` and logger usage unchanged.
+  - Kept `instrumentation.ts` focused on the `RunAspect` interface plus the `LoggingRunAspect` orchestration shell.
+- Code Complete review result:
+  - Correctness: context add/ledger/compaction/compose logging still occurs at the same wrapper methods because only the decorator definition moved.
+  - Maintainability: `instrumentation.ts` is now a small aspect assembly file, while provider logging and context logging each live in their own focused modules.
+  - Verification: reran the focused provider/tool/context/runner suite after the extraction, then revalidated through the unified local gate.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tool.test.ts test/unit/provider.test.ts test/unit/context.test.ts test/unit/runner.test.ts`: 111 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 19: Retrieval Formatting And Ranking Helper Split
+
+- Scope: start decomposing `src/retrieval.ts` by extracting pure citation, formatting, ranking, and result-limit helpers into a dedicated module, without changing MCP or web-search service behavior.
+- Implementation:
+  - Added `src/retrieval-format.ts` for MCP/web citations, MCP/web result formatting, resource/result ranking, and limit clamping.
+  - Re-exported the existing public formatting and citation helpers from `src/retrieval.ts` so tool-call sites and tests keep the same import contract.
+  - Kept live request construction, engine normalization, and config loading inside `src/retrieval.ts` for this first low-risk slice.
+- Code Complete review result:
+  - Correctness: citations, formatted output strings, ranking order, and result limits still use the same logic because only helper locations changed.
+  - Maintainability: `retrieval.ts` now holds the service and engine-flow logic while pure presentation/scoring helpers live in an isolated module that is easier to extend or test independently.
+  - Verification: validated with retrieval, tool, and CLI startup coverage because those paths exercise both fixture ranking and the Tavily setup hint behavior.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 79 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 20: Retrieval Live Engine Helper Split
+
+- Scope: continue decomposing `src/retrieval.ts` by extracting live-engine normalization, auth/header shaping, request building, timeout wiring, and result parsing helpers into a dedicated module, without changing Tavily-only runtime behavior.
+- Implementation:
+  - Added `src/retrieval-live.ts` for engine normalization, API key lookup, header shaping, request assembly, response parsing, and timeout cleanup.
+  - Rewired `WebSearchService.searchLive()` to delegate to those helpers while preserving the same TLS injection, fetch behavior, and error messages.
+  - Fixed an intermediate regression where the unsupported-engine path lost the Tavily setup hint because `normalizeEngine()` was called without the shared hint string.
+- Code Complete review result:
+  - Correctness: live request construction and parsing still happen in the same order and produce the same Tavily-only behavior because the helper extraction kept the same defaults and error text.
+  - Maintainability: `retrieval.ts` now concentrates on service flow and config loading, while live-engine mechanics live in an isolated module that is easier to reason about and test independently.
+  - Verification: validated with retrieval, tool, and CLI startup coverage because those paths exercise unsupported-engine errors, Tavily setup hints, live-search config checks, and tool-surface formatting.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 79 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 21: Retrieval Config Helper Split
+
+- Scope: finish the low-risk `retrieval` decomposition by extracting engine selection and implicit Tavily default resolution helpers into a dedicated config module, without changing startup hints or runtime engine resolution.
+- Implementation:
+  - Added `src/retrieval-config.ts` for `selectEngine()` and `withImplicitDefaults()`.
+  - Rewired `src/retrieval.ts` to pass `WebSearchEngine.parse` through the helper so implicit Tavily engine injection keeps the same schema validation behavior.
+  - Fixed two intermediate regressions during the extraction:
+    - the parser callback was initially omitted, which broke the implicit Tavily default path;
+    - the helper return type initially dropped `results`, so it was widened to preserve the full config shape.
+- Code Complete review result:
+  - Correctness: default-engine selection, implicit Tavily injection, and configured-engine lookup still behave the same because the helper keeps the same validation and selection rules.
+  - Maintainability: `retrieval.ts` now focuses on service flow and file IO, while config resolution, live request mechanics, and formatting are each isolated in their own modules.
+  - Verification: reran retrieval, tool, and CLI startup coverage after fixing both regressions, since those paths exercise implicit Tavily setup, engine lookup, and user-facing setup hints.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 79 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 22: Context Compose And Compaction Snapshot Split
+
+- Scope: continue shrinking `src/context/manager.ts` by extracting message-composition and compaction-snapshot assembly helpers into a focused module, without changing budgeting or context-selection behavior.
+- Implementation:
+  - Added `src/context/manager-compose.ts` for provider-message assembly and compaction snapshot construction.
+  - Rewired `ContextManager.compose()` and `ContextManager.compactionSnapshot()` to delegate to those helpers while preserving the same prompt ordering, summary wrapping, and protected-tool-result redaction.
+  - Kept budget math, cache accounting, ledger selection, and mutation logic inside `ContextManager` so this slice stayed on the pure data-transformation boundary.
+- Code Complete review result:
+  - Correctness: compose ordering, summary inclusion, skill/instruction prompt assembly, and compaction snapshot redaction still use the same logic because the extracted helpers are pure reorganizations of the previous implementation.
+  - Maintainability: `ContextManager` now focuses more on strategy, mutation, and budgeting, while message-assembly responsibilities live in a dedicated helper file with direct context-test coverage.
+  - Verification: reran context, runner, and tool coverage because these paths exercise compose ordering, compaction snapshots, and provider-facing prompt composition.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 23: Context Stats And Ledger Calculation Split
+
+- Scope: continue decomposing `src/context/manager.ts` by extracting cache stats, budget stats, compaction-basis, and ledger-selection calculations into a focused helper module, without changing context mutation behavior.
+- Implementation:
+  - Added `src/context/manager-stats.ts` for cache/budget stats, compaction basis, ledger token budget, selected ledger rendering, and ledger stats calculation.
+  - Rewired `ContextManager.selectedLedgerText()`, `cacheStats()`, `budgetStats()`, `compactionBasis()`, `ledgerStats()`, and `ledgerTokenBudget()` to delegate to those pure helpers.
+  - Kept message mutation, compaction application, and strategy state transitions inside `ContextManager`, so this slice stayed on the read-only calculation boundary.
+- Code Complete review result:
+  - Correctness: cache metrics, budget reporting, and ledger selection still use the same formulas and selection rules because the extracted helpers preserve the previous logic exactly.
+  - Maintainability: `ContextManager` is now more focused on owned state transitions, while stats and ledger math live in a dedicated helper that can be reasoned about independently.
+  - Verification: reran context, runner, and tool coverage because those paths exercise ledger rendering, cache stats, and provider-facing budgeting behavior.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 24: Context Compaction Application Split
+
+- Scope: keep shrinking `src/context/manager.ts` by extracting the repeated compaction-application logic behind `compact()` and `compactSnapshot()` into a focused helper module, without changing compaction eligibility or conflict recording semantics.
+- Implementation:
+  - Added `src/context/manager-compaction.ts` for full compaction result creation and snapshot-based compaction result creation.
+  - Rewired `ContextManager.compact()` and `ContextManager.compactSnapshot()` to delegate to those helpers while preserving summary truncation, preserved-message selection, and ledger conflict generation.
+  - Fixed an intermediate type regression by normalizing the optional ledger before passing it to `summaryLedgerConflicts()`.
+- Code Complete review result:
+  - Correctness: compaction still keeps the same preserved suffix and summary-conflict behavior because the extracted helpers are direct reorganizations of the previous logic.
+  - Maintainability: `ContextManager` now centers more on mutation and strategy orchestration, while compaction result construction is isolated in its own helper file.
+  - Verification: reran context, runner, and tool coverage because those paths exercise both direct compaction and snapshot-based background compaction behavior.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 25: Runner Terminal Outcome Helper Split
+
+- Scope: start another low-risk `runner` slice by extracting terminal outcome helpers for run completion signaling and cancellation-result assembly, without changing main-loop decision order.
+- Implementation:
+  - Added `src/agent/runner-outcomes.ts` for `run_done` event emission and cancelled run result assembly.
+  - Rewired `AgentRunner.cancelledResult()` and `AgentRunner.emitRunDone()` to delegate to the helper module while preserving the same context append, state transition, and provider-metrics event behavior.
+  - Kept provider failure, tool loop, and completion decisions inline in `runner.ts`, so this slice only moved end-of-run packaging responsibilities.
+- Code Complete review result:
+  - Correctness: cancellation still emits the same failure text, appends the same assistant message, and transitions through the same `cancelled` state because the helper is a direct extraction of the previous logic.
+  - Maintainability: terminal outcome shaping now has an isolated home instead of living inline beside the main run loop.
+  - Verification: reran runner, context, and tool coverage because these paths exercise cancellation, `run_done`, and immediate post-tool streaming transitions.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/runner.test.ts test/unit/context.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 26: Runner Turn Preparation Helper Split
+
+- Scope: continue the low-risk `runner` decomposition by extracting per-step provider-turn preparation logic, without changing tool-loop order or summary-readiness policy.
+- Implementation:
+  - Added `src/agent/runner-turn-prep.ts` for composing `planRequest()` output, summary-readiness gating, active-hypothesis system messages, and the resulting provider message/tool set for each step.
+  - Rewired the main run loop to call the helper instead of assembling `providerMessages` and `availableTools` inline.
+  - Kept turn execution, tool running, and terminal branching inside `runner.ts`, so this slice stayed on the preflight preparation boundary.
+- Code Complete review result:
+  - Correctness: summary-readiness checkpoints, active-hypothesis message injection, and tool disabling on late exploration steps still happen under the same conditions because the helper is a direct extraction of the previous inline logic.
+  - Maintainability: the run loop now reads more clearly as `prepare -> stream -> handle outcome -> run tools`, instead of mixing prompt assembly with execution flow.
+  - Verification: reran runner, context, and tool coverage because these paths exercise step preparation, plan-mode messaging, and immediate post-tool transitions.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/runner.test.ts test/unit/context.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 27: Session Tail Policy Split
+
+- Scope: address the remaining explicit Phase 4 session-policy gap by extracting persisted session tail selection rules out of `src/session.ts`, without changing session file shape or restore behavior.
+- Implementation:
+  - Added `src/session-tail.ts` for persisted-tail selection, recent session suffix selection, and greedy fallback suffix logic.
+  - Rewired `SessionStore.save()` and `SessionStore.context()` to delegate to `persistedSessionMessages()` from the new module.
+  - Kept `SessionStore` responsible only for filesystem persistence, normalization, and restore orchestration.
+- Code Complete review result:
+  - Correctness: persisted session save/restore still keeps the latest answered turn, preserves unanswered latest user turns, and avoids orphan leading tool results because the extracted helpers preserve the previous tail-selection logic exactly.
+  - Maintainability: session-tail policy is now explicit and independently testable, instead of being buried inside the persistence class.
+  - Verification: reran session, context, and CLI coverage because those paths exercise persisted-tail save/restore behavior, startup restore, and cancellation/session persistence interactions.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/session.test.ts test/unit/context.test.ts test/unit/cli.test.ts`: 89 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 28: Context Strategy Helper Split
+
+- Scope: continue filling the explicit Phase 4 boundary map by extracting `ContextManager` strategy defaults, initialization, and clamping logic into a dedicated strategy helper, without changing budget semantics.
+- Implementation:
+  - Added `src/context/strategy.ts` for min token floor calculation, initial max-token selection, response reserve defaults, safety multiplier defaults, initial strategy state creation, and strategy-state clamping.
+  - Rewired `ContextManager` construction and `applyStrategy()` to delegate to those helpers while preserving the same clamped values and default budgets.
+  - Kept runtime state mutation and budgeting orchestration in `ContextManager`, so this slice stayed on the pure policy/helper boundary.
+- Code Complete review result:
+  - Correctness: default token budgets, response reserve sizing, safety multiplier clamping, and `configureStrategy()` behavior still follow the same formulas because the helper extraction preserves the previous values exactly.
+  - Maintainability: strategy policy is now explicit instead of being embedded in the manager constructor, which aligns more directly with the roadmap’s `context/strategy` separation goal.
+  - Verification: reran context, session, and runner coverage because these paths exercise initial context defaults, strategy reconfiguration, and persisted-session restore under the current budgets.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/context.test.ts test/unit/session.test.ts test/unit/runner.test.ts`: 50 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 29: Runner Failure Policy Boundary Extraction
+
+- Scope: materialize the roadmap’s explicit `failure-policy` boundary by moving runner failure-text shaping into its own module, without changing terminal behavior or tool-loop order.
+- Implementation:
+  - Added `src/agent/failure-policy.ts` for `runFailureText()`.
+  - Rewired `runner.ts` to import failure text shaping from the new module instead of keeping it inside the generic helper bundle.
+  - Left terminal outcome assembly in `runner-outcomes.ts` and the main branching logic in `runner.ts`, so this slice stayed narrowly structural.
+- Code Complete review result:
+  - Correctness: provider-error and max-step failure text still append the same guidance because the helper is a direct move of the previous implementation.
+  - Maintainability: failure semantics now have an explicit home that matches the roadmap, instead of living inside a mixed helper file.
+  - Verification: reran runner, context, and tool coverage because these paths exercise provider failure text, cancellation-adjacent terminal paths, and max-step handling.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/runner.test.ts test/unit/context.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 30: Runner Events Boundary Extraction
+
+- Scope: materialize the roadmap’s explicit `runner-events` boundary by moving small but reusable runner event emitters into a dedicated module, without changing event order.
+- Implementation:
+  - Added `src/agent/runner-events.ts` for `run_done` emission with provider-metrics bridging and plan-exit text emission.
+  - Rewired `runner.ts` and `runner-outcomes.ts` to use the extracted event helpers.
+  - Fixed an intermediate import regression where `runner.ts` still imported `emitRunDoneEvent` from the old module after the move.
+- Code Complete review result:
+  - Correctness: `run_done`, provider-metrics final emission, and plan-exit text deltas still fire in the same order because the extracted helpers preserve the previous call sites exactly.
+  - Maintainability: the named event-boundary from the roadmap now exists explicitly instead of being spread across `runner.ts` and outcome helpers.
+  - Verification: reran runner, context, and tool coverage because these paths exercise immediate post-tool event emission, cancellation completion, and plan-exit text behavior.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/runner.test.ts test/unit/context.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 31: TUI Render Loop Split
+
+- Scope: keep thinning the remaining thick TUI façade by extracting panel redraw/erase and timeline-text write-loop plumbing into a dedicated helper module, without changing TTY rendering behavior.
+- Implementation:
+  - Added `src/ui/tui-render-loop.ts` for status-panel erase/draw, panel-aware text writes, timeline writes, and welcome/success/failure summary card rendering.
+  - Rewired `src/ui/tui.ts` to delegate its redraw plumbing to the new helper while preserving `TuiState` ownership and event semantics.
+  - Kept `event(...)`, prompt entrypoints, and high-level TUI orchestration inside `TuiRenderer`, so this slice stayed on the rendering-plumbing boundary.
+- Code Complete review result:
+  - Correctness: timeline writes, panel redraw suppression, spinner-driven updates, and summary-card rendering still happen at the same call sites because the helper extraction preserved the same control flow.
+  - Maintainability: `tui.ts` now focuses more on event handling and user-facing prompts instead of mixing that with low-level redraw mechanics.
+  - Verification: reran TUI, timeline, and CLI coverage because those paths exercise permission prompts, plan approval prompts, panel redraws, session rendering, and non-TTY compatibility.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts test/unit/cli.test.ts`: 57 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
