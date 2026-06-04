@@ -29,13 +29,14 @@
 - Skills expose title/description before full content is requested.
 - Context compaction preserves summary plus the most recent two user turns.
 - Context compaction summaries keep the latest user language, respect the active summary token budget, preserve the current diagnostic hypothesis when still supported, and avoid replaying raw tool noise by default.
-- MCP and WebSearch both use explicit permission boundaries, structured citations, logger events, and eval fixtures before they become default retrieval sources.
+- MCP stays default-allowed, and WebSearch is default-allowed with structured citations, logger events, eval fixtures, and Tavily-only live search when configured.
 - LSP/AST indexing demonstrates an advantage over text search by resolving definitions/references and constraining edits to symbols rather than same-name text matches.
 
 ## Safety
 - Writes outside the project root fail.
 - Plan-mode edit/write attempts fail.
 - Dangerous bash commands fail.
+- Safe readonly bash scopes can auto-approve without a manual prompt, but unsafe or side-effectful bash commands still require review or fail.
 - Native write-sandbox bypass and explicit outside-path bypass require a risk prompt and user approval.
 - Repeated approved bash commands reuse the current session approval and do not prompt again.
 - Bash timeout returns structured metadata.

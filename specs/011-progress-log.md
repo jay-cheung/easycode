@@ -1,5 +1,17 @@
 # Progress Log
 
+## Step 24: Permission Friction Reduction For Readonly Retrieval
+
+- Scope: reduce repeated approval friction for high-frequency readonly retrieval without weakening the existing dangerous-command, secret-path, or sandbox-bypass protections.
+- Implementation:
+  - Updated `src/permission.ts` so `web_search` is default-allowed and readonly bash auto-review now covers safe `curl` GET/HEAD fetch scopes plus project-local `cat`, `rg`, `grep`, and `sed -n` reads.
+  - Updated `src/tool/bash.ts` to classify those readonly commands into narrow repeat-safe scopes, while still falling back to exact-command approval for large file reads, unsafe curl flags, or more complex command shapes.
+  - Synchronized README and specs so the documented permission contract matches the runtime behavior.
+- Verification:
+  - `bun test test/unit/permission.test.ts test/unit/tool.test.ts`
+  - `bun run typecheck`
+- Notes: secret-adjacent paths like `.env*` and `secrets/**` still avoid auto-approval, and outside-path/native-sandbox bypasses still require an explicit risk prompt.
+
 ## Step 23: Immediate Provider Wait State After Tool Completion
 
 - Scope: remove the misleading “工具已完成” stall after a tool returns by surfacing the next provider-wait state immediately, without adding extra waiting spam to the timeline transcript.
@@ -376,3 +388,39 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/tool.test.ts`: pass.
   - `bun run verify:v1`: pass; includes typecheck, full tests, fake eval, APIx subset, and cache benchmark.
+
+## Step 9: TUI Helper Extraction
+
+- Scope: break `src/ui/tui.ts` into smaller UI-focused modules without changing the public TUI flow or `RunUiEvent` handling contract.
+- Implementation:
+  - Extracted shared TUI types into `src/ui/tui-types.ts`.
+  - Extracted ANSI and width helpers into `src/ui/tui-ansi.ts`.
+  - Extracted welcome/status/summary card builders into `src/ui/tui-cards.ts`.
+  - Extracted status-panel line generation into `src/ui/tui-status-panel.ts`.
+  - Reduced `src/ui/tui.ts` to orchestration, event handling, and output coordination.
+- Code Complete review result:
+  - Correctness: rendering contracts stayed inside the existing `TuiRenderer` facade, so CLI and timeline callers did not need behavior changes.
+  - Maintainability: card layout, ANSI helpers, and panel rendering can now evolve independently instead of sharing one 600+ line file.
+  - Verification: preserved existing TUI/timeline assertions rather than replacing them with looser snapshots.
+- Verification:
+  - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts`: pass.
+  - `bun test test/unit/cli.test.ts`: pass.
+  - `bun test`: pass.
+
+## Step 10: TUI Runtime State Isolation + Gate Env Cleanup
+
+- Scope: keep Phase 1 moving by extracting TUI runtime state transitions, then fix the quality gate so test runs do not inherit global EasyCode runtime configuration.
+- Implementation:
+  - Added `src/ui/tui-state.ts` to hold run lifecycle state such as streaming, prompt-paused mode, spinner frame, elapsed timing, queued input, and provider metrics.
+  - Simplified `src/ui/tui.ts` so it delegates run-state transitions to `TuiState` and stays focused on rendering orchestration.
+  - Updated `src/cli/startup.ts` so global `~/.easycode/.env` loading can be disabled explicitly with `EASYCODE_DISABLE_GLOBAL_ENV=1`.
+  - Updated `dev/quality/quality-gate.ts` so the `tests` check runs with a sanitized env and does not inherit provider/search config from the global EasyCode env file.
+  - Added CLI coverage for the explicit global-env skip path in `test/unit/cli.test.ts`.
+- Code Complete review result:
+  - Correctness: gate test runs now behave like direct `bun test`, instead of silently depending on machine-local provider env.
+  - Maintainability: `TuiRenderer` no longer owns both state machine data and rendering details, which lowers the risk of future TUI edits.
+  - Verification: quality-gate divergence was validated by fixing the env boundary and then re-running the full gate.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts test/unit/cli.test.ts`: 53 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.

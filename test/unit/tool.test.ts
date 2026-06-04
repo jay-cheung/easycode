@@ -505,6 +505,58 @@ describe("tool", () => {
     expect(result.metadata.permissionAction).toBe("allow")
   })
 
+  test("auto reviewer approves project-local small-file reads and safe curl fetches", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "small.txt"), "hello\n")
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+      throw new Error("manual prompt should not be reached")
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+
+    const catResult = await registry.run("bash", { command: "cat small.txt" }, ctx)
+    const curlResult = await registry.run("bash", { command: "curl --retry 2 --connect-timeout 5 --http2 --url https://example.com/docs -H 'Accept: application/json' -A easycode/1.0" }, ctx)
+
+    expect(catResult.metadata.status).toBe("succeeded")
+    expect(catResult.metadata.permissionAction).toBe("allow")
+    expect(curlResult.metadata.permissionAction).toBe("allow")
+  })
+
+  test("large file reads and unsafe curl fetches still require manual bash approval", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "large.txt"), "x".repeat(300 * 1024))
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const requested: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(request.patterns.join(","))
+      return "once"
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+
+    const largeCat = await registry.run("bash", { command: "cat large.txt" }, ctx)
+    const curlWithHeader = await registry.run("bash", { command: "curl -H Authorization:secret https://example.com" }, ctx)
+    const curlWithOutput = await registry.run("bash", { command: "curl -o page.html https://example.com" }, ctx)
+
+    expect(largeCat.metadata.status).toBe("succeeded")
+    expect(curlWithHeader.metadata.status).toBe("succeeded")
+    expect(curlWithOutput.metadata.status).toBe("succeeded")
+    expect(requested).toEqual([
+      "bash:exact:cat large.txt",
+      "bash:exact:curl -H Authorization:secret https://example.com",
+      "bash:exact:curl -o page.html https://example.com",
+    ])
+  })
+
   test("bash does not retry sandbox bypass when rejected", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()

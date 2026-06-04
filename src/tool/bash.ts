@@ -16,6 +16,8 @@ export type BashApproval = {
 }
 
 const exactBashApprovalPrefix = "bash:exact:"
+const autoApprovedFileReadBytes = 256 * 1024
+const curlScopePrefix = "curl:"
 
 export function bashApprovalForCommand(command: string, cwd = process.cwd()): BashApproval {
   const trimmed = command.trim()
@@ -27,7 +29,23 @@ export function bashApprovalForCommand(command: string, cwd = process.cwd()): Ba
   const normalizedProgram = path.basename(program)
   if (normalizedProgram === "git") return gitBashApproval(trimmed, args)
   if (normalizedProgram === "pwd") return scopedBashApproval("pwd", "project", [])
-  if (!["ls", "cat", "wc", "find"].includes(normalizedProgram)) return exactBashApproval(trimmed)
+  if (normalizedProgram === "curl") {
+    const curlScope = curlReadonlyScope(args)
+    return curlScope ? scopedBashApproval(`${curlScopePrefix}${curlScope.kind}`, curlScope.scope, []) : exactBashApproval(trimmed)
+  }
+  if (normalizedProgram === "cat") {
+    const fileScope = readonlySingleFileScope(normalizedProgram, args, cwd)
+    return fileScope ? scopedBashApproval(normalizedProgram, fileScope, pathRememberPatterns(normalizedProgram, fileScope)) : exactBashApproval(trimmed)
+  }
+  if (normalizedProgram === "sed") {
+    const fileScope = readonlySedScope(args, cwd)
+    return fileScope ? scopedBashApproval("sed", fileScope, pathRememberPatterns("sed", fileScope)) : exactBashApproval(trimmed)
+  }
+  if (normalizedProgram === "rg" || normalizedProgram === "grep") {
+    const searchScope = readonlySearchScope(normalizedProgram, args, cwd)
+    return searchScope ? scopedBashApproval(normalizedProgram, searchScope.scope, searchScope.rememberPatterns) : exactBashApproval(trimmed)
+  }
+  if (!["ls", "wc", "find"].includes(normalizedProgram)) return exactBashApproval(trimmed)
   const pathArgs = args.filter((arg) => !arg.startsWith("-"))
   if (pathArgs.length > 1) return exactBashApproval(trimmed)
   const rawPath = pathArgs[0] ?? "."
@@ -87,6 +105,15 @@ function pathLooksDirectory(filePath: string) {
   }
 }
 
+function pathLooksSmallFile(filePath: string) {
+  try {
+    const stat = statSync(filePath)
+    return stat.isFile() && stat.size <= autoApprovedFileReadBytes
+  } catch {
+    return false
+  }
+}
+
 function normalizedPath(filePath: string) {
   return filePath.replaceAll("\\", "/").replace(/\/+$/, "") || "/"
 }
@@ -119,6 +146,165 @@ function shellWords(command: string) {
   if (quote) return undefined
   if (current) words.push(current)
   return words
+}
+
+function readonlySingleFileScope(kind: string, args: string[], cwd: string) {
+  const pathArgs = args.filter((arg) => !arg.startsWith("-"))
+  if (pathArgs.length !== 1) return undefined
+  const resolved = path.resolve(cwd, pathArgs[0] ?? ".")
+  if (!pathLooksSmallFile(resolved)) return undefined
+  return normalizedPath(resolved)
+}
+
+function readonlySedScope(args: string[], cwd: string) {
+  if (!args.some((arg) => arg === "-n" || /^-[^-]*n/.test(arg))) return undefined
+  const pathArgs = args.filter((arg) => !arg.startsWith("-"))
+  if (pathArgs.length < 2) return undefined
+  const resolved = path.resolve(cwd, pathArgs[pathArgs.length - 1] ?? ".")
+  if (!pathLooksSmallFile(resolved)) return undefined
+  return normalizedPath(resolved)
+}
+
+function readonlySearchScope(kind: "rg" | "grep", args: string[], cwd: string) {
+  const pathArgs = searchPathArgs(kind, args)
+  if (!pathArgs) return undefined
+  if (pathArgs.length > 1) return undefined
+  const resolved = path.resolve(cwd, pathArgs[0] ?? ".")
+  if (!pathLooksDirectory(resolved) && !pathLooksSmallFile(resolved) && pathArgs.length > 0) return undefined
+  return { scope: normalizedPath(resolved), rememberPatterns: pathRememberPatterns(kind, resolved) }
+}
+
+function searchPathArgs(kind: "rg" | "grep", args: string[]) {
+  const nonOptionArgs = collectNonOptionArgs(args)
+  if (nonOptionArgs.length === 0) return undefined
+  return kind === "rg" ? nonOptionArgs.slice(1) : nonOptionArgs.slice(1)
+}
+
+function collectNonOptionArgs(args: string[]) {
+  const values: string[] = []
+  const consumeNext = new Set(["-e", "-f", "-g", "-m", "-A", "-B", "-C", "--regexp", "--file", "--glob", "--max-count", "--after-context", "--before-context", "--context"])
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? ""
+    if (!arg.startsWith("-") || arg === "-") {
+      values.push(arg)
+      continue
+    }
+    if (arg === "--") {
+      return [...values, ...args.slice(index + 1)]
+    }
+    if (consumeNext.has(arg)) index += 1
+  }
+  return values
+}
+
+function curlReadonlyScope(args: string[]) {
+  let method: "get" | "head" = "get"
+  const urls: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? ""
+    if (!arg.startsWith("-") || arg === "-") {
+      urls.push(arg)
+      continue
+    }
+    if (arg === "--") {
+      urls.push(...args.slice(index + 1))
+      break
+    }
+    if (arg.startsWith("--")) {
+      const longFlag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg
+      const inlineValue = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : undefined
+      if (["--location", "--silent", "--show-error", "--fail", "--compressed", "--include", "--insecure", "--globoff", "--http1.1", "--http2", "--http2-prior-knowledge", "--ipv4", "--ipv6", "--path-as-is", "--no-progress-meter"].includes(longFlag)) continue
+      if (longFlag === "--head") {
+        method = "head"
+        continue
+      }
+      if (longFlag === "--url") {
+        const value = inlineValue ?? args[index + 1]
+        if (!inlineValue) index += 1
+        if (!value) return undefined
+        urls.push(value)
+        continue
+      }
+      if (longFlag === "--request") {
+        const requestMethod = (inlineValue ?? args[index + 1] ?? "").toUpperCase()
+        if (!inlineValue) index += 1
+        if (requestMethod === "HEAD") method = "head"
+        else if (requestMethod !== "GET") return undefined
+        continue
+      }
+      if (["--max-time", "--connect-timeout", "--retry", "--retry-delay", "--retry-max-time"].includes(longFlag)) {
+        if (!inlineValue) index += 1
+        continue
+      }
+      if (longFlag === "--user-agent") {
+        if (!inlineValue) index += 1
+        continue
+      }
+      if (longFlag === "--header") {
+        const value = inlineValue ?? args[index + 1]
+        if (!inlineValue) index += 1
+        if (!isSafeCurlHeader(value)) return undefined
+        continue
+      }
+      return undefined
+    }
+    const shortFlags = arg.slice(1)
+    if (shortFlags === "m" || shortFlags === "X" || shortFlags === "A" || shortFlags === "H") {
+      const value = (args[index + 1] ?? "").toUpperCase()
+      const rawValue = args[index + 1] ?? ""
+      index += 1
+      if (shortFlags === "X") {
+        if (value === "HEAD") method = "head"
+        else if (value !== "GET") return undefined
+      }
+      if (shortFlags === "H" && !isSafeCurlHeader(rawValue)) return undefined
+      continue
+    }
+    if (shortFlags.startsWith("m")) continue
+    if (shortFlags.startsWith("X")) {
+      const value = shortFlags.slice(1).toUpperCase()
+      if (value === "HEAD") method = "head"
+      else if (value !== "GET") return undefined
+      continue
+    }
+    if (shortFlags.startsWith("A")) continue
+    if (shortFlags.startsWith("H")) {
+      if (!isSafeCurlHeader(shortFlags.slice(1))) return undefined
+      continue
+    }
+    if ([...shortFlags].every((flag) => ["L", "s", "S", "f", "I", "i", "k", "g", "4", "6"].includes(flag))) {
+      if (shortFlags.includes("I")) method = "head"
+      continue
+    }
+    return undefined
+  }
+  if (urls.length !== 1) return undefined
+  try {
+    const url = new URL(urls[0] ?? "")
+    if (!["http:", "https:"].includes(url.protocol)) return undefined
+    return { kind: method, scope: `${url.protocol}//${url.host}` }
+  } catch {
+    return undefined
+  }
+}
+
+function isSafeCurlHeader(value: string | undefined) {
+  if (!value) return false
+  const trimmed = value.trim()
+  if (!trimmed || trimmed.startsWith("@")) return false
+  const separator = trimmed.indexOf(":")
+  if (separator <= 0) return false
+  const name = trimmed.slice(0, separator).trim().toLowerCase()
+  return [
+    "accept",
+    "accept-language",
+    "cache-control",
+    "if-modified-since",
+    "if-none-match",
+    "referer",
+    "range",
+    "user-agent",
+  ].includes(name)
 }
 
 

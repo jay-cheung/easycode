@@ -247,14 +247,14 @@ Tavily 示例 / Tavily example:
 }
 ```
 
-`web_search` 参数 / parameters: `query`、`limit`、`engine`、`live`。API key 建议只通过环境变量提供，不要写入仓库。
+`web_search` 参数 / parameters: `query`、`limit`、`engine`、`live`。默认不再额外弹权限确认，live 路径仍只支持 Tavily。API key 建议只通过环境变量提供，不要写入仓库。
 Prefer environment variables for API keys instead of committing secrets.
 
 ### Connector（本地命令封装 / Local Command Wrappers）
 
-`.easycode/connectors.json` —— 把常用 shell 命令封装为工具，在对话中按需调用，每次执行需授权。
+`.easycode/connectors.json` —— 把常用 shell 命令封装为工具，在对话中按需调用。执行仍会经过同一套权限策略；安全只读 scope 可以自动放行，危险或副作用命令仍需授权。
 
-`.easycode/connectors.json` — Wrap common shell commands as tools that can be invoked during conversation. Each execution requires approval.
+`.easycode/connectors.json` — Wrap common shell commands as tools that can be invoked during conversation. Calls still flow through the same permission policy; safe read-only scopes may auto-approve, while dangerous or side-effectful commands still require review.
 
 ```json
 {
