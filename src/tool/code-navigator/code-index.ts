@@ -4,7 +4,7 @@ import type { Sandbox } from "../../sandbox"
 import { codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
 import { easycodeDir } from "../../easycode-path"
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
-import { uniqueSortedResults } from "./parsing"
+import { maskSearchableLines, uniqueSortedResults } from "./parsing"
 import type { CallGraphDirection, CallGraphResult, CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
 import { extractLocalBindingScopes, isTypeScriptLike, type LocalBindingScope } from "./ast"
 
@@ -274,6 +274,7 @@ function symbolFromID(id: string | undefined) {
 
 function extractCodeIndex(text: string, file: FileFingerprint) {
   const lines = text.split(/\r?\n/)
+  const searchableLines = maskSearchableLines(text)
   const declarations: CodeIndexSymbol[] = []
   const imports = new Set<string>()
   const exports = new Set<string>()
@@ -322,7 +323,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   for (const [index, rawLine] of lines.entries()) {
     const lineNumber = index + 1
     if (parseImportLine(rawLine)) continue
-    const line = stripInlineCommentsAndStrings(rawLine)
+    const line = searchableLines[index] ?? ""
     callPattern.lastIndex = 0
     let match: RegExpExecArray | null
     while ((match = callPattern.exec(line)) !== null) {
@@ -444,32 +445,6 @@ function isPropertyAccess(line: string, index: number) {
   let cursor = index - 1
   while (cursor >= 0 && /\s/.test(line[cursor] ?? "")) cursor -= 1
   return line[cursor] === "."
-}
-
-function stripInlineCommentsAndStrings(line: string) {
-  let output = ""
-  let quote: string | undefined
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index] ?? ""
-    const next = line[index + 1] ?? ""
-    if (!quote && char === "/" && next === "/") break
-    if (quote) {
-      if (char === "\\") {
-        index++
-        continue
-      }
-      if (char === quote) quote = undefined
-      output += " "
-      continue
-    }
-    if (char === "\"" || char === "'" || char === "`") {
-      quote = char
-      output += " "
-      continue
-    }
-    output += char
-  }
-  return output
 }
 
 function symbolFor(filePath: string, name: string, kind: string, line: number, source: string, options: { exported?: boolean; ownerID?: string } = {}): CodeIndexSymbol {

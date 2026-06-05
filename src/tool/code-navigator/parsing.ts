@@ -41,3 +41,78 @@ export function normalizeRelativePath(filePath: string) {
   return filePath.replaceAll("\\", "/").replace(/^\.\//, "")
 }
 
+type SearchMaskState = {
+  blockComment: boolean
+  quote?: "'" | "\"" | "`"
+  tripleQuote?: "'''" | "\"\"\""
+}
+
+export function maskSearchableLines(text: string) {
+  const lines = text.split(/\r?\n/)
+  const state: SearchMaskState = { blockComment: false }
+  return lines.map((line) => maskSearchableLine(line, state))
+}
+
+function maskSearchableLine(line: string, state: SearchMaskState) {
+  let output = ""
+  for (let index = 0; index < line.length; index++) {
+    const char = line[index] ?? ""
+    const next = line[index + 1] ?? ""
+    const nextThree = line.slice(index, index + 3)
+
+    if (state.blockComment) {
+      output += " "
+      if (char === "*" && next === "/") {
+        output += " "
+        state.blockComment = false
+        index += 1
+      }
+      continue
+    }
+
+    if (state.tripleQuote) {
+      output += " "
+      if (nextThree === state.tripleQuote) {
+        output += "  "
+        state.tripleQuote = undefined
+        index += 2
+      }
+      continue
+    }
+
+    if (state.quote) {
+      output += " "
+      if (char === "\\") {
+        if (index + 1 < line.length) {
+          output += " "
+          index += 1
+        }
+        continue
+      }
+      if (char === state.quote) state.quote = undefined
+      continue
+    }
+
+    if (char === "/" && next === "/") break
+    if (char === "#") break
+    if (char === "/" && next === "*") {
+      output += "  "
+      state.blockComment = true
+      index += 1
+      continue
+    }
+    if (nextThree === "'''" || nextThree === "\"\"\"") {
+      output += "   "
+      state.tripleQuote = nextThree as "'''" | "\"\"\""
+      index += 2
+      continue
+    }
+    if (char === "\"" || char === "'" || char === "`") {
+      output += " "
+      state.quote = char
+      continue
+    }
+    output += char
+  }
+  return output
+}

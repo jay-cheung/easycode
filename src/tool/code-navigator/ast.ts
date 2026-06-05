@@ -1,6 +1,7 @@
 import path from "node:path"
 import * as ts from "typescript"
 import type { CodeIndexSymbol } from "./types"
+import { maskSearchableLines } from "./parsing"
 
 export type LocalBindingScope = {
   ownerID: string
@@ -27,6 +28,7 @@ export function isTypeScriptLike(extension: string) {
 
 function extractGenericLocalBindingScopes(text: string, filePath: string, symbols: CodeIndexSymbol[]): LocalBindingScope[] {
   const lines = text.split(/\r?\n/)
+  const searchableLines = maskSearchableLines(text)
   const extension = path.extname(filePath)
   const scopes: LocalBindingScope[] = []
   for (const symbol of symbols) {
@@ -34,7 +36,7 @@ function extractGenericLocalBindingScopes(text: string, filePath: string, symbol
     const names = new Set<string>()
     collectSignatureBindings(lines[symbol.startLine - 1] ?? "", extension, names)
     for (let lineIndex = symbol.startLine; lineIndex < Math.min(symbol.endLine, lines.length); lineIndex++) {
-      collectLocalBindingsFromLine(stripLineCommentsAndStrings(lines[lineIndex] ?? ""), names)
+      collectLocalBindingsFromLine(searchableLines[lineIndex] ?? "", names)
     }
     if (names.size > 0) {
       scopes.push({ ownerID: symbol.id, startLine: symbol.startLine, endLine: symbol.endLine, names })
@@ -161,31 +163,4 @@ function scriptKindFor(filePath: string) {
   if (filePath.endsWith(".jsx")) return ts.ScriptKind.JSX
   if (filePath.endsWith(".js") || filePath.endsWith(".mjs") || filePath.endsWith(".cjs")) return ts.ScriptKind.JS
   return ts.ScriptKind.TS
-}
-
-function stripLineCommentsAndStrings(line: string) {
-  let output = ""
-  let quote: string | undefined
-  for (let index = 0; index < line.length; index++) {
-    const char = line[index] ?? ""
-    const next = line[index + 1] ?? ""
-    if (!quote && char === "/" && next === "/") break
-    if (!quote && char === "#") break
-    if (quote) {
-      if (char === "\\") {
-        index++
-        continue
-      }
-      if (char === quote) quote = undefined
-      output += " "
-      continue
-    }
-    if (char === "\"" || char === "'" || char === "`") {
-      quote = char
-      output += " "
-      continue
-    }
-    output += char
-  }
-  return output
 }

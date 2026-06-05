@@ -312,6 +312,41 @@ describe("code navigator", () => {
     ])
   })
 
+  test("code index ignores block comments and multiline template literals for reference lookup", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "store.ts"), [
+      "export const tokenStore = {",
+      "  get(user: string) {",
+      "    return user",
+      "  }",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "use-store.ts"), [
+      "import { tokenStore } from './store'",
+      "export function useGlobal(user: string): string {",
+      "  /*",
+      "    tokenStore.get(user)",
+      "  */",
+      "  const note = `tokenStore",
+      "  tokenStore.get(user)`",
+      "  return tokenStore.get(user)",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      },
+    })
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+    const references = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
+
+    expect(references).toEqual([
+      { filePath: "src/use-store.ts", line: 8, preview: "  return tokenStore.get(user)" },
+    ])
+  })
+
   test("code index extracts symbols and call graph for non-TypeScript files", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "pkg"), { recursive: true })
@@ -343,6 +378,34 @@ describe("code navigator", () => {
       "    return local",
       "",
       "def use_global():",
+      "    return token_store()",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root), {
+      runner: async () => {
+        throw new Error("ENOENT")
+      },
+    })
+
+    await navigator.repoMap({ dir: "pkg", language: "python" })
+    const references = await navigator.findReferences({ symbol: "token_store", language: "python" })
+
+    expect(references).toEqual([
+      { filePath: "pkg/service.py", line: 9, preview: "    return token_store()" },
+    ])
+  })
+
+  test("code index ignores Python triple-quoted strings for reference lookup", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "pkg"), { recursive: true })
+    await Bun.write(path.join(root, "pkg", "service.py"), [
+      "def token_store():",
+      "    return 1",
+      "",
+      "def use_global():",
+      "    \"\"\"",
+      "    token_store()",
+      "    \"\"\"",
+      "    note = '''token_store()'''",
       "    return token_store()",
     ].join("\n"))
     const navigator = new CliCodeNavigator(new Sandbox(root), {

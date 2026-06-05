@@ -876,3 +876,20 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/instruction.test.ts test/integration/agent.test.ts`: pass.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 39: Code Index Multiline Comment And String Masking
+
+- Scope: reduce false-positive code-navigation references by teaching the code index to ignore multiline comments and multiline string bodies, without changing definition/call graph contracts.
+- Implementation:
+  - Added a shared stateful masking helper in `src/tool/code-navigator/parsing.ts` that preserves line shape while stripping `/* ... */`, multiline template strings, and Python triple-quoted strings from semantic scanning.
+  - Rewired `src/tool/code-navigator/code-index.ts` to use the masked lines for `calls` and `references` extraction instead of a line-local string/comment stripper.
+  - Reused the same masked lines in generic local-binding scope extraction so non-TypeScript languages also stop learning bogus bindings from multiline comment/string bodies.
+  - Added regression coverage for TypeScript block comments + multiline template literals and for Python triple-quoted strings.
+- Code Complete review result:
+  - Correctness: symbol lookup now avoids counting comment/docstring/template-literal noise as semantic references, which makes the code index a clearer improvement over raw text search in same-name collision cases.
+  - Maintainability: masking now lives in one shared helper instead of duplicated per-line heuristics, so future parser tweaks do not need to be repeated in both reference extraction and generic scope extraction.
+  - Verification: reran code-navigation-focused unit tests plus the unified gate because this changes the shared code-index path used by `repo_map`, `find_definition`, `find_references`, and `call_graph`.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/code-navigator.test.ts`: pass.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
