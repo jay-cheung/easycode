@@ -5,7 +5,7 @@ import os from "node:os"
 import { InstructionService } from "../../src/instruction"
 
 describe("instruction service", () => {
-  test("loads the first matching project and global instruction files in stable order", async () => {
+  test("loads all matching project and global instruction files in stable order", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "easycode-instructions-"))
     const globalRoot = await mkdtemp(path.join(os.tmpdir(), "easycode-global-instructions-"))
     await mkdir(path.join(globalRoot, ".easycode"), { recursive: true })
@@ -19,7 +19,10 @@ describe("instruction service", () => {
 
     expect(instructions.map((instruction) => [instruction.source, instruction.path, instruction.content])).toEqual([
       ["project", "easycode.md", "Project easycode"],
+      ["project", "AGENTS.md", "Project agents"],
+      ["project", "CLAUDE.md", "Project claude"],
       ["global", path.join(globalRoot, ".easycode", "easycode.md"), "Global easycode"],
+      ["global", path.join(globalRoot, ".easycode", "AGENTS.md"), "Global agents"],
     ])
     await rm(root, { recursive: true, force: true })
     await rm(globalRoot, { recursive: true, force: true })

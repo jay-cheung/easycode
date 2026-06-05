@@ -1,5 +1,6 @@
 import os from "node:os"
 import path from "node:path"
+import { realpath } from "node:fs/promises"
 
 export type InstructionSource = "project" | "global"
 
@@ -40,10 +41,10 @@ export class InstructionService implements InstructionServiceLike {
   }
 
   async system() {
-    const files = [
-      await firstExisting(projectInstructionFiles.map((file) => ({ source: "project" as const, filePath: path.join(this.root, file), displayPath: file }))),
-      await firstExisting(this.globalFiles.map((filePath) => ({ source: "global" as const, filePath, displayPath: displayGlobalPath(filePath) }))),
-    ].filter((file): file is InstructionFile => Boolean(file))
+    const files = await resolveExisting([
+      ...projectInstructionFiles.map((file) => ({ source: "project" as const, filePath: path.join(this.root, file), displayPath: file })),
+      ...this.globalFiles.map((filePath) => ({ source: "global" as const, filePath, displayPath: displayGlobalPath(filePath) })),
+    ])
     const instructions: InstructionInfo[] = []
     for (const file of files) {
       const normalized = path.resolve(file.filePath)
@@ -61,16 +62,19 @@ type InstructionFile = {
   displayPath: string
 }
 
-async function firstExisting(files: InstructionFile[]) {
+async function resolveExisting(files: InstructionFile[]) {
   const seen = new Set<string>()
+  const resolved: InstructionFile[] = []
   for (const file of files) {
     const normalized = path.resolve(file.filePath)
-    if (seen.has(normalized)) continue
-    seen.add(normalized)
     const candidate = Bun.file(normalized)
-    if (await candidate.exists()) return file
+    if (!(await candidate.exists())) continue
+    const canonical = await canonicalInstructionPath(normalized)
+    if (seen.has(canonical)) continue
+    seen.add(canonical)
+    resolved.push(file)
   }
-  return undefined
+  return resolved
 }
 
 async function readInstruction(filePath: string) {
@@ -82,4 +86,12 @@ async function readInstruction(filePath: string) {
 function displayGlobalPath(filePath: string) {
   const home = os.homedir()
   return filePath.startsWith(`${home}${path.sep}`) ? `~/${path.relative(home, filePath)}` : filePath
+}
+
+async function canonicalInstructionPath(filePath: string) {
+  try {
+    return await realpath(filePath)
+  } catch {
+    return filePath
+  }
 }

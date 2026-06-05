@@ -860,3 +860,19 @@
 - Verification:
   - `bun run typecheck`: pass.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 38: Instruction Resolver Stable Multi-file Loading
+
+- Scope: strengthen the minimal instruction resolver so project/global durable instruction loading matches the acceptance contract more closely, without changing prompt ordering relative to dynamic conversation history.
+- Implementation:
+  - Updated `src/instruction.ts` to resolve all existing project and global instruction files in stable order instead of stopping after the first project hit and the first global hit.
+  - Preserved the current ordering contract: project instruction files still load before global ones, and both still appear before dynamic history in composed provider context.
+  - Expanded unit and integration coverage so the resolver now proves multiple project/global instruction files are surfaced together and still precede the user prompt in provider input.
+- Code Complete review result:
+  - Correctness: durable instruction loading now matches the plural acceptance language for project/global instruction files while preserving the same prompt boundary and source tagging format.
+  - Maintainability: the instruction service now behaves more like a true minimal resolver instead of a first-hit shortcut, which reduces hidden configuration loss when repos carry both `easycode.md` and `AGENTS.md`.
+  - Verification: reran instruction-focused unit/integration coverage plus the unified gate because this change affects composed provider context for every run.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/instruction.test.ts test/integration/agent.test.ts`: pass.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.

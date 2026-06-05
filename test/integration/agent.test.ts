@@ -474,6 +474,33 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("loads multiple project instruction files before dynamic history", async () => {
+    const root = await fixture()
+    await Bun.write(path.join(root, "easycode.md"), "Project easycode rule.")
+    await Bun.write(path.join(root, "AGENTS.md"), "Project agents rule.")
+    await Bun.write(path.join(root, "CLAUDE.md"), "Project claude rule.")
+    const prompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        prompts.push(input.providerMessages.map((message) => message.content).join("\n\n"))
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Check instructions", "build")
+
+    expect(result.status).toBe("completed")
+    expect(prompts[0]).toContain('<instruction source="project" path="easycode.md">')
+    expect(prompts[0]).toContain("Project easycode rule.")
+    expect(prompts[0]).toContain('<instruction source="project" path="AGENTS.md">')
+    expect(prompts[0]).toContain("Project agents rule.")
+    expect(prompts[0]).toContain('<instruction source="project" path="CLAUDE.md">')
+    expect(prompts[0]).toContain("Project claude rule.")
+    expect(prompts[0].indexOf("Project claude rule.")).toBeLessThan(prompts[0].indexOf("Check instructions"))
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("sends static composed context on every provider turn", async () => {
     const root = await fixture()
     const providerMessageContents: string[][] = []
