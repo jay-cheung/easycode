@@ -944,3 +944,20 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/code-navigator.test.ts`: pass.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 43: Star Re-export Barrel Resolution In Code Index
+
+- Scope: fix a code-navigation gap where named imports through `export * from "./impl"` barrel files could lose their semantic target under same-name collisions, without changing tool output shapes.
+- Implementation:
+  - Added optional `exportAllSources` metadata on indexed files so the code index records star re-export sources explicitly.
+  - Updated exported-symbol resolution to recurse through `export * from ...` sources before falling back to ambiguous project-wide name matching.
+  - Bumped the code-index generator version so cached indexes rebuild with the new star re-export metadata.
+  - Added a regression test proving `call_graph` resolves `import { leaf } from "./index"` through `index.ts -> export * from "./impl"` even when another file exports the same symbol name.
+- Code Complete review result:
+  - Correctness: star re-export barrels now preserve semantic identity for cross-file callers, which closes another common barrel-file gap between the code index and raw text search.
+  - Maintainability: star re-export intent is now explicit in cached file metadata instead of being inferred only from coarse export edges.
+  - Verification: reran code-navigation-focused unit tests plus the unified gate because this changes cached file metadata and named import resolution behavior.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/code-navigator.test.ts`: pass.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.

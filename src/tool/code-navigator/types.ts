@@ -51,6 +51,7 @@ export type CodeIndexFile = {
   exports: string[]
   importBindings?: Array<{ local: string; imported: string; source: string }>
   exportBindings?: Array<{ exported: string; local: string; source?: string }>
+  exportAllSources?: string[]
 }
 
 export type CodeIndexSymbol = {

@@ -267,11 +267,20 @@ function resolveExportedSymbol(filePath: string, exportedName: string, filesByPa
 
   const file = filesByPath.get(filePath)
   const binding = file?.exportBindings?.find((item) => item.exported === exportedName)
-  if (!binding) return undefined
-  if (!binding.source) return targetSymbols.find((symbol) => symbol.name === binding.local)
-  const sourceFile = resolveImportSource(filePath, binding.source, filesByPath)
-  if (!sourceFile) return undefined
-  return resolveExportedSymbol(sourceFile.filePath, binding.local, filesByPath, byFile, visited)
+  if (binding) {
+    if (!binding.source) return targetSymbols.find((symbol) => symbol.name === binding.local)
+    const sourceFile = resolveImportSource(filePath, binding.source, filesByPath)
+    if (!sourceFile) return undefined
+    return resolveExportedSymbol(sourceFile.filePath, binding.local, filesByPath, byFile, visited)
+  }
+
+  for (const source of file?.exportAllSources ?? []) {
+    const sourceFile = resolveImportSource(filePath, source, filesByPath)
+    if (!sourceFile) continue
+    const resolved = resolveExportedSymbol(sourceFile.filePath, exportedName, filesByPath, byFile, visited)
+    if (resolved) return resolved
+  }
+  return undefined
 }
 
 function resolveImportSource(fromFile: string, source: string, filesByPath: Map<string, CodeIndexFile>) {
@@ -300,6 +309,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   const exports = new Set<string>()
   const importBindings: CodeIndexFile["importBindings"] = []
   const exportBindings: CodeIndexFile["exportBindings"] = []
+  const exportAllSources: NonNullable<CodeIndexFile["exportAllSources"]> = []
   const edges: CodeIndexEdge[] = []
 
   for (const [index, line] of lines.entries()) {
@@ -339,6 +349,12 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       exportBindings.push(...parsedExportBindings.bindings)
       for (const binding of parsedExportBindings.bindings) exports.add(binding.exported)
       if (parsedExportBindings.source) edges.push(rawEdge("exports", `file:${file.filePath}`, parsedExportBindings.source, file.filePath, lineNumber, line))
+      continue
+    }
+    const exportAllMatch = line.match(/^\s*export\s+\*\s+from\s+["']([^"']+)["']/)
+    if (exportAllMatch?.[1]) {
+      exportAllSources.push(exportAllMatch[1])
+      edges.push(rawEdge("exports", `file:${file.filePath}`, exportAllMatch[1], file.filePath, lineNumber, line))
       continue
     }
     const reExportMatch = line.match(reExportPattern)
@@ -387,6 +403,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       exports: [...exports].sort(),
       importBindings,
       exportBindings,
+      exportAllSources,
     },
     symbols,
     edges,
