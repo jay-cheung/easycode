@@ -910,3 +910,20 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/code-navigator.test.ts`: pass.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 41: Namespace Import Member Resolution In Code Index
+
+- Scope: fix a code-navigation gap where namespace-import member calls such as `leafApi.leaf()` could lose their semantic target under same-name collisions, without changing tool output shapes.
+- Implementation:
+  - Added optional `receiverName` metadata on indexed edges so call extraction can preserve the property receiver for member calls.
+  - Updated code-index import resolution to use the receiver alias when matching import bindings, which lets `import * as leafApi from "./leaf"` resolve `leafApi.leaf()` to the imported file instead of falling back to ambiguous global name matching.
+  - Bumped the code-index generator version so cached indexes rebuild with the new edge metadata.
+  - Added a regression test proving `call_graph` resolves namespace-import member calls to the intended imported file even when another file exports the same symbol name.
+- Code Complete review result:
+  - Correctness: namespace-import call edges now keep their semantic target under same-name collisions, which closes another gap between the code index and plain text search.
+  - Maintainability: receiver-aware resolution is localized to code-index edge metadata and import resolution, instead of relying on brittle preview-text heuristics later.
+  - Verification: reran code-navigation-focused unit tests plus the unified gate because this changes cached edge structure and cross-file call resolution.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/code-navigator.test.ts`: pass.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.

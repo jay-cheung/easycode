@@ -231,7 +231,7 @@ function resolveEdges(symbols: CodeIndexSymbol[], files: CodeIndexFile[], edges:
   return edges.map((edge) => {
     const name = edge.toName ?? edge.to
     const local = (byFile.get(edge.filePath) ?? []).find((symbol) => symbol.name === name)
-    const imported = resolveImportedSymbol(name, edge.filePath, filesByPath, byFile)
+    const imported = resolveImportedSymbol(name, edge.receiverName, edge.filePath, filesByPath, byFile)
     const global = byName.get(name)?.length === 1 ? byName.get(name)?.[0] : undefined
     const target = imported ?? local ?? global
     const fromSymbol = byID.get(edge.from)
@@ -244,9 +244,9 @@ function resolveEdges(symbols: CodeIndexSymbol[], files: CodeIndexFile[], edges:
   }).filter((edge) => edge.kind !== "references" || edge.resolved)
 }
 
-function resolveImportedSymbol(name: string, filePath: string, filesByPath: Map<string, CodeIndexFile>, byFile: Map<string, CodeIndexSymbol[]>) {
+function resolveImportedSymbol(name: string, receiverName: string | undefined, filePath: string, filesByPath: Map<string, CodeIndexFile>, byFile: Map<string, CodeIndexSymbol[]>) {
   const file = filesByPath.get(filePath)
-  const binding = file?.importBindings?.find((item) => item.local === name)
+  const binding = file?.importBindings?.find((item) => item.local === (receiverName ?? name))
   if (!binding) return undefined
   const targetFile = resolveImportSource(filePath, binding.source, filesByPath)
   if (!targetFile) return undefined
@@ -337,7 +337,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
       const owner = symbolAtLine(symbols, lineNumber)
       if (owner && isLocalBindingReference(localBindingScopes, owner.id, name, lineNumber)) continue
-      edges.push(rawEdge("calls", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine))
+      edges.push(rawEdge("calls", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine, propertyReceiver(line, match.index)))
     }
     identifierPattern.lastIndex = 0
     while ((match = identifierPattern.exec(line)) !== null) {
@@ -464,14 +464,27 @@ function parseTypeScriptImportBindings(line: string, source: string): NonNullabl
   return bindings
 }
 
-function rawEdge(kind: CodeIndexEdge["kind"], from: string, to: string, filePath: string, line: number, source: string): CodeIndexEdge {
-  return { kind, from, to, toName: to, filePath, line, preview: source.trimEnd(), resolved: false }
+function rawEdge(kind: CodeIndexEdge["kind"], from: string, to: string, filePath: string, line: number, source: string, receiverName?: string): CodeIndexEdge {
+  return { kind, from, to, toName: to, receiverName, filePath, line, preview: source.trimEnd(), resolved: false }
 }
 
 function isPropertyAccess(line: string, index: number) {
   let cursor = index - 1
   while (cursor >= 0 && /\s/.test(line[cursor] ?? "")) cursor -= 1
   return line[cursor] === "."
+}
+
+function propertyReceiver(line: string, index: number) {
+  let cursor = index - 1
+  while (cursor >= 0 && /\s/.test(line[cursor] ?? "")) cursor -= 1
+  if (line[cursor] !== ".") return undefined
+  cursor -= 1
+  while (cursor >= 0 && /\s/.test(line[cursor] ?? "")) cursor -= 1
+  let end = cursor + 1
+  while (cursor >= 0 && /[A-Za-z0-9_$]/.test(line[cursor] ?? "")) cursor -= 1
+  const start = cursor + 1
+  const receiver = line.slice(start, end)
+  return receiver || undefined
 }
 
 function symbolFor(filePath: string, name: string, kind: string, line: number, source: string, options: { exported?: boolean; exportStyle?: "named" | "default"; ownerID?: string } = {}): CodeIndexSymbol {

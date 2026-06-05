@@ -1,7 +1,7 @@
 import path from "node:path"
 
 export const repoMapGeneratorVersion = "1"
-export const codeIndexGeneratorVersion = "6"
+export const codeIndexGeneratorVersion = "7"
 export const defaultMaxResults = 50
 export const maxMaxResults = 200
 export const defaultReadLineLimit = 200

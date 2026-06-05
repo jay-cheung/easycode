@@ -303,6 +303,35 @@ describe("code navigator", () => {
     expect(graph.edges.some((edge) => edge.to === "src/leaf.ts#helper")).toBe(false)
   })
 
+  test("callGraph resolves namespace import member calls to the imported file even with same-name collisions", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "leaf.ts"), [
+      "export function leaf() {",
+      "  return 1",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "other.ts"), [
+      "export function leaf() {",
+      "  return 2",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "parent.ts"), [
+      "import * as leafApi from './leaf'",
+      "export function parent() {",
+      "  return leafApi.leaf()",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    const graph = await navigator.callGraph({ symbol: "leaf", direction: "callers", depth: 1, language: "typescript" })
+
+    expect(graph.nodes).toContainEqual(expect.objectContaining({ id: "src/leaf.ts#leaf", name: "leaf" }))
+    expect(graph.nodes).toContainEqual(expect.objectContaining({ id: "src/parent.ts#parent", name: "parent" }))
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/parent.ts#parent", to: "src/leaf.ts#leaf", line: 3 }))
+    expect(graph.edges.some((edge) => edge.to === "src/other.ts#leaf")).toBe(false)
+  })
+
   test("AST local binding scope prevents same-name false references", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })
