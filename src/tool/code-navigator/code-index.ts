@@ -250,8 +250,10 @@ function resolveImportedSymbol(name: string, filePath: string, filesByPath: Map<
   if (!binding) return undefined
   const targetFile = resolveImportSource(filePath, binding.source, filesByPath)
   if (!targetFile) return undefined
-  const importedName = binding.imported === "default" || binding.imported === "*" ? name : binding.imported
-  return (byFile.get(targetFile.filePath) ?? []).find((symbol) => symbol.name === importedName || (binding.imported === "default" && symbol.exported))
+  const targetSymbols = byFile.get(targetFile.filePath) ?? []
+  if (binding.imported === "default") return targetSymbols.find((symbol) => symbol.exportStyle === "default")
+  const importedName = binding.imported === "*" ? name : binding.imported
+  return targetSymbols.find((symbol) => symbol.name === importedName)
 }
 
 function resolveImportSource(fromFile: string, source: string, filesByPath: Map<string, CodeIndexFile>) {
@@ -285,7 +287,10 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
     const lineNumber = index + 1
     const declaration = matchDeclaration(line, file.filePath)
     if (declaration) {
-      declarations.push(symbolFor(file.filePath, declaration.name, declaration.kind, lineNumber, line, { exported: declaration.exported }))
+      declarations.push(symbolFor(file.filePath, declaration.name, declaration.kind, lineNumber, line, {
+        exported: declaration.exported,
+        exportStyle: declaration.exportStyle,
+      }))
       if (declaration.exported) exports.add(declaration.name)
       const extendsMatch = line.match(classExtendsPattern)
       if (extendsMatch) edges.push(rawEdge("inherits", symbolID(file.filePath, extendsMatch[1] ?? ""), extendsMatch[2] ?? "", file.filePath, lineNumber, line))
@@ -367,31 +372,53 @@ function matchDeclaration(line: string, filePath: string) {
     const ts = line.match(declarationPattern)
     if (!ts) return undefined
     if (/^\s+/.test(line) && !/^\s*export\b/.test(line)) return undefined
-    return { kind: normalizeSymbolKind(ts[1] ?? ""), name: ts[2] ?? "", exported: /^\s*export\b/.test(line) }
+    const exported = /^\s*export\b/.test(line)
+    const exportStyle: CodeIndexSymbol["exportStyle"] = /^\s*export\s+default\b/.test(line) ? "default" : exported ? "named" : undefined
+    return {
+      kind: normalizeSymbolKind(ts[1] ?? ""),
+      name: ts[2] ?? "",
+      exported,
+      exportStyle,
+    }
   }
   if (extension === ".py") {
     const py = line.match(pythonDeclarationPattern)
-    if (py) return { kind: normalizeSymbolKind(py[1] ?? ""), name: py[2] ?? "", exported: true }
+    if (py) return { kind: normalizeSymbolKind(py[1] ?? ""), name: py[2] ?? "", exported: true, exportStyle: "named" as const }
   }
   if (extension === ".go") {
     const go = line.match(goDeclarationPattern)
-    if (go) return { kind: normalizeSymbolKind(go[1] ?? ""), name: go[2] ?? "", exported: /^[A-Z]/.test(go[2] ?? "") }
+    if (go) {
+      const exported = /^[A-Z]/.test(go[2] ?? "")
+      return { kind: normalizeSymbolKind(go[1] ?? ""), name: go[2] ?? "", exported, exportStyle: exported ? "named" as const : undefined }
+    }
   }
   if (extension === ".rs") {
     const rust = line.match(rustDeclarationPattern)
-    if (rust) return { kind: normalizeSymbolKind(rust[1] ?? ""), name: rust[2] ?? "", exported: /^\s*pub\b/.test(line) }
+    if (rust) {
+      const exported = /^\s*pub\b/.test(line)
+      return { kind: normalizeSymbolKind(rust[1] ?? ""), name: rust[2] ?? "", exported, exportStyle: exported ? "named" as const : undefined }
+    }
   }
   if ([".java", ".kt", ".kts", ".swift", ".cs"].includes(extension)) {
     const type = line.match(javaLikeTypeDeclarationPattern)
-    if (type) return { kind: normalizeSymbolKind(type[1] ?? ""), name: type[2] ?? "", exported: /\b(public|open)\b/.test(line) }
+    if (type) {
+      const exported = /\b(public|open)\b/.test(line)
+      return { kind: normalizeSymbolKind(type[1] ?? ""), name: type[2] ?? "", exported, exportStyle: exported ? "named" as const : undefined }
+    }
     const functionLike = line.match(javaLikeFunctionDeclarationPattern)
-    if (functionLike) return { kind: "method", name: functionLike[2] ?? "", exported: /\b(public|open)\b/.test(line) }
+    if (functionLike) {
+      const exported = /\b(public|open)\b/.test(line)
+      return { kind: "method", name: functionLike[2] ?? "", exported, exportStyle: exported ? "named" as const : undefined }
+    }
     const method = line.match(javaLikeMethodDeclarationPattern)
-    if (method) return { kind: "method", name: method[1] ?? "", exported: /\b(public|open)\b/.test(line) }
+    if (method) {
+      const exported = /\b(public|open)\b/.test(line)
+      return { kind: "method", name: method[1] ?? "", exported, exportStyle: exported ? "named" as const : undefined }
+    }
   }
   if ([".c", ".h", ".cpp", ".cc", ".hpp", ".php", ".rb"].includes(extension)) {
     const cLike = line.match(cLikeDeclarationPattern)
-    if (cLike) return { kind: "function", name: cLike[1] ?? "", exported: true }
+    if (cLike) return { kind: "function", name: cLike[1] ?? "", exported: true, exportStyle: "named" as const }
   }
   return undefined
 }
@@ -447,7 +474,7 @@ function isPropertyAccess(line: string, index: number) {
   return line[cursor] === "."
 }
 
-function symbolFor(filePath: string, name: string, kind: string, line: number, source: string, options: { exported?: boolean; ownerID?: string } = {}): CodeIndexSymbol {
+function symbolFor(filePath: string, name: string, kind: string, line: number, source: string, options: { exported?: boolean; exportStyle?: "named" | "default"; ownerID?: string } = {}): CodeIndexSymbol {
   return {
     id: symbolID(filePath, name),
     qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${name}`,
@@ -458,6 +485,7 @@ function symbolFor(filePath: string, name: string, kind: string, line: number, s
     endLine: line,
     signature: cleanSignature(source),
     exported: options.exported,
+    exportStyle: options.exportStyle,
     ownerID: options.ownerID,
   }
 }

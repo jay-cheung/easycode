@@ -62,6 +62,7 @@ export type CodeIndexSymbol = {
   endLine: number
   signature?: string
   exported?: boolean
+  exportStyle?: "named" | "default"
   ownerID?: string
 }
 

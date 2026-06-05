@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { CliCodeNavigator } from "../../src/tool/code-navigator"
+import { codeIndexGeneratorVersion } from "../../src/tool/code-navigator/constants"
 import { Sandbox } from "../../src/sandbox"
 
 const tempRoots: string[] = []
@@ -187,7 +188,7 @@ describe("code navigator", () => {
     const authReferences = await navigator.findReferences({ symbol: "AuthService", language: "typescript" })
     const storeReferences = await navigator.findReferences({ symbol: "tokenStore", language: "typescript" })
 
-    expect(index.generatorVersion).toBe("5")
+    expect(index.generatorVersion).toBe(codeIndexGeneratorVersion)
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "AuthService", line: 3 }))
     expect(index.edges).toContainEqual(expect.objectContaining({ kind: "references", to: "tokenStore", line: 4 }))
     expect(authReferences).toEqual([
@@ -274,6 +275,32 @@ describe("code navigator", () => {
     expect(graph.nodes.map((node) => node.name).sort()).toEqual(["leaf", "main", "parent"])
     expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/parent.ts#parent", to: "src/leaf.ts#leaf", line: 3 }))
     expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/main.ts#main", to: "src/parent.ts#parent", line: 3 }))
+  })
+
+  test("callGraph resolves default import aliases to default exports instead of unrelated named exports", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "leaf.ts"), [
+      "export function helper() {",
+      "  return 0",
+      "}",
+      "export default function leaf() {",
+      "  return helper() + 1",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "parent.ts"), [
+      "import makeLeaf from './leaf'",
+      "export function parent() {",
+      "  return makeLeaf()",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    const graph = await navigator.callGraph({ symbol: "leaf", direction: "callers", depth: 1, language: "typescript" })
+
+    expect(graph.nodes.map((node) => node.name).sort()).toEqual(["leaf", "parent"])
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/parent.ts#parent", to: "src/leaf.ts#leaf", line: 3 }))
+    expect(graph.edges.some((edge) => edge.to === "src/leaf.ts#helper")).toBe(false)
   })
 
   test("AST local binding scope prevents same-name false references", async () => {

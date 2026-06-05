@@ -893,3 +893,20 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/code-navigator.test.ts`: pass.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 40: Default Import Alias Resolution In Code Index
+
+- Scope: fix a cross-file code-navigation misresolution where default imports could bind to the wrong exported symbol in the target file, without changing `repo_map` or search tool contracts.
+- Implementation:
+  - Added explicit `exportStyle` metadata to indexed symbols so the code index distinguishes `export default` from ordinary named exports.
+  - Updated import resolution so `import foo from "./leaf"` resolves only to the target file's default export instead of falling back to the first exported symbol.
+  - Bumped the code-index generator version so cached indexes rebuild with the new symbol metadata.
+  - Added a regression test proving `call_graph` follows a default-import alias to the actual default export, not to an unrelated named export in the same file.
+- Code Complete review result:
+  - Correctness: cross-file default-import navigation now preserves semantic identity for callers/callees, which closes a real gap between AST-backed navigation and naive text matching.
+  - Maintainability: export intent is now explicit in the index schema instead of being inferred from a lossy boolean at import-resolution time.
+  - Verification: reran code-navigation-focused unit tests plus the unified gate because this changes cached index structure and cross-file symbol resolution.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/code-navigator.test.ts`: pass.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
