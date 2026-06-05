@@ -50,6 +50,7 @@ export type CodeIndexFile = {
   imports: string[]
   exports: string[]
   importBindings?: Array<{ local: string; imported: string; source: string }>
+  exportBindings?: Array<{ exported: string; local: string; source?: string }>
 }
 
 export type CodeIndexSymbol = {

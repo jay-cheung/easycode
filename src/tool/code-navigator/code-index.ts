@@ -250,10 +250,28 @@ function resolveImportedSymbol(name: string, receiverName: string | undefined, f
   if (!binding) return undefined
   const targetFile = resolveImportSource(filePath, binding.source, filesByPath)
   if (!targetFile) return undefined
-  const targetSymbols = byFile.get(targetFile.filePath) ?? []
-  if (binding.imported === "default") return targetSymbols.find((symbol) => symbol.exportStyle === "default")
   const importedName = binding.imported === "*" ? name : binding.imported
-  return targetSymbols.find((symbol) => symbol.name === importedName)
+  return resolveExportedSymbol(targetFile.filePath, importedName, filesByPath, byFile, new Set())
+}
+
+function resolveExportedSymbol(filePath: string, exportedName: string, filesByPath: Map<string, CodeIndexFile>, byFile: Map<string, CodeIndexSymbol[]>, visited: Set<string>): CodeIndexSymbol | undefined {
+  const visitKey = `${filePath}:${exportedName}`
+  if (visited.has(visitKey)) return undefined
+  visited.add(visitKey)
+
+  const targetSymbols = byFile.get(filePath) ?? []
+  if (exportedName === "default") return targetSymbols.find((symbol) => symbol.exportStyle === "default")
+
+  const direct = targetSymbols.find((symbol) => symbol.name === exportedName)
+  if (direct) return direct
+
+  const file = filesByPath.get(filePath)
+  const binding = file?.exportBindings?.find((item) => item.exported === exportedName)
+  if (!binding) return undefined
+  if (!binding.source) return targetSymbols.find((symbol) => symbol.name === binding.local)
+  const sourceFile = resolveImportSource(filePath, binding.source, filesByPath)
+  if (!sourceFile) return undefined
+  return resolveExportedSymbol(sourceFile.filePath, binding.local, filesByPath, byFile, visited)
 }
 
 function resolveImportSource(fromFile: string, source: string, filesByPath: Map<string, CodeIndexFile>) {
@@ -281,6 +299,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
   const imports = new Set<string>()
   const exports = new Set<string>()
   const importBindings: CodeIndexFile["importBindings"] = []
+  const exportBindings: CodeIndexFile["exportBindings"] = []
   const edges: CodeIndexEdge[] = []
 
   for (const [index, line] of lines.entries()) {
@@ -313,6 +332,13 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       imports.add(parsedImport.source)
       importBindings.push(...parsedImport.bindings)
       edges.push(rawEdge("imports", `file:${file.filePath}`, parsedImport.source, file.filePath, lineNumber, line))
+      continue
+    }
+    const parsedExportBindings = parseExportBindings(line)
+    if (parsedExportBindings) {
+      exportBindings.push(...parsedExportBindings.bindings)
+      for (const binding of parsedExportBindings.bindings) exports.add(binding.exported)
+      if (parsedExportBindings.source) edges.push(rawEdge("exports", `file:${file.filePath}`, parsedExportBindings.source, file.filePath, lineNumber, line))
       continue
     }
     const reExportMatch = line.match(reExportPattern)
@@ -360,6 +386,7 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       imports: [...imports].sort(),
       exports: [...exports].sort(),
       importBindings,
+      exportBindings,
     },
     symbols,
     edges,
@@ -462,6 +489,19 @@ function parseTypeScriptImportBindings(line: string, source: string): NonNullabl
   const namespace = line.match(/\*\s+as\s+([A-Za-z_$][\w$]*)/)
   if (namespace?.[1]) bindings.push({ local: namespace[1], imported: "*", source })
   return bindings
+}
+
+function parseExportBindings(line: string): { source?: string; bindings: NonNullable<CodeIndexFile["exportBindings"]> } | undefined {
+  const match = line.match(/^\s*export\s+\{([^}]+)\}\s*(?:from\s+["']([^"']+)["'])?/)
+  if (!match?.[1]) return undefined
+  const source = match[2] ?? undefined
+  const bindings: NonNullable<CodeIndexFile["exportBindings"]> = []
+  for (const item of match[1].split(",")) {
+    const [local, exported] = item.trim().split(/\s+as\s+/i)
+    if (!local) continue
+    bindings.push({ local: local.trim(), exported: (exported ?? local).trim(), source })
+  }
+  return { source, bindings }
 }
 
 function rawEdge(kind: CodeIndexEdge["kind"], from: string, to: string, filePath: string, line: number, source: string, receiverName?: string): CodeIndexEdge {
