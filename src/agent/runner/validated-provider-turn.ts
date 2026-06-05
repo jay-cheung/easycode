@@ -1,4 +1,4 @@
-import { evaluateHypothesisTurn, type ActiveHypothesis, type HypothesisViolation } from "./hypothesis"
+import { evaluateHypothesisTurn, type ActiveHypothesis, type HypothesisViolation } from "../hypothesis"
 import type { ProviderTurnInput, ProviderTurnResult } from "./provider-turn"
 
 type ValidatedProviderTurnDeps = {

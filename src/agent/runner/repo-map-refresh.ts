@@ -1,8 +1,8 @@
-import type { ContextManagerLike, LedgerRecord } from "../context"
-import { CliCodeNavigator } from "../tool/code-navigator"
-import type { Sandbox } from "../sandbox"
-import type { RunUiEvent } from "../ui/timeline"
-import { ledgerRecord } from "./ledger"
+import type { ContextManagerLike, LedgerRecord } from "../../context"
+import { CliCodeNavigator } from "../../tool/code-navigator"
+import type { Sandbox } from "../../sandbox"
+import type { RunUiEvent } from "../../ui/timeline"
+import { ledgerRecord } from "../ledger"
 
 type RepoMapRefreshDeps = {
   sandbox: Sandbox

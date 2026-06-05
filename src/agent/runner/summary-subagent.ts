@@ -1,8 +1,8 @@
-import { estimateTextTokens, type ContextCompactionSnapshot, type ContextManagerLike } from "../context"
-import { extractCompactSummary } from "../context/prompt"
-import type { RunUiEvent } from "../ui/timeline"
-import type { ProviderMetricsAccumulator } from "./metrics"
-import type { Agent } from "./types"
+import { estimateTextTokens, type ContextCompactionSnapshot, type ContextManagerLike } from "../../context"
+import { extractCompactSummary } from "../../context/prompt"
+import type { RunUiEvent } from "../../ui/timeline"
+import type { ProviderMetricsAccumulator } from "../metrics"
+import type { Agent } from "../types"
 
 export type BackgroundAgentTask = {
   kind: "summary"

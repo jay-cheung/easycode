@@ -1,4 +1,4 @@
-import type { UiLanguage } from "../i18n"
+import type { UiLanguage } from "../../i18n"
 
 export type Writable = {
   write(text: string): unknown

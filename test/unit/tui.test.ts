@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { displayWidth, drawCard } from "../../src/ui/tui-ansi"
-import { buildPanelCard } from "../../src/ui/tui-cards"
-import { generateStatusPanelLines } from "../../src/ui/tui-status-panel"
+import { displayWidth, drawCard } from "../../src/ui/tui/tui-ansi"
+import { buildPanelCard } from "../../src/ui/tui/tui-cards"
+import { generateStatusPanelLines } from "../../src/ui/tui/tui-status-panel"
 import { TuiRenderer } from "../../src/ui/tui"
-import { TuiState } from "../../src/ui/tui-state"
+import { TuiState } from "../../src/ui/tui/tui-state"
 
 describe("tui renderer", () => {
   test("renders session context, command bar, timeline events, and status updates", () => {

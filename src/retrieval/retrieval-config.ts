@@ -1,4 +1,4 @@
-import type { WebSearchEngine } from "./retrieval"
+import type { WebSearchEngine } from "./index"
 
 export function selectEngine(engines: WebSearchEngine[], name: string | undefined) {
   if (!name) return undefined

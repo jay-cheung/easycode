@@ -1,6 +1,6 @@
-import { buildCompactPrompt } from "../context/prompt"
-import { createMessage, reasoningPart, textPart, type MessagePart } from "../message"
-import type { ContextManagerLike } from "../context"
+import { buildCompactPrompt } from "../../context/prompt"
+import { createMessage, reasoningPart, textPart, type MessagePart } from "../../message"
+import type { ContextManagerLike } from "../../context"
 
 export function explorationSummaryStep(maxSteps: number) {
   const defaultExplorationSteps = 12

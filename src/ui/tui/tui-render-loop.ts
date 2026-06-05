@@ -2,8 +2,8 @@ import { buildFailureSummaryCard, buildSuccessSummaryCard, buildWelcomeDashboard
 import { generateStatusPanelLines } from "./tui-status-panel"
 import type { TuiState } from "./tui-state"
 import type { TuiContext, Writable } from "./tui-types"
-import type { SessionTokenUsage } from "../session"
-import type { UiLanguage } from "../i18n"
+import type { SessionTokenUsage } from "../../session"
+import type { UiLanguage } from "../../i18n"
 
 type RenderLoopDeps = {
   output: Writable

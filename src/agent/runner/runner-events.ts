@@ -1,6 +1,6 @@
-import type { RunUiEvent } from "../ui/timeline"
-import type { ProviderMetricsAccumulator } from "./metrics"
-import { finalizeProviderMetrics } from "./metrics"
+import type { RunUiEvent } from "../../ui/timeline"
+import type { ProviderMetricsAccumulator } from "../metrics"
+import { finalizeProviderMetrics } from "../metrics"
 
 export function emitRunDoneEvent(
   onEvent: ((event: RunUiEvent) => void) | undefined,

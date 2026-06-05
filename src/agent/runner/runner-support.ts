@@ -1,8 +1,8 @@
-import type { AgentMode } from "../message"
-import type { PermissionRule, PermissionService } from "../permission"
-import { defaultPermissionRules } from "../permission"
-import type { SessionSettings } from "../settings"
-import type { SkillServiceLike } from "../skill"
+import type { AgentMode } from "../../message"
+import type { PermissionRule, PermissionService } from "../../permission"
+import { defaultPermissionRules } from "../../permission"
+import type { SessionSettings } from "../../settings"
+import type { SkillServiceLike } from "../../skill"
 
 export async function selectedSkillsForSettings(skills: SkillServiceLike, settings: SessionSettings) {
   const selected = settings.selectedSkills ?? []

@@ -1,5 +1,5 @@
-import { uiText, type UiLanguage } from "../i18n"
-import type { ProviderRunMetrics } from "./timeline"
+import { uiText, type UiLanguage } from "../../i18n"
+import type { ProviderRunMetrics } from "../timeline"
 import { displayWidth, formatDuration, truncateToWidth } from "./tui-ansi"
 import type { TuiContext } from "./tui-types"
 

@@ -1,5 +1,5 @@
-import { languageDisplay, uiText, type UiLanguage } from "../i18n"
-import type { ProviderRunMetrics } from "./timeline"
+import { languageDisplay, uiText, type UiLanguage } from "../../i18n"
+import type { ProviderRunMetrics } from "../timeline"
 import { compactPath, drawCard, formatDuration } from "./tui-ansi"
 import type { TuiContext } from "./tui-types"
 

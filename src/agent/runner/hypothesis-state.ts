@@ -1,6 +1,6 @@
-import type { ContextManagerLike } from "../context"
-import { ledgerRecord } from "./ledger"
-import { normalizeHypothesis, type ActiveHypothesis, type HypothesisViolation } from "./hypothesis"
+import type { ContextManagerLike } from "../../context"
+import { ledgerRecord } from "../ledger"
+import { normalizeHypothesis, type ActiveHypothesis, type HypothesisViolation } from "../hypothesis"
 
 export function compactLine(text: string) {
   return text.replace(/\s+/g, " ").trim()

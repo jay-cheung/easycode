@@ -1,10 +1,10 @@
-import type { ContextUsageObservation } from "../context/types"
-import { ProviderError, StreamXmlFilter, textToolProtocolOutputToProviderEvents, type Provider } from "../provider"
-import type { ToolDef } from "../tool"
-import type { ToolCall, Message, ProviderInputMessage } from "../message"
-import type { RunUiEvent } from "../ui/timeline"
-import type { Agent } from "./types"
-import { finalizeProviderMetrics, finishProviderMetricCall, observeProviderMetricEvent, startProviderMetricCall, type ProviderMetricsAccumulator } from "./metrics"
+import type { ContextUsageObservation } from "../../context/types"
+import { ProviderError, StreamXmlFilter, textToolProtocolOutputToProviderEvents, type Provider } from "../../provider"
+import type { ToolDef } from "../../tool"
+import type { ToolCall, Message, ProviderInputMessage } from "../../message"
+import type { RunUiEvent } from "../../ui/timeline"
+import type { Agent } from "../types"
+import { finalizeProviderMetrics, finishProviderMetricCall, observeProviderMetricEvent, startProviderMetricCall, type ProviderMetricsAccumulator } from "../metrics"
 
 export type ProviderTurnResult = {
   text: string

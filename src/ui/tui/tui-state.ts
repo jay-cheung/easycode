@@ -1,4 +1,4 @@
-import type { ProviderRunMetrics } from "./timeline"
+import type { ProviderRunMetrics } from "../timeline"
 
 type SpinnerTick = {
   runElapsedMs: number

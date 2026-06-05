@@ -1,4 +1,4 @@
-import type { WebSearchEngine, WebSearchResult } from "./retrieval"
+import type { WebSearchEngine, WebSearchResult } from "./index"
 
 export function normalizeEngine(engine: WebSearchEngine, tavilySetupHint: string): Required<Pick<WebSearchEngine, "name" | "type" | "method" | "endpoint" | "queryParam" | "limitParam" | "resultsPath" | "titlePath" | "urlPath" | "snippetPath">> & WebSearchEngine {
   if (engine.type !== "tavily") {

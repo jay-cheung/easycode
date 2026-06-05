@@ -1,5 +1,5 @@
-import { estimateMessages, splitRecentUserTurns } from "./context"
-import { validProviderMessageSuffix, type Message } from "./message"
+import { estimateMessages, splitRecentUserTurns } from "../context"
+import { validProviderMessageSuffix, type Message } from "../message"
 
 export function persistedSessionMessages(messages: Message[], preserveRecentUserTurns: number, compactPreserveTokens: number) {
   const recent = splitRecentUserTurns(messages, preserveRecentUserTurns).recent

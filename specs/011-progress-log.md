@@ -764,3 +764,84 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts test/unit/cli.test.ts`: 57 pass, 0 fail.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 32: Agent Runner Directory Consolidation
+
+- Scope: improve the `src/agent` file structure by grouping the already-extracted runner collaborators under a dedicated `src/agent/runner/` directory, without changing the exported `src/agent` surface or runner behavior.
+- Implementation:
+  - Moved `runner.ts` into `src/agent/runner/index.ts` so `src/agent/index.ts` can keep exporting `./runner` as the same public entrypoint.
+  - Moved runner-only collaborators into the same directory: `provider-turn`, `repo-map-refresh`, `runner-events`, `runner-helpers`, `runner-outcomes`, `runner-support`, `runner-turn-prep`, `summary-subagent`, `tool-execution`, `validated-provider-turn`, `failure-policy`, and `hypothesis-state`.
+  - Rewired relative imports so shared agent primitives stay at `src/agent/*`, while runner-internal modules resolve locally from `src/agent/runner/*`.
+- Code Complete review result:
+  - Correctness: this is a directory-boundary change only; the `AgentRunner` API, `src/agent` barrel export, and runner/tool/context behavior are preserved because module contents and call sites stayed the same.
+  - Maintainability: `src/agent` now separates shared agent primitives from the runner subsystem, making the module tree match the architecture that had already emerged in code.
+  - Verification: reran typecheck, runner/context/tool coverage, and the unified gate because this slice changes many import paths and the `src/agent` export surface.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/runner.test.ts test/unit/context.test.ts test/unit/tool.test.ts`: 69 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 33: TUI Directory Consolidation
+
+- Scope: improve the `src/ui` file structure by grouping the already-extracted TUI collaborators under a dedicated `src/ui/tui/` directory, without changing the exported `src/ui/tui` entrypoint or runtime behavior.
+- Implementation:
+  - Moved `src/ui/tui.ts` into `src/ui/tui/index.ts` so existing imports of `../ui/tui` continue resolving through the directory entrypoint.
+  - Moved TUI-only collaborators into the same directory: `tui-ansi`, `tui-cards`, `tui-render-loop`, `tui-state`, `tui-status-panel`, and `tui-types`.
+  - Rewired relative imports so TUI internals reference shared `timeline`, `i18n`, `session`, and `permission` modules through stable parent paths.
+  - Updated TUI unit tests to import from the new `src/ui/tui/*` locations.
+- Code Complete review result:
+  - Correctness: this is a directory-boundary change only; the `TuiRenderer` API and `src/ui/tui` import path stay compatible because the module contents and public entrypoint are preserved.
+  - Maintainability: `src/ui` now separates the TUI subsystem from the shared `timeline` renderer, making the directory match the architecture that had already been split at the file level.
+  - Verification: reran typecheck, TUI/timeline/CLI coverage, and the unified gate because this slice changes import paths across the renderer, CLI session helpers, and TUI tests.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts test/unit/cli.test.ts`: 58 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 34: Retrieval Directory Consolidation
+
+- Scope: improve the `src` file structure by grouping the already-extracted retrieval collaborators under a dedicated `src/retrieval/` directory, without changing the exported `src/retrieval` entrypoint or web-search behavior.
+- Implementation:
+  - Moved `src/retrieval.ts` into `src/retrieval/index.ts` so existing imports of `../retrieval` continue resolving through the directory entrypoint.
+  - Moved retrieval-only collaborators into the same directory: `retrieval-config`, `retrieval-format`, and `retrieval-live`.
+  - Rewired relative imports so the retrieval internals reference shared `easycode-path` and `tls-config` through stable parent paths.
+- Code Complete review result:
+  - Correctness: this is a directory-boundary change only; `WebSearchService`, `McpSourceService`, and the `hasConfiguredWebSearch()` entrypoint remain compatible because the module contents and public import path are preserved.
+  - Maintainability: `src` now treats retrieval as a self-contained subsystem instead of a split set of root-level helper files.
+  - Verification: reran typecheck plus retrieval, tool, context, session, runner, and CLI coverage because this slice changes import paths used by startup checks and tool-backed web-search flows.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/retrieval.test.ts test/unit/session.test.ts test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 129 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 35: Instrumentation Directory Consolidation
+
+- Scope: improve the `src` file structure by grouping the already-extracted instrumentation collaborators under a dedicated `src/instrumentation/` directory, without changing the exported `src/instrumentation` entrypoint or logging behavior.
+- Implementation:
+  - Moved `src/instrumentation.ts` into `src/instrumentation/index.ts` so existing imports of `../instrumentation` continue resolving through the directory entrypoint.
+  - Moved instrumentation-only collaborators into the same directory: `instrumentation-context` and `instrumentation-provider`.
+  - Rewired relative imports so instrumentation internals reference shared `agent`, `context`, `logger`, `message`, `provider`, `skill`, and `tool` modules through stable parent paths.
+- Code Complete review result:
+  - Correctness: this is a directory-boundary change only; `createRunAspect()` and the logging decorators keep the same behavior because the module contents and public import path are preserved.
+  - Maintainability: instrumentation is now clearly scoped as a subsystem instead of root-level helpers orbiting a single façade file.
+  - Verification: reran typecheck plus retrieval, tool, context, session, runner, and CLI coverage because instrumentation is used across runner, provider, and tool execution paths.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/retrieval.test.ts test/unit/session.test.ts test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 129 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 36: Session Directory Consolidation
+
+- Scope: improve the `src` file structure by grouping the already-extracted session collaborators under a dedicated `src/session/` directory, without changing the exported `src/session` entrypoint, session file shape, or restore behavior.
+- Implementation:
+  - Moved `src/session.ts` into `src/session/index.ts` so existing imports of `../session` continue resolving through the directory entrypoint.
+  - Moved `session-tail` into the same directory so persistence and persisted-tail policy live together as one subsystem.
+  - Rewired relative imports so the session internals reference shared `context`, `easycode-path`, `message`, and `settings` modules through stable parent paths.
+- Code Complete review result:
+  - Correctness: this is a directory-boundary change only; `SessionStore`, `SessionTokenUsage`, persisted-tail pruning, and restore behavior remain compatible because the module contents and public import path are preserved.
+  - Maintainability: session persistence and session-tail policy now live in one explicit module boundary instead of being split across unrelated root-level files.
+  - Verification: reran typecheck plus retrieval, tool, context, session, runner, and CLI coverage because this slice changes imports used by startup, session restore, and TUI session rendering.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun test test/unit/retrieval.test.ts test/unit/session.test.ts test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 129 pass, 0 fail.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.

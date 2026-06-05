@@ -1,4 +1,4 @@
-import type { CitedSource, McpResource, WebSearchResult } from "./retrieval"
+import type { CitedSource, McpResource, WebSearchResult } from "./index"
 
 export function mcpCitation(resource: McpResource): CitedSource {
   return {
