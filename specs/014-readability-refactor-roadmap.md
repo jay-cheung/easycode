@@ -1,5 +1,7 @@
 # Readability And Architecture Refactor Roadmap
 
+Status: Completed on 2026-06-05 after the completion audit below.
+
 ## Objective
 
 Improve readability and architectural coherence without changing EasyCode's observable behavior.
@@ -296,3 +298,39 @@ The roadmap is complete when:
 - every completed slice has a matching progress-log entry
 - each slice has passed `bun run gate`
 - new contributors can locate UI, runner, tool, retrieval, and session responsibilities without reading multiple unrelated subsystems first
+
+## Completion Audit (2026-06-05)
+
+### Result
+
+The roadmap objective is complete.
+
+### Evidence
+
+- Hotspot boundaries are now explicit:
+  - runner orchestration lives at `src/agent/runner/index.ts`, with runner-only collaborators grouped under `src/agent/runner/`
+  - TUI orchestration lives at `src/ui/tui/index.ts`, with state/render/layout helpers grouped under `src/ui/tui/`
+  - retrieval lives under `src/retrieval/` with separate config, formatting, and live-request helpers
+  - instrumentation lives under `src/instrumentation/` with separate provider and context logging helpers
+  - session persistence lives under `src/session/`, while context budgeting/compaction helpers live under `src/context/`
+  - tool registry assembly is a thin `src/tool/builtins.ts` façade over focused family modules in `src/tool/builtins/`
+- Runtime-facing contracts remain stable:
+  - `src/agent/index.ts` still re-exports the runner entrypoint through `./runner`
+  - imports such as `../ui/tui`, `../retrieval`, `../instrumentation`, and `../session` still resolve through directory entrypoints
+  - the latest local verification kept typecheck, tests, eval, APIx subset, cache benchmark, and build green
+- Every structural slice has a matching progress-log entry:
+  - tool registry split: Step 11
+  - context decomposition: Steps 22, 23, 24, 28
+  - runner layering: Steps 25, 26, 29, 30, 32
+  - session policy and subsystem boundary: Steps 27, 36
+  - TUI decomposition and subsystem boundary: Steps 22, 31, 33
+  - retrieval and instrumentation cleanup: Steps 20, 21, 34, 35
+- Verification evidence is current:
+  - `bun run typecheck`: pass on 2026-06-05
+  - focused runner/context/session/retrieval/TUI tests: pass on 2026-06-05
+  - `bun run gate`: all local checks pass on 2026-06-05; the only remaining failure is the known external `provider_gate` connectivity path for real `deepseek`
+
+### Notes
+
+- The file paths listed in the earlier phase descriptions describe the original hotspot locations at the time this roadmap was created.
+- The completion state is based on current source boundaries and current verification evidence, not just the historical plan.

@@ -845,3 +845,18 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/retrieval.test.ts test/unit/session.test.ts test/unit/context.test.ts test/unit/runner.test.ts test/unit/tool.test.ts test/unit/cli.test.ts`: 129 pass, 0 fail.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 37: Roadmap Completion Audit
+
+- Scope: close the readability and architecture roadmap by auditing the current tree against the roadmap’s named phases and success criteria, without changing runtime behavior.
+- Implementation:
+  - Audited the current module boundaries against the roadmap and confirmed the intended subsystems now exist as explicit directories or focused helper boundaries: `src/agent/runner/`, `src/ui/tui/`, `src/retrieval/`, `src/instrumentation/`, `src/session/`, `src/context/*`, and `src/tool/builtins/*`.
+  - Updated `specs/014-readability-refactor-roadmap.md` with a completion status and a current-state evidence section, so the roadmap now records why it is considered complete instead of relying only on scattered progress-log slices.
+  - Kept the earlier phase descriptions as historical baseline notes while making the completion decision rest on the current tree and current verification evidence.
+- Code Complete review result:
+  - Correctness: no runtime code changed; this step only records the current completion state after checking the actual source tree, export surfaces, and verification outputs.
+  - Maintainability: the roadmap now has an explicit closeout section, so future work can distinguish between the original hotspot baseline and the post-refactor module layout.
+  - Verification: reran typecheck plus the unified gate on the committed runtime tree, and rechecked the main subsystem boundaries directly in source before marking the roadmap complete.
+- Verification:
+  - `bun run typecheck`: pass.
+  - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
