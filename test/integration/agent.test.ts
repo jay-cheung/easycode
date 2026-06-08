@@ -399,6 +399,42 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("does not fail the run when repeated hypothesis drift remains unresolved", async () => {
+    const root = await fixture()
+    const chunks: string[] = []
+    const context = new ContextManager()
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        if (calls === 1) {
+          yield { type: "reasoning_delta", text: "The bug is in src/add.ts. Actually the bug is in test/add.test.ts." }
+          yield { type: "tool_call", call: { id: "call_read_retry_1", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        if (calls === 2) {
+          yield { type: "reasoning_delta", text: "The bug is in src/add.ts. Actually the bug is in test/add.test.ts." }
+          yield { type: "tool_call", call: { id: "call_read_retry_2", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context, onTextDelta: (text) => chunks.push(text) }).run("Fix", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toBe("Done.")
+    expect(result.usedTools).toEqual(["read"])
+    expect(result.reasoning).toContain("test/add.test.ts")
+    expect(result.text).not.toContain("Hypothesis drift blocked.")
+    expect(chunks.join("")).not.toContain("Hypothesis drift blocked.")
+    expect(calls).toBe(3)
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "hypothesis_drift_violation" }))
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("executes multiple tool calls from one provider turn in order", async () => {
     const root = await fixture()
     let calls = 0

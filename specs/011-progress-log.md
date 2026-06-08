@@ -961,3 +961,20 @@
   - `bun run typecheck`: pass.
   - `bun test test/unit/code-navigator.test.ts`: pass.
   - `bun run gate`: all local checks pass; remaining failure is `provider_gate` for real `deepseek` connectivity only.
+
+## Step 44: Non-blocking Hypothesis Drift Recovery
+
+- Scope: stop hypothesis-drift protection from aborting an in-progress run when the provider still returns a drifting diagnosis after the built-in retry, while keeping the drift ledger and correction prompt behavior intact.
+- Implementation:
+  - Updated `src/agent/runner/validated-provider-turn.ts` so the validator still retries once and records each violation, but now falls back to the last provider turn instead of emitting a synthetic failure event that terminates the run.
+  - Removed the now-unused failure-text dependency from the validated-provider-turn wiring in `src/agent/runner/index.ts`.
+  - Added an integration regression in `test/integration/agent.test.ts` proving repeated unresolved drift no longer surfaces `Hypothesis drift blocked...` to the user or fails the run.
+- Code Complete review result:
+  - Correctness: drift protection still nudges the model back to the active diagnosis first, but no longer interrupts user-visible execution on a stubborn second attempt.
+  - Maintainability: the recovery path is now a simple fallback to an already captured provider turn instead of a synthetic provider-error branch with separate replay semantics.
+  - Verification: targeted the exact runner integration path first because this change is about failure semantics, then revalidated through typecheck, cache benchmark, and the default gate.
+- Verification:
+  - `bun test test/integration/agent.test.ts`: pass.
+  - `bun run typecheck`: pass.
+  - `bun run cache:bench -- --provider simulated --suite real --quiet`: pass; recommendation remained `every-step` with `effective_input=34644`, so no benchmark-visible cost regression was introduced by this runner-only change.
+  - `bun run gate`: local checks pass; remaining failure is the known external `provider_gate` for real `deepseek` connectivity only.

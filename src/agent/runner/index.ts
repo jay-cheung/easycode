@@ -225,7 +225,6 @@ export class AgentRunner {
         hypothesisCorrectionMessage,
         activeHypothesis: this.activeHypothesis,
         evidenceRevision: this.evidenceRevision,
-        failureText: (text) => runFailureText(text, "provider_error"),
       },
       input,
     )

@@ -9,7 +9,6 @@ type ValidatedProviderTurnDeps = {
   hypothesisCorrectionMessage: (violation: HypothesisViolation, activeHypothesis: ActiveHypothesis | undefined) => string
   activeHypothesis?: ActiveHypothesis
   evidenceRevision: number
-  failureText: (text: string) => string
 }
 
 export async function runValidatedProviderTurnLoop(
@@ -17,9 +16,11 @@ export async function runValidatedProviderTurnLoop(
   input: ProviderTurnInput,
 ): Promise<ProviderTurnResult> {
   let correction: string | undefined
+  let fallbackTurn: ProviderTurnResult | undefined
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const providerMessages = correction ? [...input.providerMessages, { role: "system" as const, content: correction }] : input.providerMessages
     const turn = await deps.runProviderTurn({ ...input, providerMessages, emitDeltas: false })
+    fallbackTurn = turn
     const validation = evaluateHypothesisTurn({
       reasoningText: turn.reasoningText,
       text: turn.text,
@@ -35,8 +36,7 @@ export async function runValidatedProviderTurnLoop(
     deps.recordHypothesisViolation(validation.violation)
     correction = deps.hypothesisCorrectionMessage(validation.violation, deps.activeHypothesis)
   }
-  const failureText = deps.failureText("Hypothesis drift blocked. Keep the current diagnosis or cite new evidence before changing it.")
-  const failedTurn: ProviderTurnResult = { text: "", reasoningText: "", toolCalls: [], failureText, replayEvents: [{ type: "failure", text: failureText }] }
-  deps.emitProviderTurn(failedTurn)
-  return failedTurn
+  if (!fallbackTurn) throw new Error("validated provider turn loop completed without a provider turn")
+  deps.emitProviderTurn(fallbackTurn)
+  return fallbackTurn
 }
