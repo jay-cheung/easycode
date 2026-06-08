@@ -1052,3 +1052,15 @@
   - Correctness: a skill that says “run this script first, then browse that directory” now yields the same effective inspection order in runtime evidence instead of being reordered by parser shape or directory-first noise.
   - Maintainability: ordering logic is now explicit in the artifact extractor and runner inspection queue rather than being an accidental side effect of how two regex scans were concatenated.
   - Verification: reran focused skill/runner/agent coverage, `bun run typecheck`, `bun run cache:bench -- --provider simulated --suite real --quiet`, and the unified gate because this slice changes runtime sequencing but must not regress prompt prefix caching.
+
+## Step 50: High-Signal Auto-Inspection Filter
+
+- Scope: keep auto-inspection focused on the first useful runtime evidence by skipping low-signal file types such as images, archives, and lockfiles while retaining scripts, docs, config-like text files, and relevant directories, without touching prompt composition.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` with explicit allowlists for high-signal text/script/config file extensions and well-known filenames, plus ignore lists for lockfiles and noisy build/cache directories.
+  - Reused that filter inside the existing file-before-directory prioritization path so auto-inspection still preserves the current runtime ordering rules after low-signal artifacts are removed.
+  - Added integration coverage in `test/integration/agent.test.ts` to assert that `image.png`, `archive.zip`, and `pnpm-lock.yaml` are skipped while `scripts/demo.sh` and `templates/` still feed the next provider turn.
+- Code Complete review result:
+  - Correctness: first-use skill loading now surfaces more relevant evidence instead of spending its limited auto-inspection budget on assets or packaging noise that rarely help task execution.
+  - Maintainability: the high-signal filter is a small explicit policy table in the runner, so future additions are local and do not require changing prompt text or artifact extraction.
+  - Verification: reran focused skill/runner/agent coverage, `bun run typecheck`, `bun run cache:bench -- --provider simulated --suite real --quiet`, and the unified gate because this slice changes runtime inspection selection but must not regress prompt prefix caching.

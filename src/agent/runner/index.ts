@@ -32,6 +32,36 @@ import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
 const maxAutoSkillArtifactInspections = 3
+const autoInspectFileExtensions = new Set([
+  ".bash",
+  ".cjs",
+  ".conf",
+  ".cts",
+  ".ini",
+  ".js",
+  ".json",
+  ".jsx",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".mts",
+  ".prompt",
+  ".py",
+  ".sh",
+  ".sql",
+  ".tmpl",
+  ".toml",
+  ".tpl",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".yaml",
+  ".yml",
+  ".zsh",
+])
+const autoInspectFileBasenames = new Set(["Dockerfile", "Makefile", "justfile"])
+const autoInspectIgnoredBasenames = new Set(["Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"])
+const autoInspectIgnoredDirectories = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"])
 
 export class AgentRunner {
   readonly root: string
@@ -404,8 +434,8 @@ function autoSkillArtifactCalls(value: unknown, root: string): ToolCall[] {
     .map((artifact) => normalizeSkillArtifact(artifact, root))
     .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact))
   const prioritizedArtifacts = [
-    ...normalizedArtifacts.filter((artifact) => artifact.kind === "file"),
-    ...normalizedArtifacts.filter((artifact) => artifact.kind === "directory"),
+    ...normalizedArtifacts.filter((artifact) => artifact.kind === "file" && shouldAutoInspectFile(artifact.projectPath)),
+    ...normalizedArtifacts.filter((artifact) => artifact.kind === "directory" && shouldAutoInspectDirectory(artifact.projectPath)),
   ]
   const calls: ToolCall[] = []
   for (const normalized of prioritizedArtifacts) {
@@ -435,4 +465,16 @@ function normalizeSkillArtifact(value: unknown, root: string): Pick<SkillArtifac
   const projectPath = path.relative(root, resolvedPath).replace(/\\/g, "/")
   if (!projectPath || projectPath.startsWith("../") || path.isAbsolute(projectPath)) return undefined
   return { projectPath, kind: kindValue }
+}
+
+function shouldAutoInspectFile(projectPath: string) {
+  const basename = path.basename(projectPath)
+  if (autoInspectIgnoredBasenames.has(basename)) return false
+  if (autoInspectFileBasenames.has(basename)) return true
+  return autoInspectFileExtensions.has(path.extname(projectPath).toLowerCase())
+}
+
+function shouldAutoInspectDirectory(projectPath: string) {
+  const basename = path.basename(projectPath)
+  return !autoInspectIgnoredDirectories.has(basename)
 }

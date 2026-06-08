@@ -1098,6 +1098,42 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("skill auto-inspection skips low-signal file types while keeping scripts and template directories", async () => {
+    const root = await fixture()
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "templates"), { recursive: true })
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "scripts"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "scripts", "demo.sh"), "#!/usr/bin/env bash\necho kept\n")
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "image.png"), "not really a png")
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "archive.zip"), "not really a zip")
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n")
+    await Bun.write(
+      path.join(root, ".easycode", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo\n---\nInspect `image.png` if needed.\nIgnore `archive.zip`.\nCheck `pnpm-lock.yaml` only if packaging breaks.\nRun `scripts/demo.sh`.\nBrowse `templates/`.\n",
+    )
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages)
+        if (!results.some((part) => part.toolName === "skill")) {
+          yield { type: "tool_call", call: { id: "call_skill", name: "skill", input: { name: "demo" } } }
+          return
+        }
+        expect(results.some((part) => part.toolName === "read" && part.output.includes("echo kept"))).toBe(true)
+        expect(results.some((part) => part.toolName === "list" && part.output.length >= 0)).toBe(true)
+        expect(results.some((part) => part.toolName === "read" && part.output.includes("not really a png"))).toBe(false)
+        expect(results.some((part) => part.toolName === "read" && part.output.includes("not really a zip"))).toBe(false)
+        expect(results.some((part) => part.toolName === "read" && part.output.includes("lockfileVersion"))).toBe(false)
+        yield { type: "text_delta", text: "Low-signal artifacts skipped." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] } }).run("use skill demo", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["skill", "read", "list"])
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("pending selected skills load once", async () => {
     const root = await fixture()
     await mkdir(path.join(root, ".easycode", "skills", "demo"), { recursive: true })
