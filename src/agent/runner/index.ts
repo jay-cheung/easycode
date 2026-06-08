@@ -1,9 +1,10 @@
+import path from "node:path"
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike } from "../../context"
-import { userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
+import { createID, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
 import { defaultPermissionRules, PermissionService } from "../../permission"
 import { createProvider, type Provider, type ProviderName } from "../../provider"
 import { Sandbox } from "../../sandbox"
-import { SkillService, type SkillServiceLike } from "../../skill"
+import { SkillService, type SkillArtifact, type SkillServiceLike } from "../../skill"
 import { InstructionService, type InstructionServiceLike } from "../../instruction"
 import { createBuiltinRegistry, type ToolRegistryLike } from "../../tool"
 import { createRunAspect, type RunAspect } from "../../instrumentation"
@@ -30,6 +31,7 @@ import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
+const maxAutoSkillArtifactInspections = 3
 
 export class AgentRunner {
   readonly root: string
@@ -181,6 +183,9 @@ export class AgentRunner {
         this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
         this.noteExternalEvidence()
         emitToolResultEvent({ onEvent: this.onEvent }, toolCall, result)
+        if (toolCall.name === "skill" && result.metadata.status === "succeeded") {
+          await this.autoInspectSkillArtifacts(result, effectiveMode, input.signal, prompt, usedTools)
+        }
         if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
         if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
           const output = result.output
@@ -335,6 +340,42 @@ export class AgentRunner {
     recordToolOutcomeSideEffect({ context: this.context }, call, result, prompt, { truncateForLedger, compactLine })
   }
 
+  private async autoInspectSkillArtifacts(
+    result: { metadata: Record<string, unknown> },
+    mode: AgentMode,
+    signal: AbortSignal | undefined,
+    prompt: string,
+    usedTools: string[],
+  ) {
+    const calls = autoSkillArtifactCalls(result.metadata.artifacts, this.root)
+    if (calls.length === 0) return
+    this.context.add(toolCallMessage(calls))
+    for (const call of calls) {
+      usedTools.push(call.name)
+      const inspection = await runToolCall({
+        registry: this.registry,
+        sandbox: this.sandbox,
+        permission: this.permission,
+        permissionFor: (nextMode) => this.permissionFor(nextMode),
+        skills: this.skills,
+        context: this.context,
+        onEvent: this.onEvent,
+        toolProgressIntervalMs: this.toolProgressIntervalMs,
+      }, call, mode, signal)
+      this.recordToolOutcome(call, inspection, prompt)
+      this.context.add(toolResultMessage({
+        callID: call.id,
+        toolName: call.name,
+        status: inspection.metadata.status === "succeeded" ? "succeeded" : inspection.metadata.status === "denied" ? "denied" : "failed",
+        output: inspection.output,
+        metadata: inspection.metadata,
+      }))
+      this.noteExternalEvidence()
+      emitToolResultEvent({ onEvent: this.onEvent }, call, inspection)
+      if (signal?.aborted || inspection.metadata.cancelled === true) return
+    }
+  }
+
   private noteExternalEvidence() {
     this.evidenceRevision += 1
   }
@@ -355,4 +396,38 @@ export class AgentRunner {
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
   return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings })
+}
+
+function autoSkillArtifactCalls(value: unknown, root: string): ToolCall[] {
+  if (!Array.isArray(value)) return []
+  const calls: ToolCall[] = []
+  for (const artifact of value) {
+    const normalized = normalizeSkillArtifact(artifact, root)
+    if (!normalized) continue
+    if (normalized.kind === "file") {
+      calls.push({
+        id: createID("call_skill_artifact_read"),
+        name: "read",
+        input: { filePath: normalized.projectPath },
+      })
+    } else if (normalized.kind === "directory") {
+      calls.push({
+        id: createID("call_skill_artifact_list"),
+        name: "list",
+        input: { dirPath: normalized.projectPath },
+      })
+    }
+    if (calls.length >= maxAutoSkillArtifactInspections) break
+  }
+  return calls
+}
+
+function normalizeSkillArtifact(value: unknown, root: string): Pick<SkillArtifact, "kind"> & { projectPath: string } | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const resolvedPath = (value as { resolvedPath?: unknown }).resolvedPath
+  const kindValue = (value as { kind?: unknown }).kind
+  if (typeof resolvedPath !== "string" || (kindValue !== "file" && kindValue !== "directory")) return undefined
+  const projectPath = path.relative(root, resolvedPath).replace(/\\/g, "/")
+  if (!projectPath || projectPath.startsWith("../") || path.isAbsolute(projectPath)) return undefined
+  return { projectPath, kind: kindValue }
 }

@@ -1040,6 +1040,31 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("skill-progressive-loading auto-inspects referenced file artifacts before the next provider turn", async () => {
+    const root = await fixture()
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "scripts"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "scripts", "demo.sh"), "#!/usr/bin/env bash\necho demo\n")
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Demo\n---\nUse `scripts/demo.sh` first.\nFull demo skill")
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages)
+        if (!results.some((part) => part.toolName === "skill")) {
+          yield { type: "tool_call", call: { id: "call_skill", name: "skill", input: { name: "demo" } } }
+          return
+        }
+        expect(results.some((part) => part.toolName === "read" && part.output.includes("echo demo"))).toBe(true)
+        yield { type: "text_delta", text: "Skill artifacts inspected." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] } }).run("use skill demo", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["skill", "read"])
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("pending selected skills load once", async () => {
     const root = await fixture()
     await mkdir(path.join(root, ".easycode", "skills", "demo"), { recursive: true })

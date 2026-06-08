@@ -1028,3 +1028,15 @@
   - Correctness: selected or first-use skills now surface the concrete local artifacts the prompt tells the model to inspect first, reducing the gap between prompt guidance and executable runtime behavior.
   - Maintainability: artifact extraction stays inside `SkillService`, so skill-aware runtime paths share one resolver instead of each caller reparsing markdown ad hoc.
   - Verification: reran targeted skill/tool/agent coverage, `bun run typecheck`, and the unified gate because this changes provider-visible tool output and loaded skill structure.
+
+## Step 48: Auto-Inspect Skill Artifacts After Skill Load
+
+- Scope: turn exposed skill artifacts into immediate runtime evidence by automatically inspecting a small first batch of existing local artifacts right after a successful `skill` tool load, instead of relying on the next provider turn to remember that work.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so successful `skill` tool results schedule up to three follow-up inspections, mapping file artifacts to `read` and directory artifacts to `list`.
+  - Resolved those follow-up tool inputs against the project root using the artifact `resolvedPath`, so skill-local references like `scripts/demo.sh` are inspected via project-relative paths such as `.easycode/skills/demo/scripts/demo.sh`.
+  - Added integration coverage in `test/integration/agent.test.ts` to assert the next provider turn already sees the auto-inspected artifact content, while existing runner UI event coverage continues to prove ordinary skill loads keep their event ordering when no artifacts are present.
+- Code Complete review result:
+  - Correctness: first-use skill loading now produces real inspection evidence in context, not just a reminder block, so the runtime better enforces the intended “inspect referenced artifacts first” workflow.
+  - Maintainability: the follow-up inspection stays inside `AgentRunner`, where tool sequencing and context updates already live, instead of spreading special-case logic across providers or prompt templates.
+  - Verification: reran focused runner/agent coverage, `bun run typecheck`, and the unified gate because this changes run-loop tool sequencing and provider-visible context.
