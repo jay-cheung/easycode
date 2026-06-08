@@ -1065,6 +1065,39 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("skill auto-inspection prioritizes concrete files before referenced directories", async () => {
+    const root = await fixture()
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "templates"), { recursive: true })
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "scripts"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "scripts", "demo.sh"), "#!/usr/bin/env bash\necho prioritized\n")
+    await Bun.write(
+      path.join(root, ".easycode", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo\n---\nBrowse `templates/` for context.\nThen run `scripts/demo.sh`.\n",
+    )
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages)
+        if (!results.some((part) => part.toolName === "skill")) {
+          yield { type: "tool_call", call: { id: "call_skill", name: "skill", input: { name: "demo" } } }
+          return
+        }
+        const readIndex = results.findIndex((part) => part.toolName === "read" && part.output.includes("echo prioritized"))
+        const listIndex = results.findIndex((part) => part.toolName === "list")
+        expect(readIndex).toBeGreaterThan(-1)
+        expect(listIndex).toBeGreaterThan(-1)
+        expect(readIndex).toBeLessThan(listIndex)
+        yield { type: "text_delta", text: "Prioritized file inspection." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, settings: { ...defaultSessionSettings("test-provider"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] } }).run("use skill demo", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["skill", "read", "list"])
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("pending selected skills load once", async () => {
     const root = await fixture()
     await mkdir(path.join(root, ".easycode", "skills", "demo"), { recursive: true })

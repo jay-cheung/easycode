@@ -1040,3 +1040,15 @@
   - Correctness: first-use skill loading now produces real inspection evidence in context, not just a reminder block, so the runtime better enforces the intended “inspect referenced artifacts first” workflow.
   - Maintainability: the follow-up inspection stays inside `AgentRunner`, where tool sequencing and context updates already live, instead of spreading special-case logic across providers or prompt templates.
   - Verification: reran focused runner/agent coverage, `bun run typecheck`, and the unified gate because this changes run-loop tool sequencing and provider-visible context.
+
+## Step 49: Artifact Order And Inspection Priority Refinement
+
+- Scope: make skill-artifact inspection follow the skill document's actual mention order while still prioritizing concrete existing files over directory noise, without changing prompt composition or cache-sensitive prefixes.
+- Implementation:
+  - Updated `src/skill.ts` so markdown-link and inline-code artifact references are merged by source offset, preserving the document's mention order instead of listing all markdown links before all inline-code paths.
+  - Updated `src/agent/runner/index.ts` so auto-inspection normalizes all inspectable artifacts first, then prioritizes existing files before directories while preserving within-kind order, and still ignores missing paths.
+  - Added coverage in `test/unit/skill.test.ts` for mixed markdown/code mention order and in `test/integration/agent.test.ts` for file-before-directory auto-inspection ordering.
+- Code Complete review result:
+  - Correctness: a skill that says “run this script first, then browse that directory” now yields the same effective inspection order in runtime evidence instead of being reordered by parser shape or directory-first noise.
+  - Maintainability: ordering logic is now explicit in the artifact extractor and runner inspection queue rather than being an accidental side effect of how two regex scans were concatenated.
+  - Verification: reran focused skill/runner/agent coverage, `bun run typecheck`, `bun run cache:bench -- --provider simulated --suite real --quiet`, and the unified gate because this slice changes runtime sequencing but must not regress prompt prefix caching.

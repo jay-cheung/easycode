@@ -11,6 +11,12 @@ export type SkillArtifact = {
   source: "markdown_link" | "inline_code"
 }
 
+type ExtractedSkillReference = {
+  offset: number
+  source: SkillArtifact["source"]
+  reference: string
+}
+
 export type SkillInfo = {
   id: string
   name: string
@@ -38,19 +44,19 @@ function parseFrontmatter(text: string) {
   return { data, content: text.slice(end + 4).trim() }
 }
 
-function* extractMarkdownLinks(text: string) {
+function* extractMarkdownLinks(text: string): Generator<ExtractedSkillReference> {
   const regex = /\[[^\]]*\]\(([^)]+)\)/g
   for (const match of text.matchAll(regex)) {
     const candidate = normalizeReference(match[1] ?? "")
-    if (candidate) yield { source: "markdown_link" as const, reference: candidate }
+    if (candidate) yield { offset: match.index ?? 0, source: "markdown_link" as const, reference: candidate }
   }
 }
 
-function* extractInlineCodePaths(text: string) {
+function* extractInlineCodePaths(text: string): Generator<ExtractedSkillReference> {
   const regex = /`([^`\n]+)`/g
   for (const match of text.matchAll(regex)) {
     const candidate = normalizeReference(match[1] ?? "")
-    if (looksLikeLocalPathCandidate(candidate)) yield { source: "inline_code" as const, reference: candidate }
+    if (looksLikeLocalPathCandidate(candidate)) yield { offset: match.index ?? 0, source: "inline_code" as const, reference: candidate }
   }
 }
 
@@ -93,6 +99,7 @@ async function classifyArtifact(resolvedPath: string): Promise<SkillArtifact["ki
 
 async function extractSkillArtifacts(skillFile: string, content: string): Promise<SkillArtifact[]> {
   const candidates = [...extractMarkdownLinks(content), ...extractInlineCodePaths(content)]
+    .sort((left, right) => left.offset - right.offset)
   const seen = new Set<string>()
   const artifacts: SkillArtifact[] = []
   for (const candidate of candidates) {

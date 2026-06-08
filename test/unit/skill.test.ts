@@ -88,9 +88,31 @@ describe("skill", () => {
     const loaded = await service.load("demo")
 
     expect(loaded?.artifacts).toEqual([
-      expect.objectContaining({ path: "templates/report.md", kind: "file", source: "markdown_link" }),
       expect.objectContaining({ path: "scripts/setup.sh", kind: "file", source: "inline_code" }),
+      expect.objectContaining({ path: "templates/report.md", kind: "file", source: "markdown_link" }),
       expect.objectContaining({ path: "missing/notes.md", kind: "missing", source: "inline_code" }),
+    ])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("preserves document mention order across inline code and markdown links", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-skill-"))
+    const dir = path.join(root, ".easycode", "skills", "demo")
+    await mkdir(path.join(dir, "scripts"), { recursive: true })
+    await mkdir(path.join(dir, "templates"), { recursive: true })
+    await Bun.write(path.join(dir, "scripts", "first.sh"), "#!/usr/bin/env bash\n")
+    await Bun.write(path.join(dir, "templates", "second.md"), "# Second\n")
+    await Bun.write(
+      path.join(dir, "SKILL.md"),
+      "---\nname: demo\ndescription: Demo\n---\nRun `scripts/first.sh` first.\nThen read [template](templates/second.md).\n",
+    )
+    const service = new SkillService(root)
+
+    const loaded = await service.load("demo")
+
+    expect(loaded?.artifacts?.map((artifact) => artifact.path)).toEqual([
+      "scripts/first.sh",
+      "templates/second.md",
     ])
     await rm(root, { recursive: true, force: true })
   })

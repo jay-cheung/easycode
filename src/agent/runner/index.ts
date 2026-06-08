@@ -400,17 +400,22 @@ export function createRunner(input: { root: string; provider?: ProviderName; mod
 
 function autoSkillArtifactCalls(value: unknown, root: string): ToolCall[] {
   if (!Array.isArray(value)) return []
+  const normalizedArtifacts = value
+    .map((artifact) => normalizeSkillArtifact(artifact, root))
+    .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact))
+  const prioritizedArtifacts = [
+    ...normalizedArtifacts.filter((artifact) => artifact.kind === "file"),
+    ...normalizedArtifacts.filter((artifact) => artifact.kind === "directory"),
+  ]
   const calls: ToolCall[] = []
-  for (const artifact of value) {
-    const normalized = normalizeSkillArtifact(artifact, root)
-    if (!normalized) continue
+  for (const normalized of prioritizedArtifacts) {
     if (normalized.kind === "file") {
       calls.push({
         id: createID("call_skill_artifact_read"),
         name: "read",
         input: { filePath: normalized.projectPath },
       })
-    } else if (normalized.kind === "directory") {
+    } else {
       calls.push({
         id: createID("call_skill_artifact_list"),
         name: "list",
