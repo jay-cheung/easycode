@@ -4,7 +4,7 @@ import { stdout as output } from "node:process"
 import { createRunner, hasProposedPlanText } from "./agent"
 import type { ContextManagerLike } from "./context"
 import { createLogger, emitLog } from "./logger"
-import { detectUiLanguage } from "./i18n"
+import { detectUiLanguage, uiText } from "./i18n"
 import type { AgentMode, ImagePart } from "./message"
 import { savePlan } from "./plans"
 import { hasProvider, listProviders } from "./provider"
@@ -13,7 +13,7 @@ import { normalizeSessionSettings } from "./settings"
 import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { LineReader, eofPrompt } from "./cli/line-reader"
-import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession } from "./cli/session-helpers"
+import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, writeCliText } from "./cli/session-helpers"
 import { configuredUiLanguage, interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveLanguage, setupInteractiveWebSearchEnv } from "./cli/startup"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
@@ -161,21 +161,38 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
   }
   process.on("SIGINT", onSigint)
   try {
-    const session = await selectSession(args.session, store, reader, startupLanguage, tui)
-    if (!session) return "completed"
+    const selectedSession = await selectSession(args.session, store, reader, startupLanguage, tui)
+    if (!selectedSession) return "completed"
+    let session: string = selectedSession
     tui?.startSession(session)
-    const logger = args.logger ? createLogger({ root: args.root, session }) : undefined
+    let logger = args.logger ? createLogger({ root: args.root, session }) : undefined
     emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, once: args.once } })
     emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
     emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
-    const context = await store.context(session)
-    const storedSettings = await store.settings(session, args.provider)
-    const sessionData = await store.load(session)
-    let sessionTokenUsage: SessionTokenUsage = sessionData?.tokenUsage ?? { inputTokens: 0, outputTokens: 0, calls: 0 }
-    tui?.setSessionTokenUsage(sessionTokenUsage)
 
-    let activeSettings = normalizeSessionSettings({ ...storedSettings, provider: args.providerExplicit ? args.provider : storedSettings.provider, model: args.model ?? storedSettings.model, maxTokens: args.maxTokens ?? storedSettings.maxTokens, maxSteps: args.maxSteps ?? storedSettings.maxSteps }, args.provider)
-    if (!args.providerExplicit && !storedSettings.provider) activeSettings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
+    const loadSessionState = async (sessionId: string) => {
+      const nextContext = await store.context(sessionId)
+      const storedSettings = await store.settings(sessionId, args.provider)
+      const sessionData = await store.load(sessionId)
+      let settings = normalizeSessionSettings({
+        ...storedSettings,
+        provider: args.providerExplicit ? args.provider : storedSettings.provider,
+        model: args.model ?? storedSettings.model,
+        maxTokens: args.maxTokens ?? storedSettings.maxTokens,
+        maxSteps: args.maxSteps ?? storedSettings.maxSteps,
+      }, args.provider)
+      if (!args.providerExplicit && !storedSettings.provider) {
+        settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
+      }
+      return {
+        context: nextContext,
+        settings,
+        tokenUsage: sessionData?.tokenUsage ?? { inputTokens: 0, outputTokens: 0, calls: 0 },
+      }
+    }
+
+    let { context, settings: activeSettings, tokenUsage: sessionTokenUsage } = await loadSessionState(session)
+    tui?.setSessionTokenUsage(sessionTokenUsage)
     await maybeShowWebSearchSetupHint(args.root, activeSettings.language, tui)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
@@ -202,6 +219,24 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context) })
       return runner
     }
+    const writeSessionMessage = (text: string) => writeCliText(tui, text, uiText(activeSettings.language).sessionTitle)
+    const switchSession = async (nextSession: string) => {
+      session = nextSession
+      logger = args.logger ? createLogger({ root: args.root, session }) : undefined
+      emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
+      const nextState = await loadSessionState(session)
+      context = nextState.context
+      activeSettings = nextState.settings
+      sessionTokenUsage = nextState.tokenUsage
+      pendingImages = []
+      runMetrics.current = undefined
+      runner = undefined
+      queuedPrompts.length = 0
+      tui?.setSessionTokenUsage(sessionTokenUsage)
+      tui?.startSession(session)
+      tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
+      if (!tui) timeline.setLanguage?.(activeSettings.language)
+    }
 
     while (true) {
       const prompt = (queuedPrompts.shift() ?? await question(reader, tui)).trim()
@@ -219,10 +254,35 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session, tui })
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
-        tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
-        if (!tui) timeline.setLanguage?.(activeSettings.language)
-        if (changed.resetRunner) runner = undefined
-        await saveSession(runner?.context ?? context)
+        if (changed.sessionAction?.type === "switch") {
+          if (changed.sessionAction.target === session) {
+            writeSessionMessage(uiText(activeSettings.language).sessionSwitchCurrent(session))
+          } else {
+            await saveSession(runner?.context ?? context)
+            await switchSession(changed.sessionAction.target)
+            writeSessionMessage(uiText(activeSettings.language).sessionSwitched(session))
+          }
+        } else if (changed.sessionAction?.type === "delete") {
+          const target = changed.sessionAction.target
+          if (target === session) {
+            await saveSession(runner?.context ?? context)
+          }
+          const deleted = await store.delete(target)
+          if (!deleted.existed) {
+            writeSessionMessage(uiText(activeSettings.language).sessionNotFound(target))
+          } else if (target === session) {
+            const nextSession = (await store.list())[0]?.id ?? "default"
+            await switchSession(nextSession)
+            writeSessionMessage(uiText(activeSettings.language).sessionDeletedAndSwitched(target, session, deleted.archivedMemoryId ?? "memory"))
+          } else {
+            writeSessionMessage(uiText(activeSettings.language).sessionDeleted(target, deleted.archivedMemoryId ?? "memory"))
+          }
+        } else {
+          tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
+          if (!tui) timeline.setLanguage?.(activeSettings.language)
+          if (changed.resetRunner) runner = undefined
+          await saveSession(runner?.context ?? context)
+        }
         if (exitRequested) return "completed"
         continue
       }

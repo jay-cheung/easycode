@@ -5,6 +5,7 @@ export type SlashCommand =
   | { type: "help" }
   | { type: "settings" }
   | { type: "sessions" }
+  | { type: "session"; action: "switch" | "delete"; target: string }
   | { type: "image"; action: "add"; value: string }
   | { type: "image"; action: "clear" }
   | { type: "skill"; action: "list" }
@@ -28,7 +29,19 @@ export function parseSlashCommand(input: string): SlashCommand {
   if (!name) return { type: "help" }
   if (name === "help") return { type: "help" }
   if (name === "settings") return { type: "settings" }
-  if (name === "sessions" || name === "session") return { type: "sessions" }
+  if (name === "sessions") return { type: "sessions" }
+  if (name === "session") {
+    const action = args[0]?.toLowerCase()
+    const target = args.slice(1).join(" ")
+    if (!action || action === "list") return { type: "sessions" }
+    if (action === "switch" || action === "use" || action === "select") {
+      return target ? { type: "session", action: "switch", target } : { type: "error", code: "session_switch_requires_name" }
+    }
+    if (action === "delete" || action === "remove" || action === "rm") {
+      return target ? { type: "session", action: "delete", target } : { type: "error", code: "session_delete_requires_name" }
+    }
+    return { type: "session", action: "switch", target: args.join(" ") }
+  }
   if (name === "image") {
     if (args[0]?.toLowerCase() === "clear") return { type: "image", action: "clear" }
     const value = args.join(" ")

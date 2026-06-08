@@ -14,11 +14,15 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/lang zh")).toEqual({ type: "lang", value: "zh" })
     expect(parseSlashCommand("/lang")).toEqual({ type: "lang" })
     expect(parseSlashCommand("/sessions")).toEqual({ type: "sessions" })
+    expect(parseSlashCommand("/session switch archive")).toEqual({ type: "session", action: "switch", target: "archive" })
+    expect(parseSlashCommand("/session delete archive")).toEqual({ type: "session", action: "delete", target: "archive" })
   })
 
   test("returns error for model and provider with no args", () => {
     expect(parseSlashCommand("/model")).toEqual({ type: "error", code: "model_requires_name" })
     expect(parseSlashCommand("/provider")).toEqual({ type: "error", code: "provider_requires_name" })
+    expect(parseSlashCommand("/session switch")).toEqual({ type: "error", code: "session_switch_requires_name" })
+    expect(parseSlashCommand("/session delete")).toEqual({ type: "error", code: "session_delete_requires_name" })
   })
 
   test("accepts the thingking typo as a thinking alias", () => {

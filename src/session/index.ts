@@ -1,8 +1,10 @@
 import path from "node:path"
-import { mkdir, readdir } from "node:fs/promises"
+import { mkdir, readdir, rm, stat } from "node:fs/promises"
 import { easycodeDir } from "../easycode-path"
 import { ContextManager, type ContextLedger, type ContextManagerLike } from "../context"
+import { ProjectMemoryStore } from "../memory"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "../message"
+import { planStoreDir } from "../plans"
 import { normalizeSessionSettings, type SessionSettings } from "../settings"
 import { persistedSessionMessages } from "./session-tail"
 
@@ -29,10 +31,18 @@ export type SessionSummary = {
   updatedAt: number
 }
 
+export type SessionDeleteResult = {
+  existed: boolean
+  deletedPaths: string[]
+  archivedMemoryId?: string
+}
+
 export class SessionStore {
+  readonly root: string
   readonly dir: string
 
   constructor(root: string) {
+    this.root = root
     this.dir = path.join(easycodeDir(root), "sessions")
   }
 
@@ -103,6 +113,30 @@ export class SessionStore {
     return context
   }
 
+  async delete(id: string): Promise<SessionDeleteResult> {
+    const session = await this.load(id)
+    if (!session) return { existed: false, deletedPaths: [] }
+
+    const archived = await new ProjectMemoryStore(this.root).add({
+      text: archivedSessionText(session),
+      tags: archivedSessionTags(session),
+      source: "assistant",
+    })
+
+    const targets = sessionDeletePaths(this.root, id)
+    const deletedPaths: string[] = []
+    for (const target of targets) {
+      const deleted = await removeIfExists(target.path, target.directory)
+      if (deleted) deletedPaths.push(target.path)
+    }
+
+    return {
+      existed: true,
+      deletedPaths,
+      archivedMemoryId: archived.id,
+    }
+  }
+
   private filePath(id: string) {
     return path.join(this.dir, `${safeSessionID(id)}.json`)
   }
@@ -112,4 +146,68 @@ export function safeSessionID(id: string) {
   const safe = id.trim().replace(/[^A-Za-z0-9_.-]/g, "_")
   if (!safe) throw new Error("Session id cannot be empty")
   return safe
+}
+
+function sessionDeletePaths(root: string, id: string) {
+  const safe = safeSessionID(id)
+  const base = easycodeDir(root)
+  return [
+    { path: path.join(base, "sessions", `${safe}.json`), directory: false },
+    { path: path.join(base, "logs", "sessions", `${safe}.jsonl`), directory: false },
+    { path: path.join(base, "logs", "sessions", `${safe}.txt`), directory: false },
+    { path: planStoreDir(root, id), directory: true },
+  ]
+}
+
+async function removeIfExists(targetPath: string, directory: boolean) {
+  try {
+    const info = await stat(targetPath)
+    if (directory && !info.isDirectory()) return false
+    if (!directory && !info.isFile()) return false
+    await rm(targetPath, { recursive: directory, force: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function archivedSessionTags(session: SessionData) {
+  const tags = ["session", "archive", "deleted_session", safeSessionID(session.id)]
+  if (session.settings?.provider) tags.push(`provider:${session.settings.provider}`)
+  if (session.settings?.language) tags.push(`language:${session.settings.language}`)
+  return tags
+}
+
+function archivedSessionText(session: SessionData) {
+  const settings = session.settings ? normalizeSessionSettings(session.settings, session.settings.provider) : undefined
+  const latestUser = latestMessageText(session.messages, "user")
+  const latestAssistant = latestMessageText(session.messages, "assistant")
+  const pieces = [
+    `Deleted session "${session.id}".`,
+    `messages=${session.messages.length}.`,
+    `updatedAt=${new Date(session.updatedAt).toISOString()}.`,
+    settings ? `provider=${settings.provider}. language=${settings.language}. thinking=${settings.thinking ? "on" : "off"}. effort=${settings.effort}.` : undefined,
+    session.summary ? `summary=${session.summary}` : undefined,
+    latestUser ? `latest_user=${latestUser}` : undefined,
+    latestAssistant ? `latest_assistant=${latestAssistant}` : undefined,
+  ]
+  return pieces.filter(Boolean).join(" ")
+}
+
+function latestMessageText(messages: Message[], role: Message["role"]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role !== role) continue
+    const text = message.parts
+      .flatMap((part) => {
+        if (part.type === "text") return [part.text]
+        if (part.type === "tool_result") return [part.output]
+        return []
+      })
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+    if (text) return text.slice(0, 280)
+  }
+  return undefined
 }

@@ -53,6 +53,8 @@ export type SlashErrorCode =
   | "model_requires_name"
   | "provider_requires_name"
   | "effort_requires_value"
+  | "session_switch_requires_name"
+  | "session_delete_requires_name"
   | "thinking_requires_value"
 
 export function languageLabel(language: UiLanguage) {
@@ -118,6 +120,11 @@ type UiCopy = {
   noSavedSessions: string
   noSessionStore: string
   sessionSummary: (index: number, id: string, current: boolean, count: number) => string
+  sessionSwitchCurrent: (id: string) => string
+  sessionSwitched: (id: string) => string
+  sessionDeleted: (id: string, memoryId: string) => string
+  sessionDeletedAndSwitched: (id: string, next: string, memoryId: string) => string
+  sessionNotFound: (id: string) => string
   commandUnknown: (name: string) => string
   slashError: (code: SlashErrorCode) => string
   modelSet: (model: string) => string
@@ -251,6 +258,8 @@ function buildEnglishCopy(): UiCopy {
       "  /lang <code>            set UI language: en, zh, ja, fr, ko, de",
       "  /settings               show current session settings",
       "  /sessions               list saved sessions",
+      "  /session switch <id>    switch to another session",
+      "  /session delete <id>    archive and delete a session",
       "  //text                  send /text as a normal prompt",
     ].join("\n"),
     webSearchTitle: "Web Search",
@@ -274,6 +283,11 @@ function buildEnglishCopy(): UiCopy {
     noSavedSessions: "No saved sessions.",
     noSessionStore: "No session store is active.",
     sessionSummary: (index, id, current, count) => `  ${index}. ${id}${current ? " (current)" : ""} - ${count} ${count === 1 ? "message" : "messages"}`,
+    sessionSwitchCurrent: (id) => `Already using session: ${id}`,
+    sessionSwitched: (id) => `Switched to session: ${id}`,
+    sessionDeleted: (id, memoryId) => `Deleted session: ${id}. Archived summary to project memory (${memoryId}).`,
+    sessionDeletedAndSwitched: (id, next, memoryId) => `Deleted session: ${id}. Switched to ${next}. Archived summary to project memory (${memoryId}).`,
+    sessionNotFound: (id) => `Session not found: ${id}`,
     commandUnknown: (name) => `Unknown command: /${name}. Use /help.`,
     slashError: (code) => ({
       image_requires_value: "/image requires a path or URL",
@@ -282,6 +296,8 @@ function buildEnglishCopy(): UiCopy {
       model_requires_name: "/model requires a model name",
       provider_requires_name: "/provider requires a provider name",
       effort_requires_value: "/effort requires low, medium, high, or max",
+      session_switch_requires_name: "/session switch requires a session id",
+      session_delete_requires_name: "/session delete requires a session id",
       thinking_requires_value: "/thinking requires on or off",
     })[code],
     modelSet: (model) => `Model set to ${model}`,
@@ -339,7 +355,7 @@ function buildEnglishCopy(): UiCopy {
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
     welcomeSession: (session, logger, status, language) => `session=${session} logger=${logger} language=${language} status=${status}`,
     welcomeRoot: (root) => `root=${root}`,
-    welcomeCommands: "/help /settings /sessions /model /skill /image /thinking /effort /lang /cancel",
+    welcomeCommands: "/help /settings /sessions /session /model /skill /image /thinking /effort /lang /cancel",
     welcomeProjectRoot: "Project Root:",
     welcomeAgent: "AI Agent:",
     welcomeRunMode: "Run Mode:",
@@ -347,9 +363,10 @@ function buildEnglishCopy(): UiCopy {
     welcomeSlashCommands: "Slash Commands:",
     welcomeCommandLines: [
       "   /help      Show help details      /settings  View active settings",
-      "   /sessions  List saved sessions    /model     Change active model",
-      "   /skill     Manage skills          /image     Attach vision input",
-      "   /lang      Change UI language     /cancel    Stop active execution",
+      "   /sessions  List saved sessions    /session   Switch or delete sessions",
+      "   /model     Change active model    /skill     Manage skills",
+      "   /image     Attach vision input    /lang      Change UI language",
+      "   /cancel    Stop active execution",
     ],
     successTitle: "Execution Completed",
     failureTitle: "Execution Failed",
@@ -439,6 +456,8 @@ const copies: Record<UiLanguage, UiCopy> = {
       "  /lang <code>            设置界面语言：en、zh、ja、fr、ko、de",
       "  /settings               查看当前会话设置",
       "  /sessions               查看保存的会话",
+      "  /session switch <id>    切换到其他会话",
+      "  /session delete <id>    归档并删除一个会话",
       "  //text                  把 /text 当普通提示词发送",
     ].join("\n"),
     startingNewSession: (name) => `开始新会话：${name}`,
@@ -449,6 +468,11 @@ const copies: Record<UiLanguage, UiCopy> = {
     noSavedSessions: "没有已保存会话。",
     noSessionStore: "当前未启用会话存储。",
     sessionSummary: (index, id, current, count) => `  ${index}. ${id}${current ? "（当前）" : ""} - ${count} 条消息`,
+    sessionSwitchCurrent: (id) => `当前已经在使用会话：${id}`,
+    sessionSwitched: (id) => `已切换到会话：${id}`,
+    sessionDeleted: (id, memoryId) => `已删除会话：${id}。摘要已归档到项目长期记忆（${memoryId}）。`,
+    sessionDeletedAndSwitched: (id, next, memoryId) => `已删除会话：${id}，并切换到 ${next}。摘要已归档到项目长期记忆（${memoryId}）。`,
+    sessionNotFound: (id) => `未找到会话：${id}`,
     commandUnknown: (name) => `未知命令：/${name}。请使用 /help。`,
     slashError: (code) => ({
       image_requires_value: "/image 需要路径或 URL",
@@ -457,6 +481,8 @@ const copies: Record<UiLanguage, UiCopy> = {
       model_requires_name: "/model 需要模型名",
       provider_requires_name: "/provider 需要 provider 名",
       effort_requires_value: "/effort 需要 low、medium、high 或 max",
+      session_switch_requires_name: "/session switch 需要会话 id",
+      session_delete_requires_name: "/session delete 需要会话 id",
       thinking_requires_value: "/thinking 需要 on 或 off",
     })[code],
     modelSet: (model) => `模型已切换为 ${model}`,
@@ -512,7 +538,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
     welcomeSession: (session, logger, status, language) => `session=${session} logger=${logger} language=${language} status=${status}`,
     welcomeRoot: (root) => `root=${root}`,
-    welcomeCommands: "/help /settings /sessions /model /skill /image /thinking /effort /lang /cancel",
+    welcomeCommands: "/help /settings /sessions /session /model /skill /image /thinking /effort /lang /cancel",
     welcomeProjectRoot: "项目目录：",
     welcomeAgent: "AI Agent：",
     welcomeRunMode: "运行模式：",
@@ -520,9 +546,10 @@ const copies: Record<UiLanguage, UiCopy> = {
     welcomeSlashCommands: "Slash 命令：",
     welcomeCommandLines: [
       "   /help      查看帮助            /settings  查看当前设置",
-      "   /sessions  查看保存会话        /model     切换当前模型",
-      "   /skill     管理技能            /image     附加图片输入",
-      "   /lang      切换界面语言        /cancel    中止当前执行",
+      "   /sessions  查看保存会话        /session   切换或删除会话",
+      "   /model     切换当前模型        /skill     管理技能",
+      "   /image     附加图片输入        /lang      切换界面语言",
+      "   /cancel    中止当前执行",
     ],
     successTitle: "执行完成",
     failureTitle: "执行失败",

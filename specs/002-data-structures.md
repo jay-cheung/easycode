@@ -60,6 +60,7 @@ type SessionSettings = {
 type ContextState = {
   messages: Message[]
   summary?: string
+  ledger?: StructuredContextLedger
   tokenEstimate: number
   maxTokens: number
 }
@@ -87,7 +88,7 @@ type RepoMapResult = {
     size: number
     symbols: Array<{ name: string; kind: string; line: number; signature?: string }>
   }>
-  cache: { path: ".easycode/cache/repo-map.json"; hit: boolean; gitIgnored: boolean }
+  cache: { path: string; hit: boolean; gitIgnored: boolean }
 }
 
 type CodeIndexResult = {
@@ -96,7 +97,7 @@ type CodeIndexResult = {
   files: Array<{ filePath: string; hash: string; mtimeMs: number; size: number; imports: string[]; exports: string[] }>
   symbols: Array<{ id: string; filePath: string; name: string; kind: string; startLine: number; endLine: number; signature?: string }>
   edges: Array<{ kind: "imports" | "exports" | "calls" | "references" | "inherits" | "implements"; from: string; to: string; filePath: string; line: number; preview?: string }>
-  cache: { path: ".easycode/cache/code-index/index.json"; hit: boolean; gitIgnored: boolean }
+  cache: { path: string; hit: boolean; gitIgnored: boolean }
 }
 ```
 
@@ -104,9 +105,10 @@ type CodeIndexResult = {
 - Tool calls and tool results are represented as message parts.
 - Thinking and images are represented as message parts, not folded into final assistant text.
 - Provider-facing messages are derived from internal messages.
+- The structured context ledger carries durable current-state and recent-history records such as the latest direct user input, current user request, and active capability surface for compaction continuity.
 - Tool metadata includes status and safety metadata where relevant.
 - Zod validates model-produced tool arguments before execution.
 - Session settings persist model/language/thinking/effort/skill choices; pending images do not persist.
-- Repo map and code index caches are derived artifacts under `.easycode/cache`; deleting them must not affect correctness.
+- Repo map and code index caches are derived artifacts under the EasyCode project cache directory (`~/.easycode/projects/<hash>/cache/` in normal runtime, project-local `.easycode/cache/` in tests); deleting them must not affect correctness.
 - Code-navigation tools preserve the public protocol while switching internals from CLI search to index-first lookup.
 - `code-index/index.json` is tool-private cache data. It must never be returned wholesale to the model; model-visible navigation outputs are limited to repo-map skeletons, bounded search previews, and `read_lines` slices.

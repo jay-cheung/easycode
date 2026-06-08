@@ -51,6 +51,7 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
   const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
   let pendingImages = input.pendingImages
   let resetRunner = false
+  let sessionAction: { type: "switch" | "delete"; target: string } | undefined
   input.tui?.slashCommand(command.type)
   const write = (text: string, title?: string) => writeCliText(input.tui, text, title ?? uiText(next.language).commandTitle)
 
@@ -63,6 +64,9 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
       break
     case "sessions":
       write(await sessionsText(input.sessions, input.currentSession, next.language), uiText(next.language).sessionsTitle)
+      break
+    case "session":
+      sessionAction = { type: command.action, target: command.target }
       break
     case "unknown":
       write(uiText(next.language).commandUnknown(command.name), uiText(next.language).commandTitle)
@@ -180,7 +184,7 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
     }
   }
 
-  return { settings: next, pendingImages, resetRunner }
+  return { settings: next, pendingImages, resetRunner, sessionAction }
 }
 
 export async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined, language: SessionSettings["language"]) {

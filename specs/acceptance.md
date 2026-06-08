@@ -20,6 +20,8 @@
 - First interactive startup without `EASYCODE_LANG` prompts for a UI language choice and saves it for later sessions.
 - `/sessions` lists saved sessions and marks the active one in interactive mode.
 - `/lang <code>` updates the fixed CLI/TUI language for the current session and persists the default in `~/.easycode/.env`.
+- `/session switch <id>` switches the active interactive session and reloads that session's saved settings.
+- `/session delete <id>` archives a short summary into project memory, deletes the session file, logs, and saved plans, and keeps the interactive shell on a valid session.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.
 - `/image` attaches an image to the next prompt only when the active provider supports images.

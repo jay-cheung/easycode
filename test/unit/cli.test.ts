@@ -386,7 +386,12 @@ describe("cli args", () => {
   test("session startup lets users choose or create when sessions exist", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
-    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({ id: "alpha", messages: [], updatedAt: 100 }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({
+      id: "alpha",
+      messages: [],
+      settings: { provider: "fake", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
+      updatedAt: 100,
+    }, null, 2))
     await Bun.write(path.join(root, ".easycode", "sessions", "beta.json"), JSON.stringify({ id: "beta", messages: [], updatedAt: 200 }, null, 2))
 
     const chooseExisting = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
@@ -439,6 +444,84 @@ describe("cli args", () => {
     expect(stdout).toContain("Saved sessions:")
     expect(stdout).toContain("1. beta (current) - 0 messages")
     expect(stdout).toContain("2. alpha - 1 message")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session switch command swaps active session state", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({
+      id: "alpha",
+      messages: [],
+      settings: { provider: "fake", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
+      updatedAt: 100,
+    }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "sessions", "beta.json"), JSON.stringify({
+      id: "beta",
+      messages: [],
+      settings: { provider: "fake", language: "en", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
+      updatedAt: 200,
+    }, null, 2))
+
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("1\n/session switch alpha\n/settings\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("已切换到会话：alpha")
+    expect(stdout).toContain("language: zh (中文)")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session delete command archives memory and removes related files", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
+    await mkdir(path.join(root, ".easycode", "logs", "sessions"), { recursive: true })
+    await mkdir(path.join(root, ".easycode", "plans", "beta"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({
+      id: "alpha",
+      messages: [],
+      settings: { provider: "fake", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
+      updatedAt: 100,
+    }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "sessions", "beta.json"), JSON.stringify({
+      id: "beta",
+      messages: [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "summarize beta work" }], createdAt: 1 },
+        { id: "m2", role: "assistant", parts: [{ type: "text", text: "beta summary" }], createdAt: 2 },
+      ],
+      summary: "beta summary",
+      updatedAt: 200,
+    }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "logs", "sessions", "beta.jsonl"), "{\"type\":\"data\"}\n")
+    await Bun.write(path.join(root, ".easycode", "logs", "sessions", "beta.txt"), "transcript\n")
+    await Bun.write(path.join(root, ".easycode", "plans", "beta", "1.md"), "plan")
+
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("1\n/session delete beta\n/sessions\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("已删除会话：beta")
+    expect(stdout).toContain("1. alpha（当前） - 0 条消息")
+    expect(await Bun.file(path.join(root, ".easycode", "sessions", "beta.json")).exists()).toBe(false)
+    expect(await Bun.file(path.join(root, ".easycode", "logs", "sessions", "beta.jsonl")).exists()).toBe(false)
+    expect(await Bun.file(path.join(root, ".easycode", "logs", "sessions", "beta.txt")).exists()).toBe(false)
+    expect(await Bun.file(path.join(root, ".easycode", "plans", "beta", "1.md")).exists()).toBe(false)
+    const memory = JSON.parse(await Bun.file(path.join(root, ".easycode", "memory.json")).text()) as { records: Array<{ text: string }> }
+    expect(memory.records.at(-1)?.text).toContain("Deleted session \"beta\".")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })

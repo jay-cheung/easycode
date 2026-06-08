@@ -24,7 +24,7 @@ const toolPriorityDirective = [
   "4. read_lines for exact ranges.",
   "5. list / git_diff / read / grep / edit|write / bash.",
   "For symbol-affecting work, follow the symbol-aware edit plan requirement before edit/write or a code-change recommendation.",
-  "Do not full-read files over 100 lines. Never read or expose .easycode/cache/code-index/index.json.",
+  "Do not full-read files over 100 lines. Never read or expose the derived code-index cache file.",
 ].join("\n")
 
 export function buildContextSystemPrompt(agent: Pick<Agent, "systemPrompt" | "mode">) {

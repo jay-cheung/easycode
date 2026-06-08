@@ -32,7 +32,7 @@ flowchart TD
   Provider --> Agent
   Agent --> Registry[ToolRegistry]
   Agent --> CodeNav[CodeNavigator]
-  CodeNav --> Cache[.easycode/cache]
+  CodeNav --> Cache["~/.easycode/projects/<hash>/cache"]
   Registry --> Permission[PermissionService]
   Registry --> Sandbox[Sandbox]
   Registry --> Skill[SkillService]

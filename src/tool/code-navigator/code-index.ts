@@ -1,8 +1,7 @@
 import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import type { Sandbox } from "../../sandbox"
-import { codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
-import { easycodeDir } from "../../easycode-path"
+import { codeIndexCacheFile, codeIndexCachePath, codeIndexGeneratorVersion } from "./constants"
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
 import { maskSearchableLines, uniqueSortedResults } from "./parsing"
 import type { CallGraphDirection, CallGraphResult, CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
@@ -48,7 +47,8 @@ export async function codeIndex(input: {
   useCache?: boolean
   gitIgnored: boolean
 }) {
-  const cachePath = path.join(easycodeDir(input.sandbox.root), "cache", "code-index", "index.json")
+  const cachePath = codeIndexCacheFile(input.sandbox.root)
+  const cacheDisplayPath = codeIndexCachePath(input.sandbox.root)
   const cached = input.useCache === false ? undefined : await readCachedCodeIndex(cachePath)
   if (input.useCache !== false) {
     if (cached && codeIndexCacheValid(cached, {
@@ -58,7 +58,7 @@ export async function codeIndex(input: {
       toolVersions: input.toolVersions,
       files: input.files,
     })) {
-      return { ...cached, cache: { path: codeIndexCachePath, hit: true, gitIgnored: input.gitIgnored } }
+      return { ...cached, cache: { path: cacheDisplayPath, hit: true, gitIgnored: input.gitIgnored } }
     }
   }
 
@@ -93,7 +93,7 @@ export async function codeIndex(input: {
     files: indexedFiles,
     symbols,
     edges: resolvedEdges,
-    cache: { path: codeIndexCachePath, hit: false, gitIgnored: input.gitIgnored, rebuiltFiles: changedFiles.length },
+    cache: { path: cacheDisplayPath, hit: false, gitIgnored: input.gitIgnored, rebuiltFiles: changedFiles.length },
   }
   await mkdir(path.dirname(cachePath), { recursive: true })
   await Bun.write(cachePath, JSON.stringify(result, null, 2))

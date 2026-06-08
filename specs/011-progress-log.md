@@ -992,3 +992,15 @@
   - `bun run typecheck`: pass.
   - `bun run cache:bench -- --provider simulated --suite real --quiet`: pass; recommendation remained `every-step` with `effective_input=34644`, so no benchmark-visible cost regression was introduced by this runner-only change.
   - `bun run gate`: local checks pass; remaining failure is the known external `provider_gate` for real `deepseek` connectivity only.
+
+## Step 45: Global Code-Nav Cache And Session Lifecycle Controls
+
+- Scope: move repo-map/code-index derived artifacts to the global EasyCode project cache at runtime, keep tests isolated, and add interactive session switch/delete controls with delete-time archival into project memory.
+- Implementation:
+  - Added explicit global-project cache helpers in `src/easycode-path.ts` and rewired `src/tool/code-navigator/{constants,cli,code-index}.ts` so runtime code-navigation caches use `~/.easycode/projects/<hash>/cache/`, while test runs keep using project-local `.easycode/cache/`.
+  - Extended slash/session handling so `/session switch <id>` reloads another session's persisted settings/context and `/session delete <id>` removes the session JSON, logger transcripts, and saved plan directory.
+  - Added session-delete archival in `src/session/index.ts` using `ProjectMemoryStore`, so deleted sessions leave a short durable project-memory summary instead of disappearing without trace.
+- Code Complete review result:
+  - Correctness: code-navigation cache placement is now explicit and no longer depends on whether a repo has a local `.easycode/` folder, while interactive session deletion cleans all known session-scoped artifacts.
+  - Maintainability: session lifecycle responsibilities now live beside session persistence instead of being split across ad hoc CLI-only cleanup paths.
+  - Verification: targeted slash/session/code-navigation coverage first because the new behavior crosses startup state, runtime session state, and derived cache metadata.

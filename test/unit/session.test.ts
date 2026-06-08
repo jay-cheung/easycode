@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { ContextManager, estimateMessages, type LedgerRecord } from "../../src/context"
+import { ProjectMemoryStore } from "../../src/memory"
 import { textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
+import { planStoreDir } from "../../src/plans"
 import { safeSessionID, SessionStore } from "../../src/session"
 
 async function tmpdir() {
@@ -249,6 +251,43 @@ describe("session store", () => {
   test("sanitizes session ids", () => {
     expect(safeSessionID("team/default chat")).toBe("team_default_chat")
     expect(() => safeSessionID("   ")).toThrow("Session id cannot be empty")
+  })
+
+  test("deletes session files and archives a summary to project memory", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.add(textMessage("user", "Investigate payment retry loops"))
+    context.add(textMessage("assistant", "Root cause is a stale retry flag."))
+    context.state.summary = "payment retry investigation"
+    await store.save("archive/me", context, { provider: "openai", model: "gpt-5.5", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] }, { inputTokens: 120, outputTokens: 45, calls: 2 })
+
+    const safe = safeSessionID("archive/me")
+    const logsDir = path.join(root, ".easycode", "logs", "sessions")
+    await mkdir(logsDir, { recursive: true })
+    await Bun.write(path.join(logsDir, `${safe}.jsonl`), "{\"type\":\"data\"}\n")
+    await Bun.write(path.join(logsDir, `${safe}.txt`), "transcript\n")
+    const plansDir = planStoreDir(root, "archive/me")
+    await mkdir(plansDir, { recursive: true })
+    await Bun.write(path.join(plansDir, "1.md"), "plan")
+
+    const result = await store.delete("archive/me")
+    const records = await new ProjectMemoryStore(root).list()
+
+    expect(result.existed).toBe(true)
+    expect(result.deletedPaths).toEqual(expect.arrayContaining([
+      path.join(root, ".easycode", "sessions", `${safe}.json`),
+      path.join(root, ".easycode", "logs", "sessions", `${safe}.jsonl`),
+      path.join(root, ".easycode", "logs", "sessions", `${safe}.txt`),
+      plansDir,
+    ]))
+    expect(await Bun.file(path.join(root, ".easycode", "sessions", `${safe}.json`)).exists()).toBe(false)
+    expect(await Bun.file(path.join(logsDir, `${safe}.jsonl`)).exists()).toBe(false)
+    expect(await Bun.file(path.join(logsDir, `${safe}.txt`)).exists()).toBe(false)
+    expect(await Bun.file(path.join(plansDir, "1.md")).exists()).toBe(false)
+    expect(records.at(-1)?.text).toContain("Deleted session \"archive/me\".")
+    expect(records.at(-1)?.text).toContain("payment retry investigation")
+    await rm(root, { recursive: true, force: true })
   })
 })
 

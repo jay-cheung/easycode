@@ -373,6 +373,8 @@ easycode build --once "Fix failing tests" --provider openai --max-steps 20
 | `/lang <code>`           | 设置界面语言：`en`、`zh`、`ja`、`fr`、`ko`、`de` / Set UI language |
 | `/settings`              | 查看当前会话设置 / Show current session settings                 |
 | `/sessions`              | 查看已保存会话 / List saved sessions                             |
+| `/session switch <id>`   | 切换到另一个会话 / Switch to another session                     |
+| `/session delete <id>`   | 归档并删除会话 / Archive and delete a session                    |
 | `//text`                 | 将`/text` 作为普通 prompt 发送 / Send `/text` as a normal prompt |
 
 ### 环境变量 / Environment Variables
@@ -426,6 +428,10 @@ bun run gate
   During first-time interactive setup for `deepseek` or `openai`, the CLI first calls each provider's official `GET /models` API, keeps only the two most recent versions, and falls back to bundled presets on failure. Custom model input is still supported.
 - 首次进入交互式会话且未配置 `EASYCODE_LANG` 时，CLI 会先让用户选择界面语言，并把选择保存到 `~/.easycode/.env`。之后可以随时用 `/lang <code>` 切换，中/英/日/法/韩/德的固定文案都会同步生效。
   On the first interactive startup without `EASYCODE_LANG`, the CLI asks the user to choose a UI language and saves it to `~/.easycode/.env`. Users can switch later with `/lang <code>`, and the fixed TUI copy updates across Chinese, English, Japanese, French, Korean, and German.
+- `repo_map` 和 `code-index` 的派生缓存默认写入全局项目目录 `~/.easycode/projects/<project-hash>/cache/`；测试环境仍使用项目内 `.easycode/cache/` 以保持隔离。
+  Derived `repo_map` and `code-index` caches default to the global project directory `~/.easycode/projects/<project-hash>/cache/`; tests still use in-repo `.easycode/cache/` for isolation.
+- 交互式会话支持 `/session switch <id>` 和 `/session delete <id>`。删除时会先把简短摘要归档到当前项目的长期记忆，再清理该 session 的 JSON、日志和计划文件。
+  Interactive sessions support `/session switch <id>` and `/session delete <id>`. Deletion first archives a short summary into project memory, then removes the session JSON, logs, and plan files.
 
 如果只想单独跑某一类验证 / Run individual verification types:
 

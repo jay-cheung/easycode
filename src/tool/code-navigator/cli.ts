@@ -2,13 +2,12 @@ import path from "node:path"
 import { mkdir, readdir, stat } from "node:fs/promises"
 import type { Sandbox } from "../../sandbox"
 import { clampInt } from "../../utils/math"
-import { defaultReadLineLimit, ignoredDirs, repoMapCachePath, repoMapGeneratorVersion } from "./constants"
-import { easycodeDir } from "../../easycode-path"
+import { defaultReadLineLimit, ignoredDirs, repoMapCacheFile, repoMapCachePath, repoMapGeneratorVersion } from "./constants"
 import { defaultRunner, firstLine, getRgPath } from "./commands"
 import { definitionPatterns, escapeRegExp, extensionsForLanguage, fileTypeArgs, languageToFileType, normalizeMaxResults } from "./language"
 import { parseAstGrepJson, parseRgJson, uniqueSortedResults } from "./parsing"
 import { callGraphInCodeIndex, codeIndex, findDefinitionsInCodeIndex, findReferencesInCodeIndex, repoMapEntriesFromCodeIndex } from "./code-index"
-import { projectIgnoresEasyCode, readCachedRepoMap, repoMapCacheValid, scoreAndFilterRepoMap } from "./repo-map"
+import { readCachedRepoMap, repoMapCacheValid, scoreAndFilterRepoMap } from "./repo-map"
 import type { CallGraphDirection, CodeIndexResult, CodeNavigator, CodeSearchResult, CommandRunner, RepoMapEntry, RepoMapResult } from "./types"
 
 export class CliCodeNavigator implements CodeNavigator {
@@ -108,9 +107,9 @@ export class CliCodeNavigator implements CodeNavigator {
   async repoMap(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean; query?: string }) {
     const dir = this.relativeDir(input.dir)
     const maxFiles = clampInt(input.maxFiles ?? 200, 1, 2_000)
-    const cachePath = path.join(easycodeDir(this.sandbox.root), "cache", "repo-map.json")
-    const resolvedEasycodeDir = easycodeDir(this.sandbox.root)
-    const cacheIgnored = !resolvedEasycodeDir.startsWith(this.sandbox.root) || (await projectIgnoresEasyCode(this.sandbox.root))
+    const cachePath = repoMapCacheFile(this.sandbox.root)
+    const cacheDisplayPath = repoMapCachePath(this.sandbox.root)
+    const cacheIgnored = true
     const toolVersions = await this.toolVersions()
     const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
     const index = await this.codeIndexFromFingerprint({ dir, files: fingerprint.files, toolVersions, useCache: input.useCache, gitIgnored: cacheIgnored })
@@ -120,7 +119,7 @@ export class CliCodeNavigator implements CodeNavigator {
     if (input.useCache !== false) {
       const cached = await readCachedRepoMap(cachePath)
       if (cached && repoMapCacheValid(cached, { root: this.sandbox.root, dir, generatorVersion: repoMapGeneratorVersion, toolVersions, files: fingerprint.files })) {
-        result = { ...cached, cache: { path: repoMapCachePath, hit: true, gitIgnored: cacheIgnored } }
+        result = { ...cached, cache: { path: cacheDisplayPath, hit: true, gitIgnored: cacheIgnored } }
       }
     }
 
@@ -133,7 +132,7 @@ export class CliCodeNavigator implements CodeNavigator {
         generatorVersion: repoMapGeneratorVersion,
         toolVersions,
         entries,
-        cache: { path: repoMapCachePath, hit: false, gitIgnored: cacheIgnored },
+        cache: { path: cacheDisplayPath, hit: false, gitIgnored: cacheIgnored },
       }
       await mkdir(path.dirname(cachePath), { recursive: true })
       await Bun.write(cachePath, JSON.stringify(result, null, 2))
@@ -148,8 +147,7 @@ export class CliCodeNavigator implements CodeNavigator {
   private async codeIndex(input: { dir?: string; language?: string; maxFiles?: number; useCache?: boolean }): Promise<CodeIndexResult> {
     const dir = this.relativeDir(input.dir)
     const maxFiles = clampInt(input.maxFiles ?? 200, 1, 2_000)
-    const resolvedEasycodeDir = easycodeDir(this.sandbox.root)
-    const cacheIgnored = !resolvedEasycodeDir.startsWith(this.sandbox.root) || (await projectIgnoresEasyCode(this.sandbox.root))
+    const cacheIgnored = true
     const toolVersions = await this.toolVersions()
     const fingerprint = await this.repoFingerprint({ dir, language: input.language, maxFiles })
     return this.codeIndexFromFingerprint({ dir, files: fingerprint.files, toolVersions, useCache: input.useCache, gitIgnored: cacheIgnored })
