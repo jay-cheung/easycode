@@ -1,10 +1,16 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, StreamXmlFilter, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
 import { imagePart, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 import type { Provider, ProviderEvent } from "../../src/provider"
 
 describe("provider", () => {
+  const originalFetch = globalThis.fetch
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch
+  })
+
   test("fake provider emits deterministic tool calls", async () => {
     const provider = new FakeProvider()
     const events = []
@@ -238,6 +244,26 @@ describe("provider", () => {
         },
       })
       expect((first.value as { request: { body: { tools: unknown[] } } }).request.body.tools[0]).toMatchObject({ type: "function", function: { name: "read" } })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
+  test("wraps fetch failures into ProviderError and preserves nested TLS causes", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    globalThis.fetch = (async () => {
+      const error = new Error("Unable to connect. Is the computer able to access the url?")
+      ;(error as Error & { cause?: unknown }).cause = new Error("unable to get local issuer certificate")
+      throw error
+    }) as unknown as typeof fetch
+    try {
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      expect(first.value).toMatchObject({ type: "request" })
+      await expect(stream.next()).rejects.toThrow("Unable to connect. Is the computer able to access the url? (cause: unable to get local issuer certificate)")
     } finally {
       if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
       else process.env.DEEPSEEK_API_KEY = previous

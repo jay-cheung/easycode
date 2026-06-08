@@ -392,6 +392,41 @@ describe("code navigator", () => {
     expect(graph.edges.some((edge) => edge.to === "src/other.ts#leaf")).toBe(false)
   })
 
+  test("findDefinition and findReferences accept qualified names and symbol ids under same-name collisions", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "impl.ts"), [
+      "export function leaf() {",
+      "  return 1",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "other.ts"), [
+      "export function leaf() {",
+      "  return 2",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "parent.ts"), [
+      "import { leaf } from './impl'",
+      "export function parent() {",
+      "  return leaf()",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+
+    await expect(navigator.findDefinition({ symbol: "src/impl.leaf", language: "typescript" })).resolves.toEqual([
+      { filePath: "src/impl.ts", line: 1, preview: "export function leaf()" },
+    ])
+    await expect(navigator.findDefinition({ symbol: "src/other.ts#leaf", language: "typescript" })).resolves.toEqual([
+      { filePath: "src/other.ts", line: 1, preview: "export function leaf()" },
+    ])
+    await expect(navigator.findReferences({ symbol: "src/impl.leaf", language: "typescript" })).resolves.toEqual([
+      { filePath: "src/parent.ts", line: 3, preview: "  return leaf()" },
+    ])
+    await expect(navigator.findReferences({ symbol: "src/other.ts#leaf", language: "typescript" })).resolves.toEqual([])
+  })
+
   test("AST local binding scope prevents same-name false references", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })

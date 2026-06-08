@@ -34,3 +34,4 @@ LSP/AST support improves EasyCode beyond text search by giving the agent code-st
 - Indented local declarations are no longer promoted to top-level TypeScript symbols.
 - The index cache generator version is bumped so stale regex-only indexes are rebuilt.
 - Agent prompts now treat symbol-aware edit planning as the default path for symbol-affecting build/plan work instead of relying on ad hoc text-match exploration.
+- `find_definition` and `find_references` accept name, qualified name, or symbol id selectors so same-name collisions can be narrowed semantically instead of falling back to raw text matches.

@@ -46,6 +46,6 @@
 
 ## Quality
 - No `any` types in source.
-- Core modules remain one file each.
+- Runtime responsibilities stay in focused modules, and development-only tooling stays outside `src/`.
 - No Effect, DI container, MCP, Docker, or plugin system in v1.
-- Real Codex provider requires `OPENAI_API_KEY`; fake provider tests require no network.
+- OpenAI provider requires `OPENAI_API_KEY`; fake provider tests require no network.

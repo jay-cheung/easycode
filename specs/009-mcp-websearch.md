@@ -6,7 +6,8 @@ MCP and WebSearch are complementary retrieval surfaces. MCP connects local, ente
 
 ## Shared Contract
 
-- Retrieval is opt-in until permissions, logging, and eval coverage are present.
+- Retrieval now uses differentiated defaults because permissions, logging, and eval coverage are already in place.
+- MCP reads and `web_search` are default-allowed, while live network paths still obey timeout, TLS, and runtime network boundaries.
 - Each retrieval result records source type, source id or URL, title, snippet, retrieved timestamp, and permission decision.
 - Agent answers must preserve citations for both MCP resources and web sources.
 - Logger output records query text, selected sources, redaction decisions, elapsed time, and failures.
@@ -23,7 +24,7 @@ MCP and WebSearch are complementary retrieval surfaces. MCP connects local, ente
 
 - Search public web data for current or cross-product comparison tasks.
 - Fetch result metadata and cite sources.
-- Enforce network permission and timeout boundaries.
+- Enforce timeout, TLS, and runtime network boundaries without fabricating results.
 - Prefer official or primary sources for technical claims.
 
 ## Acceptance
@@ -39,6 +40,6 @@ MCP and WebSearch are complementary retrieval surfaces. MCP connects local, ente
 - `web_search` reads `.easycode/websearch.json` fixtures when no live engine is selected.
 - `web_search` performs live search only through Tavily when `.easycode/websearch.json` has `defaultEngine: "tavily"` or the tool input specifies `engine: "tavily"`.
 - When no `websearch.json` exists, runtime can still default to `tavily` if `TAVILY_API_KEY` is available in the environment.
-- Interactive CLI startup prints a setup hint when Tavily is not configured, pointing users to the repo-root `.env` file or the current shell environment.
+- Interactive CLI startup prints a setup hint when Tavily is not configured, pointing users to global `~/.easycode/.env` or the current shell environment.
 - MCP reads are allowed by default because they are local configured resources.
-- WebSearch requires explicit permission by default for both fixture and live modes.
+- `web_search` is default-allowed for both fixture and live modes, and live failures still surface as structured tool/provider errors.

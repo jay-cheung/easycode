@@ -58,6 +58,7 @@ export class CliCodeNavigator implements CodeNavigator {
     const index = await this.codeIndex({ language: input.language })
     const indexed = findDefinitionsInCodeIndex(index, input.symbol, maxResults)
     if (indexed.length > 0) return indexed
+    if (!isBareIdentifier(input.symbol)) return []
 
     const language = input.language ?? "typescript"
     const patterns = definitionPatterns(input.symbol)
@@ -90,6 +91,7 @@ export class CliCodeNavigator implements CodeNavigator {
     const index = await this.codeIndex({ language: input.language })
     const indexed = findReferencesInCodeIndex(index, input.symbol, maxResults)
     if (indexed.length > 0) return indexed
+    if (!isBareIdentifier(input.symbol)) return []
 
     const query = `\\b${escapeRegExp(input.symbol)}\\b`
     const fileType = languageToFileType(input.language)
@@ -332,4 +334,8 @@ export class CliCodeNavigator implements CodeNavigator {
     await walk(root)
     return uniqueSortedResults(results)
   }
+}
+
+function isBareIdentifier(symbol: string) {
+  return /^[A-Za-z_$][\w$]*$/.test(symbol.trim())
 }

@@ -2,6 +2,7 @@ import path from "node:path"
 import os from "node:os"
 import { mkdir, readdir, rm } from "node:fs/promises"
 import { AgentRunner, createRunner } from "../../src/agent"
+import type { AgentRunResult } from "../../src/agent"
 import { collectDuplicateInspections } from "../../src/tool/utils/duplicate-inspection"
 import type { AgentMode } from "../../src/message"
 import { createProvider, hasProvider, listProviders, type ProviderName } from "../../src/provider"
@@ -114,11 +115,14 @@ export async function runEval(input: { provider: EvalProvider; root?: string; lo
     const missingOutput = expected.outputContains?.find((text) => !result.text.toLowerCase().includes(text.toLowerCase()))
     const forbiddenPhrase = expected.forbiddenPhrases?.find((text) => outputContainsText([result.reasoning, result.text], text))
     const duplicateInspection = expected.forbidDuplicateInspections ? collectDuplicateInspections(result.messages)[0] : undefined
+    const runFailure = failureReasonForEvalResult(result)
     const passed = result.status === "completed" && !missingTool && !tooManyTools && !missingChange && !forbiddenChange && !missingOutput && !forbiddenPhrase && !duplicateInspection
     results.push({
       id: task.id,
       passed,
-      reason: missingTool
+      reason: runFailure
+        ? runFailure
+        : missingTool
         ? `missing tool ${missingTool}`
         : tooManyTools
           ? "too many tool calls"
@@ -144,9 +148,24 @@ function outputContainsText(values: Array<string | undefined>, expected: string)
   return values.some((value) => value?.toLowerCase().includes(lowered))
 }
 
+export function failureReasonForEvalResult(result: AgentRunResult) {
+  if (result.status === "completed") return undefined
+  const line = firstMeaningfulLine(result.text) ?? result.failureReason ?? result.status
+  return `run ${result.status}: ${truncateReason(line)}`
+}
+
 function expectedForProvider(task: EvalTask, provider: EvalProvider): EvalTask["expected"] {
   if (provider === "fake" || task.expected.maxToolCalls === undefined) return task.expected
   return { ...task.expected, maxToolCalls: Math.max(task.expected.maxToolCalls, 20) }
+}
+
+function firstMeaningfulLine(text: string) {
+  return text.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+}
+
+function truncateReason(text: string, max = 200) {
+  if (text.length <= max) return text
+  return `${text.slice(0, max - 1)}...`
 }
 
 if (import.meta.main) {

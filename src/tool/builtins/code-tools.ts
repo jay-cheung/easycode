@@ -6,7 +6,7 @@ import { objectSchema } from "./common"
 export function registerCodeTools(registry: ToolRegistry) {
   registry.register({
     name: "read",
-    description: "Read a small project file; large files are blocked.",
+    description: "Read a small project file only after the target file is already narrowed. Prefer repo_map, find_definition/find_references/call_graph, and read_lines first; large files are blocked.",
     inputSchema: ReadInput,
     jsonSchema: objectSchema({ filePath: { type: "string", description: "File path to read" } }),
     permission: "read",
@@ -43,7 +43,7 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "grep",
-    description: "Fallback plain text search.",
+    description: "Last-resort plain text search. Use only when semantic navigation or rg_search cannot express the need, such as non-code text or broad prose/config scans.",
     inputSchema: GrepInput,
     jsonSchema: objectSchema({ query: { type: "string" }, dir: { type: "string" } }, ["query"]),
     permission: "grep",
@@ -57,7 +57,7 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "rg_search",
-    description: "Fast bounded ripgrep search.",
+    description: "Fast bounded text/regex search. Prefer this over grep for exact strings, log text, literals, or file-local text patterns, but use semantic tools first for symbol definitions/references/callers.",
     inputSchema: RgSearchInput,
     jsonSchema: objectSchema(
       {
@@ -80,7 +80,7 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "read_lines",
-    description: "Read a bounded 1-based line range.",
+    description: "Read the smallest exact 1-based line range after repo_map, symbol lookup, call_graph, or rg_search has identified the target location.",
     inputSchema: ReadLinesInput,
     jsonSchema: objectSchema({
       filePath: { type: "string", description: "Project-relative path." },
@@ -99,11 +99,11 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "find_definition",
-    description: "Find symbol definitions via code index, then fallback.",
+    description: "Primary semantic definition lookup. Use this before rg_search or grep when you need the owning definition of a function, class, type, method, or exported symbol. Accepts a name, qualified name, or symbol id.",
     inputSchema: FindDefinitionInput,
     jsonSchema: objectSchema(
       {
-        symbol: { type: "string", description: "Identifier." },
+        symbol: { type: "string", description: "Name, qualified name, or id." },
         language: { type: "string", description: "Language hint." },
         maxResults: { type: "number", description: "Max matches." },
       },
@@ -121,11 +121,11 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "find_references",
-    description: "Find bounded symbol references.",
+    description: "Primary semantic reference lookup. Use this before rg_search or grep when you need usages of a symbol. Accepts a name, qualified name, or symbol id; prefer qualified name or id to disambiguate same-name symbols.",
     inputSchema: FindReferencesInput,
     jsonSchema: objectSchema(
       {
-        symbol: { type: "string", description: "Identifier." },
+        symbol: { type: "string", description: "Name, qualified name, or id." },
         language: { type: "string", description: "Language hint." },
         maxResults: { type: "number", description: "Max matches." },
       },
@@ -143,7 +143,7 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "call_graph",
-    description: "Inspect bounded callers/callees.",
+    description: "Primary caller/callee exploration tool. Use this before grep or bash for impact analysis, who-calls-what questions, imported alias resolution, or bounded call-path tracing.",
     inputSchema: CallGraphInput,
     jsonSchema: objectSchema(
       {
@@ -167,7 +167,7 @@ export function registerCodeTools(registry: ToolRegistry) {
 
   registry.register({
     name: "repo_map",
-    description: "First-choice codebase map. Returns paths/symbols only; use query.",
+    description: "First-choice code exploration entrypoint. Use with query to shortlist relevant files and top-level symbols before any reads. Returns paths/symbol skeletons only, not full file content.",
     inputSchema: RepoMapInput,
     jsonSchema: objectSchema(
       {

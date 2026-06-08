@@ -52,7 +52,13 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
       fetchOptions.tls = tlsConfig
     }
 
-    const response = await fetch(this.url, fetchOptions)
+    let response: Response
+    try {
+      response = await fetch(this.url, fetchOptions)
+    } catch (error) {
+      const detail = formatFetchFailure(error)
+      throw new ProviderError(`${this.errorPrefix}: ${detail}`, { output: detail })
+    }
     if (!response.ok || !response.body) {
       const output = await response.text().catch(() => "")
       yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), body: output } }
@@ -100,4 +106,40 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
 
 export function responseHeaders(response: Response) {
   return Object.fromEntries(response.headers.entries())
+}
+
+function formatFetchFailure(error: unknown) {
+  const messages = collectErrorMessages(error)
+  if (messages.length === 0) return "network request failed"
+  if (messages.length === 1) return messages[0]
+  return `${messages[0]} (cause: ${messages.slice(1).join("; ")})`
+}
+
+function collectErrorMessages(error: unknown, seen = new Set<unknown>()): string[] {
+  if (!error || seen.has(error)) return []
+  seen.add(error)
+
+  if (error instanceof Error) {
+    const ownMessage = typeof error.message === "string" ? error.message.trim() : ""
+    const causeMessages = "cause" in error ? collectErrorMessages((error as Error & { cause?: unknown }).cause, seen) : []
+    return uniqueNonEmpty([ownMessage, ...causeMessages])
+  }
+
+  if (typeof error === "string") return error.trim() ? [error.trim()] : []
+  if (typeof error === "object" && error !== null && "message" in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === "string" && message.trim()) return [message.trim()]
+  }
+  return [String(error)]
+}
+
+function uniqueNonEmpty(values: string[]) {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    if (!value || seen.has(value)) continue
+    seen.add(value)
+    result.push(value)
+  }
+  return result
 }

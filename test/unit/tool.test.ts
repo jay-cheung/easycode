@@ -151,6 +151,18 @@ describe("tool", () => {
     expect(edit?.jsonSchema.properties.replaceAll.description).toContain("replace every match")
   })
 
+  test("describes semantic navigation and bash fallback boundaries clearly", () => {
+    const registry = createBuiltinRegistry()
+    expect(registry.get("repo_map")?.description).toContain("First-choice code exploration entrypoint")
+    expect(registry.get("find_definition")?.description).toContain("Primary semantic definition lookup")
+    expect(registry.get("find_references")?.description).toContain("Primary semantic reference lookup")
+    expect(registry.get("call_graph")?.description).toContain("Primary caller/callee exploration tool")
+    expect(registry.get("rg_search")?.description).toContain("Prefer this over grep")
+    expect(registry.get("grep")?.description).toContain("Last-resort plain text search")
+    expect(registry.get("bash")?.description).toContain("Last-resort shell command execution")
+    expect(registry.get("bash")?.description).toContain("prefer repo_map, find_definition, find_references, call_graph, rg_search, read_lines, and git_* tools first")
+  })
+
   test("registers semantic navigation and diff tools in plan and build mode", () => {
     const registry = createBuiltinRegistry()
     for (const name of ["rg_search", "read_lines", "find_definition", "find_references", "call_graph", "repo_map", "git_diff", "git_status", "git_branch", "git_log"]) {

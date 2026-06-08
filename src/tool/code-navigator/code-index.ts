@@ -158,14 +158,22 @@ export function repoMapEntriesFromCodeIndex(index: CodeIndexResult): RepoMapEntr
 
 export function findDefinitionsInCodeIndex(index: CodeIndexResult, symbol: string, maxResults: number) {
   return uniqueSortedResults(index.symbols
-    .filter((item) => item.name === symbol)
+    .filter((item) => symbolMatchesSelector(item, symbol))
     .map((item) => ({ filePath: item.filePath, line: item.startLine, preview: item.signature ?? item.name })))
     .slice(0, maxResults)
 }
 
 export function findReferencesInCodeIndex(index: CodeIndexResult, symbol: string, maxResults: number): CodeSearchResult[] {
+  const selector = parseSymbolSelector(symbol)
+  const targetIDs = new Set(index.symbols.filter((item) => symbolMatchesSelector(item, symbol)).map((item) => item.id))
   return uniqueSortedResults(index.edges
-    .filter((edge) => (edge.to === symbol || edge.toName === symbol || symbolFromID(edge.toID)?.name === symbol) && (edge.kind === "calls" || edge.kind === "references"))
+    .filter((edge) => {
+      if (edge.kind !== "calls" && edge.kind !== "references") return false
+      if (targetIDs.size > 0 && edge.toID) return targetIDs.has(edge.toID)
+      if (selector.kind === "id") return edge.toID === selector.value
+      if (selector.kind === "qualified") return edge.toID ? symbolFromID(edge.toID)?.qualifiedName === selector.value : false
+      return edge.to === symbol || edge.toName === symbol || symbolFromID(edge.toID)?.name === symbol
+    })
     .map((edge) => ({ filePath: edge.filePath, line: edge.line, preview: edge.preview ?? edge.to })))
     .slice(0, maxResults)
 }
@@ -298,7 +306,23 @@ function symbolFromID(id: string | undefined) {
   if (!id) return undefined
   const hash = id.lastIndexOf("#")
   if (hash === -1) return undefined
-  return { filePath: id.slice(0, hash), name: id.slice(hash + 1) }
+  const filePath = id.slice(0, hash)
+  const name = id.slice(hash + 1)
+  return { filePath, name, qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${name}` }
+}
+
+function symbolMatchesSelector(symbol: CodeIndexSymbol, selector: string) {
+  const parsed = parseSymbolSelector(selector)
+  if (parsed.kind === "id") return symbol.id === parsed.value
+  if (parsed.kind === "qualified") return symbol.qualifiedName === parsed.value
+  return symbol.name === parsed.value
+}
+
+function parseSymbolSelector(selector: string): { kind: "id" | "qualified" | "name"; value: string } {
+  const trimmed = selector.trim()
+  if (trimmed.includes("#")) return { kind: "id", value: trimmed }
+  if (/^[A-Za-z_$][\w$]*$/.test(trimmed)) return { kind: "name", value: trimmed }
+  return { kind: "qualified", value: trimmed }
 }
 
 function extractCodeIndex(text: string, file: FileFingerprint) {

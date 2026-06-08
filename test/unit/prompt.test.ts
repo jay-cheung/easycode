@@ -13,6 +13,9 @@ describe("compact prompt", () => {
     expect(planPrompt).toContain("Only bypass a loaded skill's referenced artifacts when inspection shows they are missing or inapplicable")
     expect(summaryPrompt).not.toContain("selected or first-use skill")
     expect(summaryPrompt).not.toContain("creating new code, commands, or workflows")
+    expect(buildPrompt).toContain("Use grep only as a last-resort plain-text fallback.")
+    expect(buildPrompt).toContain("Use bash only when dedicated tools cannot express the needed inspection or action.")
+    expect(buildPrompt).toContain("These semantic tools outrank rg_search, grep, and bash whenever the question is about symbols.")
   })
 
   test("adds runtime summary rules and format example", () => {

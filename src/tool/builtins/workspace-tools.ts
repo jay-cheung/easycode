@@ -92,7 +92,7 @@ export function registerWorkspaceTools(registry: ToolRegistry) {
 
   registry.register({
     name: "bash",
-    description: "Run a shell command through the sandbox. Prefer specialized tools first: use git_diff for git diffs and repo_map/find_definition/rg_search/read_lines for code exploration.",
+    description: "Last-resort shell command execution. Do not use this for normal code exploration when dedicated tools can answer: prefer repo_map, find_definition, find_references, call_graph, rg_search, read_lines, and git_* tools first. Use bash only for commands those tools cannot express.",
     inputSchema: BashInput,
     jsonSchema: objectSchema({ command: { type: "string" }, cwd: { type: "string" }, timeoutMs: { type: "number" } }, ["command"]),
     permission: "bash",

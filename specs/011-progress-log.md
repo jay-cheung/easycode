@@ -1,5 +1,65 @@
 # Progress Log
 
+## Step 30: Sharpen Tool Capability Descriptions
+
+- Scope: make the code-navigation and shell tool descriptions more decision-oriented so models choose semantic tools before falling back to `grep` or `bash` for repository exploration.
+- Implementation:
+  - Updated tool descriptions in `src/tool/builtins/code-tools.ts` so `repo_map`, `find_definition`, `find_references`, `call_graph`, `rg_search`, `grep`, `read`, and `read_lines` now explain priority, best-fit use cases, and fallback boundaries instead of only naming the primitive.
+  - Updated the `bash` description in `src/tool/builtins/workspace-tools.ts` so it is explicitly framed as a last-resort escape hatch, not a normal exploration tool.
+  - Strengthened `src/prompt/agent.ts` and `src/prompt/context.ts` so the stable system prefix tells the model when semantic tools outrank `rg_search`, `grep`, and `bash`, and when each fallback is appropriate.
+  - Added unit coverage for both the tool descriptions and the prompt contract to lock the wording that steers tool choice.
+- Verification:
+  - `bun test test/unit/tool.test.ts test/unit/prompt.test.ts`
+  - `bun run gate`
+- Notes: this slice changes selection guidance only; it does not alter tool permissions, schemas, or runtime execution behavior.
+
+## Step 29: Qualified Symbol Selectors For Definition And Reference Lookup
+
+- Scope: close a code-navigation gap where `find_definition` and `find_references` still behaved like bare-name search under same-name collisions, even though `call_graph` already accepted qualified symbol selectors.
+- Implementation:
+  - Updated `src/tool/code-navigator/code-index.ts` so definition/reference lookup now accepts the same selector families as call-graph starts: bare symbol name, qualified name, or symbol id.
+  - Updated `src/tool/code-navigator/cli.ts` so qualified/id queries stay semantic-only instead of falling back to misleading text-pattern search when the code index has no match.
+  - Updated tool descriptions in `src/tool/builtins/code-tools.ts` and added a regression test proving same-name `leaf` exports can be disambiguated via `src/impl.leaf` and `src/other.ts#leaf`.
+- Verification:
+  - `bun test test/unit/code-navigator.test.ts`
+  - `bun run gate`
+- Notes: this slice improves selector precision for existing read-only navigation tools; it does not yet add receiver-type-aware method resolution.
+
+## Step 28: Expose Provider Failures In Smoke Eval
+
+- Scope: stop provider-gate smoke eval from hiding real provider failures behind a derived `missing output ...` message when the run never completed successfully.
+- Implementation:
+  - Updated `dev/quality/eval.ts` so non-completed `AgentRunResult`s now surface a direct `run failed: ...` reason using the first meaningful provider failure line before falling back to expectation-diff messages.
+  - Added a focused unit test for the new eval-failure summarizer so provider-level errors such as TLS or network failures remain visible in gate details.
+- Verification:
+  - `bun test test/unit/eval.test.ts test/unit/provider.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this keeps the gate red when the provider is actually unavailable, but it removes an unnecessary layer of indirection from the diagnosis.
+
+## Step 27: Preserve Provider Fetch Failure Causes
+
+- Scope: keep actionable network and TLS root causes visible when provider fetches fail, so quality-gate and provider-gate reports do not collapse everything into an unhelpful generic connection error.
+- Implementation:
+  - Updated `src/provider/http-sse.ts` to wrap transport-level `fetch(...)` failures in `ProviderError` instead of letting raw runtime exceptions escape past the provider adapter boundary.
+  - Added nested error-cause extraction so messages such as `unable to get local issuer certificate` survive alongside the outer Bun/Node connectivity text in gate reports and interactive failures.
+  - Added unit coverage that simulates a DeepSeek network failure with a nested TLS cause and asserts both messages remain visible.
+- Verification:
+  - `bun test test/unit/provider.test.ts`
+  - `bun run gate`
+- Notes: this does not make an unreachable provider succeed; it makes the failure diagnosable enough to distinguish certificate issues from broader network or proxy reachability problems.
+
+## Step 26: Spec Contract Convergence
+
+- Scope: reconcile drifted specs with the current runtime contract after retrieval-permission changes, global EasyCode env setup, and runtime/module boundary cleanup.
+- Implementation:
+  - Updated `specs/009-mcp-websearch.md` so it now reflects the shipped retrieval defaults: MCP reads and `web_search` are default-allowed, Tavily remains the only live engine, and startup guidance points to global `~/.easycode/.env` instead of repo-local `.env`.
+  - Clarified that live retrieval follows timeout, TLS, and runtime network boundaries without fabricating results, matching the current `tls-config` and retrieval/provider behavior.
+  - Updated `specs/acceptance.md` so the quality section now describes the actual architecture constraint in this repo: focused runtime responsibilities plus development-only tooling outside `src/`, and corrected the OpenAI credential wording.
+- Verification:
+  - `bun run gate`
+- Notes: this slice is documentation-only; in the current environment the local checks are healthy, but `provider_gate` still depends on external DeepSeek reachability.
+
 ## Step 25: Compaction User-Trace And Capability Retention
 
 - Scope: stop context compaction from dropping the exact current user ask or the active skill/MCP/connector capability surface, so restored sessions can continue without re-asking what "this" referred to.
