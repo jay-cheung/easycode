@@ -427,6 +427,57 @@ describe("code navigator", () => {
     await expect(navigator.findReferences({ symbol: "src/other.ts#leaf", language: "typescript" })).resolves.toEqual([])
   })
 
+  test("receiver-typed method lookup resolves same-name class methods without falling back to global name matching", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "auth.ts"), [
+      "export class AuthService {",
+      "  login(user: string): string {",
+      "    return user",
+      "  }",
+      "  run(user: string): string {",
+      "    return this.login(user)",
+      "  }",
+      "}",
+      "export class AuditService {",
+      "  login(user: string): string {",
+      "    return user.toUpperCase()",
+      "  }",
+      "}",
+    ].join("\n"))
+    await Bun.write(path.join(root, "src", "consumer.ts"), [
+      "import { AuthService, AuditService } from './auth'",
+      "export function runAuth(user: string): string {",
+      "  const service: AuthService = new AuthService()",
+      "  return service.login(user)",
+      "}",
+      "export function runAudit(user: string): string {",
+      "  const service = new AuditService()",
+      "  return service.login(user)",
+      "}",
+    ].join("\n"))
+    const navigator = new CliCodeNavigator(new Sandbox(root))
+
+    await navigator.repoMap({ dir: "src", language: "typescript" })
+
+    await expect(navigator.findDefinition({ symbol: "src/auth.AuthService.login", language: "typescript" })).resolves.toEqual([
+      { filePath: "src/auth.ts", line: 2, preview: "login(user: string): string" },
+    ])
+    await expect(navigator.findReferences({ symbol: "src/auth.AuthService.login", language: "typescript" })).resolves.toEqual([
+      { filePath: "src/auth.ts", line: 6, preview: "    return this.login(user)" },
+      { filePath: "src/consumer.ts", line: 4, preview: "  return service.login(user)" },
+    ])
+
+    const graph = await navigator.callGraph({ symbol: "src/auth.AuthService.login", direction: "callers", depth: 2, language: "typescript" })
+
+    expect(graph.nodes).toContainEqual(expect.objectContaining({ id: "src/auth.ts#AuthService.login", name: "login" }))
+    expect(graph.nodes).toContainEqual(expect.objectContaining({ id: "src/auth.ts#AuthService.run", name: "run" }))
+    expect(graph.nodes).toContainEqual(expect.objectContaining({ id: "src/consumer.ts#runAuth", name: "runAuth" }))
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/auth.ts#AuthService.run", to: "src/auth.ts#AuthService.login", line: 6 }))
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: "src/consumer.ts#runAuth", to: "src/auth.ts#AuthService.login", line: 4 }))
+    expect(graph.edges.some((edge) => edge.to === "src/auth.ts#AuditService.login")).toBe(false)
+  })
+
   test("AST local binding scope prevents same-name false references", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, "src"), { recursive: true })

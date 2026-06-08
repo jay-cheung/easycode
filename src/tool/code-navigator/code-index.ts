@@ -5,12 +5,12 @@ import { codeIndexCacheFile, codeIndexCachePath, codeIndexGeneratorVersion } fro
 import { cleanSignature, hashText, normalizeSymbolKind } from "./repo-map"
 import { maskSearchableLines, uniqueSortedResults } from "./parsing"
 import type { CallGraphDirection, CallGraphResult, CodeIndexEdge, CodeIndexFile, CodeIndexResult, CodeIndexSymbol, CodeSearchResult, RepoMapEntry } from "./types"
-import { extractLocalBindingScopes, isTypeScriptLike, type LocalBindingScope } from "./ast"
+import { extractLocalBindingScopes, extractTypeScriptMemberOwners, isTypeScriptLike, type LocalBindingScope } from "./ast"
 
 type FileFingerprint = { filePath: string; mtimeMs: number; size: number }
 
 const declarationPattern = /^\s*(?:export\s+)?(?:default\s+)?(async\s+function|function|class|interface|type|enum|const|let|var)\s+([A-Za-z_$][\w$]*)\b(.*)$/
-const methodPattern = /^\s*(?:(?:public|private|protected|static|async|override|readonly)\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^ {]+)?\s*\{?\s*$/
+const methodPattern = /^\s*(?:(?:public|private|protected|static|async|override|readonly)\s+)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?::\s*[^ {;]+)?\s*(?:\{?|;)\s*$/
 const importPattern = /^\s*import\b.*?\bfrom\s+["']([^"']+)["']/
 const sideEffectImportPattern = /^\s*import\s+["']([^"']+)["']/
 const reExportPattern = /^\s*export\b.*?\bfrom\s+["']([^"']+)["']/
@@ -232,16 +232,19 @@ function resolveEdges(symbols: CodeIndexSymbol[], files: CodeIndexFile[], edges:
   const byName = new Map<string, CodeIndexSymbol[]>()
   const byFile = new Map<string, CodeIndexSymbol[]>()
   const filesByPath = new Map(files.map((file) => [file.filePath, file]))
+  const methodsByOwnerAndName = new Map<string, CodeIndexSymbol[]>()
   for (const symbol of symbols) {
     byName.set(symbol.name, [...(byName.get(symbol.name) ?? []), symbol])
     byFile.set(symbol.filePath, [...(byFile.get(symbol.filePath) ?? []), symbol])
+    if (symbol.ownerID) methodsByOwnerAndName.set(methodOwnerKey(symbol.ownerID, symbol.name), [...(methodsByOwnerAndName.get(methodOwnerKey(symbol.ownerID, symbol.name)) ?? []), symbol])
   }
   return edges.map((edge) => {
     const name = edge.toName ?? edge.to
+    const receiverAware = resolveReceiverOwnedSymbol(name, edge.receiverTypeHint, edge.filePath, edges, byID, byName, filesByPath, byFile, methodsByOwnerAndName)
     const local = (byFile.get(edge.filePath) ?? []).find((symbol) => symbol.name === name)
     const imported = resolveImportedSymbol(name, edge.receiverName, edge.filePath, filesByPath, byFile)
     const global = byName.get(name)?.length === 1 ? byName.get(name)?.[0] : undefined
-    const target = imported ?? local ?? global
+    const target = receiverAware ?? imported ?? local ?? global
     const fromSymbol = byID.get(edge.from)
     return {
       ...edge,
@@ -250,6 +253,67 @@ function resolveEdges(symbols: CodeIndexSymbol[], files: CodeIndexFile[], edges:
       resolved: Boolean(target),
     }
   }).filter((edge) => edge.kind !== "references" || edge.resolved)
+}
+
+function resolveReceiverOwnedSymbol(
+  name: string,
+  receiverTypeHint: string | undefined,
+  filePath: string,
+  edges: CodeIndexEdge[],
+  byID: Map<string, CodeIndexSymbol>,
+  byName: Map<string, CodeIndexSymbol[]>,
+  filesByPath: Map<string, CodeIndexFile>,
+  byFile: Map<string, CodeIndexSymbol[]>,
+  methodsByOwnerAndName: Map<string, CodeIndexSymbol[]>,
+) {
+  if (!receiverTypeHint) return undefined
+  const ownerType = resolveReceiverTypeSymbol(receiverTypeHint, filePath, byName, filesByPath, byFile)
+  if (!ownerType) return undefined
+  const visited = new Set<string>()
+  const queue = [ownerType.id]
+  while (queue.length > 0) {
+    const ownerID = queue.shift()
+    if (!ownerID || visited.has(ownerID)) continue
+    visited.add(ownerID)
+    const direct = methodsByOwnerAndName.get(methodOwnerKey(ownerID, name))
+    if (direct?.length) return direct[0]
+    const parentIDs = resolveParentTypeIDs(ownerID, edges, byID, byName, filesByPath, byFile)
+    for (const parentID of parentIDs) {
+      if (!visited.has(parentID)) queue.push(parentID)
+    }
+  }
+  return undefined
+}
+
+function resolveReceiverTypeSymbol(
+  receiverTypeHint: string,
+  filePath: string,
+  byName: Map<string, CodeIndexSymbol[]>,
+  filesByPath: Map<string, CodeIndexFile>,
+  byFile: Map<string, CodeIndexSymbol[]>,
+) {
+  const local = (byFile.get(filePath) ?? []).find((symbol) => symbol.name === receiverTypeHint && (symbol.kind === "class" || symbol.kind === "interface" || symbol.kind === "type"))
+  if (local) return local
+  const imported = resolveImportedSymbol(receiverTypeHint, undefined, filePath, filesByPath, byFile)
+  if (imported && (imported.kind === "class" || imported.kind === "interface" || imported.kind === "type")) return imported
+  const global = (byName.get(receiverTypeHint) ?? []).filter((symbol) => symbol.kind === "class" || symbol.kind === "interface" || symbol.kind === "type")
+  return global.length === 1 ? global[0] : undefined
+}
+
+function resolveParentTypeIDs(
+  ownerID: string,
+  edges: CodeIndexEdge[],
+  byID: Map<string, CodeIndexSymbol>,
+  byName: Map<string, CodeIndexSymbol[]>,
+  filesByPath: Map<string, CodeIndexFile>,
+  byFile: Map<string, CodeIndexSymbol[]>,
+) {
+  const owner = byID.get(ownerID)
+  if (!owner) return []
+  return edges
+    .filter((edge) => (edge.kind === "inherits" || edge.kind === "implements") && edge.from === ownerID)
+    .map((edge) => resolveReceiverTypeSymbol(edge.toName ?? edge.to, owner.filePath, byName, filesByPath, byFile)?.id)
+    .filter((item): item is string => Boolean(item))
 }
 
 function resolveImportedSymbol(name: string, receiverName: string | undefined, filePath: string, filesByPath: Map<string, CodeIndexFile>, byFile: Map<string, CodeIndexSymbol[]>) {
@@ -307,8 +371,9 @@ function symbolFromID(id: string | undefined) {
   const hash = id.lastIndexOf("#")
   if (hash === -1) return undefined
   const filePath = id.slice(0, hash)
-  const name = id.slice(hash + 1)
-  return { filePath, name, qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${name}` }
+  const scopedName = id.slice(hash + 1)
+  const name = scopedName.split(".").at(-1) ?? scopedName
+  return { filePath, name, qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${scopedName}` }
 }
 
 function symbolMatchesSelector(symbol: CodeIndexSymbol, selector: string) {
@@ -328,6 +393,7 @@ function parseSymbolSelector(selector: string): { kind: "id" | "qualified" | "na
 function extractCodeIndex(text: string, file: FileFingerprint) {
   const lines = text.split(/\r?\n/)
   const searchableLines = maskSearchableLines(text)
+  const methodOwners = isTypeScriptLike(path.extname(file.filePath)) ? extractTypeScriptMemberOwners(text, file.filePath) : new Map<number, string>()
   const declarations: CodeIndexSymbol[] = []
   const imports = new Set<string>()
   const exports = new Set<string>()
@@ -358,7 +424,8 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
 
     const method = isTypeScriptLike(path.extname(file.filePath)) ? line.match(methodPattern) : undefined
     if (method && !excludedMethods.has(method[1] ?? "")) {
-      declarations.push(symbolFor(file.filePath, method[1] ?? "", "method", lineNumber, line))
+      const ownerName = methodOwners.get(lineNumber)
+      declarations.push(symbolFor(file.filePath, method[1] ?? "", "method", lineNumber, line, ownerName ? { ownerID: symbolID(file.filePath, ownerName), ownerName } : undefined))
     }
 
     const parsedImport = parseImportLine(line)
@@ -403,7 +470,9 @@ function extractCodeIndex(text: string, file: FileFingerprint) {
       if (symbols.some((symbol) => symbol.startLine === lineNumber && symbol.name === name)) continue
       const owner = symbolAtLine(symbols, lineNumber)
       if (owner && isLocalBindingReference(localBindingScopes, owner.id, name, lineNumber)) continue
-      edges.push(rawEdge("calls", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine, propertyReceiver(line, match.index)))
+      const receiverName = propertyReceiver(line, match.index)
+      const receiverTypeHint = owner && receiverName ? receiverTypeAtLine(localBindingScopes, owner.id, receiverName, lineNumber) : undefined
+      edges.push(rawEdge("calls", owner?.id ?? `file:${file.filePath}`, name, file.filePath, lineNumber, rawLine, receiverName, receiverTypeHint))
     }
     identifierPattern.lastIndex = 0
     while ((match = identifierPattern.exec(line)) !== null) {
@@ -495,6 +564,10 @@ function isLocalBindingReference(scopes: LocalBindingScope[], ownerID: string, n
   return scopes.some((scope) => scope.ownerID === ownerID && scope.startLine <= line && line <= scope.endLine && scope.names.has(name))
 }
 
+function receiverTypeAtLine(scopes: LocalBindingScope[], ownerID: string, receiverName: string, line: number) {
+  return scopes.find((scope) => scope.ownerID === ownerID && scope.startLine <= line && line <= scope.endLine)?.typeHints.get(receiverName)
+}
+
 function parseImportLine(line: string): { source: string; bindings: NonNullable<CodeIndexFile["importBindings"]> } | undefined {
   const ts = line.match(importPattern) ?? line.match(sideEffectImportPattern)
   if (ts?.[1]) return { source: ts[1], bindings: parseTypeScriptImportBindings(line, ts[1]) }
@@ -545,8 +618,17 @@ function parseExportBindings(line: string): { source?: string; bindings: NonNull
   return { source, bindings }
 }
 
-function rawEdge(kind: CodeIndexEdge["kind"], from: string, to: string, filePath: string, line: number, source: string, receiverName?: string): CodeIndexEdge {
-  return { kind, from, to, toName: to, receiverName, filePath, line, preview: source.trimEnd(), resolved: false }
+function rawEdge(
+  kind: CodeIndexEdge["kind"],
+  from: string,
+  to: string,
+  filePath: string,
+  line: number,
+  source: string,
+  receiverName?: string,
+  receiverTypeHint?: string,
+): CodeIndexEdge {
+  return { kind, from, to, toName: to, receiverName, receiverTypeHint, filePath, line, preview: source.trimEnd(), resolved: false }
 }
 
 function isPropertyAccess(line: string, index: number) {
@@ -568,10 +650,18 @@ function propertyReceiver(line: string, index: number) {
   return receiver || undefined
 }
 
-function symbolFor(filePath: string, name: string, kind: string, line: number, source: string, options: { exported?: boolean; exportStyle?: "named" | "default"; ownerID?: string } = {}): CodeIndexSymbol {
+function symbolFor(
+  filePath: string,
+  name: string,
+  kind: string,
+  line: number,
+  source: string,
+  options: { exported?: boolean; exportStyle?: "named" | "default"; ownerID?: string; ownerName?: string } = {},
+): CodeIndexSymbol {
+  const scopedName = options.ownerName ? `${options.ownerName}.${name}` : name
   return {
-    id: symbolID(filePath, name),
-    qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${name}`,
+    id: symbolID(filePath, scopedName),
+    qualifiedName: `${filePath.replace(/\.[^.]+$/, "")}.${scopedName}`,
     filePath,
     name,
     kind,
@@ -598,4 +688,8 @@ function symbolAtLine(symbols: CodeIndexSymbol[], line: number) {
 
 function symbolID(filePath: string, name: string) {
   return `${filePath}#${name}`
+}
+
+function methodOwnerKey(ownerID: string, name: string) {
+  return `${ownerID}::${name}`
 }

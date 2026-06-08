@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 31: Receiver-Type-Aware Method Resolution
+
+- Scope: make semantic code navigation distinguish same-name class/interface methods by receiver type instead of collapsing back to bare-name matching when the call site is `service.login()` or `this.login()`.
+- Implementation:
+  - Updated `src/tool/code-navigator/ast.ts` so TypeScript local-binding scopes now retain high-confidence receiver type hints from parameter annotations, local variable annotations, `new T()` initializers, and enclosing class context for `this`.
+  - Updated `src/tool/code-navigator/code-index.ts` so TypeScript method declarations record owner-aware ids and qualified names like `src/auth.AuthService.login`, and call-edge resolution now prefers methods attached to the hinted receiver type before import/local/global name fallback.
+  - Bumped the code-index cache generator version and added a regression test covering same-name `login` methods on different classes, including both `service.login()` and `this.login()` call sites.
+- Verification:
+  - `bun test test/unit/code-navigator.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this is intentionally a high-confidence heuristic pass, not a full type checker; it handles the common annotated/local-construction cases without trying to infer arbitrary property chains or dynamic dispatch.
+
 ## Step 30: Sharpen Tool Capability Descriptions
 
 - Scope: make the code-navigation and shell tool descriptions more decision-oriented so models choose semantic tools before falling back to `grep` or `bash` for repository exploration.

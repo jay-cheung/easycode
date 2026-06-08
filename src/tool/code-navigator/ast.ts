@@ -8,6 +8,7 @@ export type LocalBindingScope = {
   startLine: number
   endLine: number
   names: Set<string>
+  typeHints: Map<string, string>
 }
 
 const functionLikeKinds = new Set(["function", "method", "def", "func", "fn", "fun", "constructor"])
@@ -20,6 +21,28 @@ const genericKeywordBindings = new Set([
 export function extractLocalBindingScopes(text: string, filePath: string, symbols: CodeIndexSymbol[]): LocalBindingScope[] {
   if (isTypeScriptLike(path.extname(filePath))) return extractTypeScriptLocalBindingScopes(text, filePath, symbols)
   return extractGenericLocalBindingScopes(text, filePath, symbols)
+}
+
+export function extractTypeScriptMemberOwners(text: string, filePath: string) {
+  const source = ts.createSourceFile(filePath, text, ts.ScriptTarget.Latest, true, scriptKindFor(filePath))
+  const owners = new Map<number, string>()
+
+  const visit = (node: ts.Node) => {
+    if (ts.isClassLike(node) || ts.isInterfaceDeclaration(node)) {
+      const ownerName = node.name?.text
+      if (ownerName) {
+        for (const member of node.members) {
+          const memberName = extractMemberName(member)
+          if (!memberName) continue
+          owners.set(lineFor(source, member.getStart(source)), ownerName)
+        }
+      }
+    }
+    ts.forEachChild(node, visit)
+  }
+
+  visit(source)
+  return owners
 }
 
 export function isTypeScriptLike(extension: string) {
@@ -39,7 +62,7 @@ function extractGenericLocalBindingScopes(text: string, filePath: string, symbol
       collectLocalBindingsFromLine(searchableLines[lineIndex] ?? "", names)
     }
     if (names.size > 0) {
-      scopes.push({ ownerID: symbol.id, startLine: symbol.startLine, endLine: symbol.endLine, names })
+      scopes.push({ ownerID: symbol.id, startLine: symbol.startLine, endLine: symbol.endLine, names, typeHints: new Map() })
     }
   }
   return scopes
@@ -115,9 +138,15 @@ function extractTypeScriptLocalBindingScopes(text: string, filePath: string, sym
       const owner = symbols.find((symbol) => symbol.startLine <= startLine && startLine <= symbol.endLine)
       if (owner) {
         const names = new Set<string>()
-        for (const param of node.parameters) collectTypeScriptBindingNames(param.name, names)
-        collectTypeScriptBodyLocalBindings(node.body, names)
-        if (names.size > 0) scopes.push({ ownerID: owner.id, startLine, endLine, names })
+        const typeHints = new Map<string, string>()
+        const ownerTypeName = enclosingTypeName(node)
+        if (ownerTypeName) typeHints.set("this", ownerTypeName)
+        for (const param of node.parameters) {
+          collectTypeScriptBindingNames(param.name, names)
+          collectTypeScriptParameterTypeHints(param, typeHints, source)
+        }
+        collectTypeScriptBodyLocalBindings(node.body, names, typeHints, source)
+        if (names.size > 0 || typeHints.size > 0) scopes.push({ ownerID: owner.id, startLine, endLine, names, typeHints })
       }
     }
     ts.forEachChild(node, visit)
@@ -131,11 +160,14 @@ function isFunctionLikeWithBody(node: ts.Node): node is ts.FunctionLikeDeclarati
   return (ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node) || ts.isConstructorDeclaration(node)) && Boolean(node.body)
 }
 
-function collectTypeScriptBodyLocalBindings(body: ts.ConciseBody, names: Set<string>) {
+function collectTypeScriptBodyLocalBindings(body: ts.ConciseBody, names: Set<string>, typeHints: Map<string, string>, source: ts.SourceFile) {
   const visit = (node: ts.Node) => {
     if (ts.isVariableDeclaration(node) || ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node) || ts.isImportClause(node)) {
       const name = "name" in node ? node.name : undefined
-      if (name) collectTypeScriptBindingNames(name, names)
+      if (name) {
+        collectTypeScriptBindingNames(name, names)
+        if (ts.isVariableDeclaration(node)) collectTypeScriptVariableTypeHints(node, typeHints, source)
+      }
     }
     if (ts.isFunctionLike(node) && node !== body) return
     ts.forEachChild(node, visit)
@@ -152,6 +184,79 @@ function collectTypeScriptBindingNames(name: ts.BindingName | ts.Identifier | un
   for (const element of name.elements) {
     if (ts.isBindingElement(element)) collectTypeScriptBindingNames(element.name, names)
   }
+}
+
+function collectTypeScriptParameterTypeHints(param: ts.ParameterDeclaration, typeHints: Map<string, string>, source: ts.SourceFile) {
+  if (!ts.isIdentifier(param.name)) return
+  const hint = extractTypeHintFromTypeNode(param.type, source)
+  if (hint) typeHints.set(param.name.text, hint)
+}
+
+function collectTypeScriptVariableTypeHints(node: ts.VariableDeclaration, typeHints: Map<string, string>, source: ts.SourceFile) {
+  if (!ts.isIdentifier(node.name)) return
+  const fromInitializer = extractTypeHintFromInitializer(node.initializer)
+  if (fromInitializer) {
+    typeHints.set(node.name.text, fromInitializer)
+    return
+  }
+  const fromAnnotation = extractTypeHintFromTypeNode(node.type, source)
+  if (fromAnnotation) typeHints.set(node.name.text, fromAnnotation)
+}
+
+function extractTypeHintFromInitializer(initializer: ts.Expression | undefined): string | undefined {
+  if (!initializer || !ts.isNewExpression(initializer)) return undefined
+  return extractTypeHintFromExpression(initializer.expression)
+}
+
+function extractTypeHintFromTypeNode(typeNode: ts.TypeNode | undefined, source: ts.SourceFile): string | undefined {
+  if (!typeNode) return undefined
+  if (ts.isTypeReferenceNode(typeNode)) return extractTypeHintFromTypeName(typeNode.typeName)
+  if (ts.isExpressionWithTypeArguments(typeNode)) return extractTypeHintFromExpression(typeNode.expression)
+  if (ts.isUnionTypeNode(typeNode) || ts.isIntersectionTypeNode(typeNode)) {
+    for (const item of typeNode.types) {
+      const hint = extractTypeHintFromTypeNode(item, source)
+      if (hint) return hint
+    }
+    return undefined
+  }
+  if (ts.isParenthesizedTypeNode(typeNode)) return extractTypeHintFromTypeNode(typeNode.type, source)
+  const text = typeNode.getText(source).trim()
+  return /^[A-Za-z_$][\w$]*$/.test(text) ? text : undefined
+}
+
+function extractTypeHintFromTypeName(typeName: ts.EntityName): string {
+  if (ts.isIdentifier(typeName)) return typeName.text
+  return typeName.right.text
+}
+
+function extractTypeHintFromExpression(expression: ts.Expression): string | undefined {
+  if (ts.isIdentifier(expression)) return expression.text
+  if (ts.isPropertyAccessExpression(expression)) return expression.name.text
+  return undefined
+}
+
+function enclosingTypeName(node: ts.Node): string | undefined {
+  let current = node.parent
+  while (current) {
+    if ((ts.isClassLike(current) || ts.isInterfaceDeclaration(current)) && current.name?.text) return current.name.text
+    current = current.parent
+  }
+  return undefined
+}
+
+function extractMemberName(member: ts.ClassElement | ts.TypeElement): string | undefined {
+  if (
+    ts.isMethodDeclaration(member) ||
+    ts.isMethodSignature(member) ||
+    ts.isConstructorDeclaration(member) ||
+    ts.isGetAccessorDeclaration(member) ||
+    ts.isSetAccessorDeclaration(member)
+  ) {
+    if (ts.isConstructorDeclaration(member)) return "constructor"
+    const name = member.name
+    return name && ts.isIdentifier(name) ? name.text : undefined
+  }
+  return undefined
 }
 
 function lineFor(source: ts.SourceFile, position: number) {

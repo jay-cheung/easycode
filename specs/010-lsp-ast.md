@@ -35,3 +35,5 @@ LSP/AST support improves EasyCode beyond text search by giving the agent code-st
 - The index cache generator version is bumped so stale regex-only indexes are rebuilt.
 - Agent prompts now treat symbol-aware edit planning as the default path for symbol-affecting build/plan work instead of relying on ad hoc text-match exploration.
 - `find_definition` and `find_references` accept name, qualified name, or symbol id selectors so same-name collisions can be narrowed semantically instead of falling back to raw text matches.
+- TypeScript method symbols now carry owner-aware ids and qualified names such as `src/auth.AuthService.login`, which lets read-only navigation distinguish same-name methods on different receiver types in the same file.
+- Call-edge resolution now uses high-confidence receiver type hints from TypeScript parameters, local declarations, `new T()` initializers, and `this.method()` so `call_graph` and `find_references` can target the owning class or interface method before falling back to raw name matching.

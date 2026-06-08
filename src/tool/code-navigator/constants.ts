@@ -2,7 +2,7 @@ import path from "node:path"
 import { easycodeGlobalProjectDir, homeRelativePath } from "../../easycode-path"
 
 export const repoMapGeneratorVersion = "1"
-export const codeIndexGeneratorVersion = "9"
+export const codeIndexGeneratorVersion = "10"
 export const defaultMaxResults = 50
 export const maxMaxResults = 200
 export const defaultReadLineLimit = 200

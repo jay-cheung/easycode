@@ -78,6 +78,7 @@ export type CodeIndexEdge = {
   toID?: string
   toName?: string
   receiverName?: string
+  receiverTypeHint?: string
   resolved?: boolean
   filePath: string
   line: number
