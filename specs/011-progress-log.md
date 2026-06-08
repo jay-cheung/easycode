@@ -1004,3 +1004,15 @@
   - Correctness: code-navigation cache placement is now explicit and no longer depends on whether a repo has a local `.easycode/` folder, while interactive session deletion cleans all known session-scoped artifacts.
   - Maintainability: session lifecycle responsibilities now live beside session persistence instead of being split across ad hoc CLI-only cleanup paths.
   - Verification: targeted slash/session/code-navigation coverage first because the new behavior crosses startup state, runtime session state, and derived cache metadata.
+
+## Step 46: Stronger Skill-Reuse Prompt Contract
+
+- Scope: make the agent more likely to reuse loaded skill guidance and referenced scripts/tools instead of inventing fresh workflows, without adding irrelevant prompt weight to summary mode.
+- Implementation:
+  - Removed the generic skill reminders from the global `operatingCore` in `src/prompt/agent.ts`.
+  - Added explicit skill-reuse rules to `planModeProtocol` and `buildModeProtocol`: load selected or first-use skills before task-specific action, inspect referenced scripts/tools/templates/paths first, and only bypass them with an explicit reason.
+  - Added prompt-level regression coverage in `test/unit/prompt.test.ts` to assert the new rules exist in build/plan prompts and stay absent from summary prompts.
+- Code Complete review result:
+  - Correctness: the stronger rules now target the modes where task execution and planning happen, instead of leaking into summary-only prompts.
+  - Maintainability: the prompt contract is more executable because it says when to load a skill, what artifacts to inspect first, and when bypass is allowed.
+  - Verification: reran prompt-focused tests, cache benchmark, and the unified gate because this change affects prompt shape and prompt-cache cost.

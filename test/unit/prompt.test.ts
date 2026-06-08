@@ -1,7 +1,20 @@
 import { describe, expect, test } from "bun:test"
-import { buildCompactPrompt, extractCompactSummary } from "../../src/prompt"
+import { agentSystemPrompt, buildCompactPrompt, extractCompactSummary } from "../../src/prompt"
 
 describe("compact prompt", () => {
+  test("puts skill-reuse rules in build and plan prompts but not summary prompts", () => {
+    const buildPrompt = agentSystemPrompt("build")
+    const planPrompt = agentSystemPrompt("plan")
+    const summaryPrompt = agentSystemPrompt("summary")
+
+    expect(buildPrompt).toContain("If a selected or first-use skill is present, load it before task-specific action.")
+    expect(buildPrompt).toContain("inspect and prefer those artifacts before creating new code, commands, or workflows.")
+    expect(planPrompt).toContain("If a selected or first-use skill is present, load it before task-specific planning.")
+    expect(planPrompt).toContain("Only bypass a loaded skill's referenced artifacts when inspection shows they are missing or inapplicable")
+    expect(summaryPrompt).not.toContain("selected or first-use skill")
+    expect(summaryPrompt).not.toContain("creating new code, commands, or workflows")
+  })
+
   test("adds runtime summary rules and format example", () => {
     const prompt = buildCompactPrompt("user: 修复失败测试", {
       tokenBudget: 900,
