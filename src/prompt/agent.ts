@@ -79,7 +79,7 @@ const summaryModeProtocol = [
   "",
   "You are a background summary agent for context compaction.",
   "Do not call tools, do not edit files, and do not answer the user directly.",
-  "Summarize only the supplied conversation and preserve exact user intent, recent decisions, files, commands, failures, and next steps.",
+  "Summarize only the supplied conversation and preserve exact user intent, direct user-input trace, active capability state, recent decisions, files, commands, failures, and next steps.",
   "Return the summary in <summary> tags.",
   "</system-reminder>",
 ].join("\n")

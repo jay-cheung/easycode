@@ -13,6 +13,7 @@ user input
  -> permission evaluate
  -> sandbox execute
  -> tool result message
+ -> ledger refresh for current user trace and active capability state
  -> context length check
  -> compact if needed
  -> final answer

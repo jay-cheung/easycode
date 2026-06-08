@@ -1,5 +1,19 @@
 # Progress Log
 
+## Step 25: Compaction User-Trace And Capability Retention
+
+- Scope: stop context compaction from dropping the exact current user ask or the active skill/MCP/connector capability surface, so restored sessions can continue without re-asking what "this" referred to.
+- Implementation:
+  - Expanded `src/prompt/compact.ts` and `src/prompt/agent.ts` so the summary contract explicitly preserves current user requirements, a direct user-input trace, and active capability state alongside the existing repo facts and next step.
+  - Updated `src/agent/runner/hypothesis-state.ts`, `src/agent/runner/index.ts`, and `src/agent/runner/tool-execution.ts` so the ledger now records `current_user_input`, selected/pending skills, and observed MCP/connector/web-search usage, then folds them into a stable `active_capability_surface` record for compaction.
+  - Tightened `src/context/ledger.ts` selection so those records stay current even when unrelated file-scope records are dropped, and extended prompt/context/runner/integration coverage to lock the behavior.
+- Verification:
+  - `bun test test/unit/prompt.test.ts test/unit/context.test.ts test/unit/runner.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run cache:bench -- --provider simulated --suite real --quiet`
+  - `bun run gate`
+- Notes: EasyCode still has no standalone plugin runtime in v1, so the capability surface records `plugins=none (EasyCode v1 runtime)` unless future runtime work adds one.
+
 ## Step 24: Permission Friction Reduction For Readonly Retrieval
 
 - Scope: reduce repeated approval friction for high-frequency readonly retrieval without weakening the existing dangerous-command, secret-path, or sandbox-bypass protections.

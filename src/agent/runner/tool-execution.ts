@@ -6,6 +6,7 @@ import type { SkillServiceLike } from "../../skill"
 import type { Sandbox } from "../../sandbox"
 import type { RunUiEvent } from "../../ui/timeline"
 import { ledgerRecord, toolScopeFiles } from "../ledger"
+import { recordCapabilityUsageState } from "./hypothesis-state"
 
 type ToolExecutionDeps = {
   registry: ToolRegistryLike
@@ -84,6 +85,7 @@ export function recordToolOutcome(
       current.push(ledgerRecord("checkpoint", "last_successful_tool", `${call.name} ${helpers.truncateForLedger(result.title, 120)}`, "current", turn, { evidence: toolEvidence }))
     }
     deps.context.updateLedger({ current })
+    recordToolCapabilityUsage(deps.context, call, result)
     return
   }
 
@@ -99,6 +101,58 @@ export function recordToolOutcome(
       ledgerRecord("constraint", "next_recovery_action", recovery, "current", turn),
     ],
   })
+}
+
+function recordToolCapabilityUsage(
+  context: ContextManagerLike,
+  call: ToolCall,
+  result: ToolResult,
+) {
+  if (call.name === "mcp_list_resources") {
+    recordCapabilityUsageState(context, { mcpServers: mcpServersFromSources(result.metadata.sources) })
+    return
+  }
+  if (call.name === "mcp_read_resource") {
+    const server = stringInputField(call.input, "server") ?? mcpServerFromSource(result.metadata.source)
+    const uri = stringInputField(call.input, "uri")
+    recordCapabilityUsageState(context, {
+      mcpServers: server ? [server] : [],
+      mcpResources: uri ? [uri] : [],
+    })
+    return
+  }
+  if (call.name === "connector_call") {
+    const connector = typeof result.metadata.connector === "string" ? result.metadata.connector : stringInputField(call.input, "name")
+    recordCapabilityUsageState(context, { connectors: connector ? [connector] : [] })
+    return
+  }
+  if (call.name === "web_search") {
+    const engine = typeof result.metadata.engine === "string" ? result.metadata.engine : undefined
+    recordCapabilityUsageState(context, { webSearchEngines: engine ? [engine] : [] })
+  }
+}
+
+function stringInputField(input: unknown, field: string) {
+  if (!input || typeof input !== "object") return undefined
+  const value = (input as Record<string, unknown>)[field]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function mcpServersFromSources(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.flatMap((item) => {
+    if (!item || typeof item !== "object") return []
+    const server = mcpServerFromSource(item)
+    return server ? [server] : []
+  }))].sort((left, right) => left.localeCompare(right))
+}
+
+function mcpServerFromSource(value: unknown) {
+  if (!value || typeof value !== "object") return undefined
+  const id = (value as { id?: unknown }).id
+  if (typeof id !== "string") return undefined
+  const delimiter = id.indexOf(":")
+  return delimiter > 0 ? id.slice(0, delimiter) : undefined
 }
 
 function startToolProgressTimer(

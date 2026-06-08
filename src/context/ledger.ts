@@ -3,6 +3,18 @@ import { estimateTextTokens } from "./tokens"
 import type { ContextLedger, LedgerEvidence, LedgerKind, LedgerRecord, LedgerScope, LedgerStatus, StructuredContextLedger } from "./types"
 
 const currentAlwaysKinds = new Set<LedgerKind>(["intent", "decision", "constraint", "preference", "entity", "failure", "conflict"])
+const currentAlwaysSubjects = new Set([
+  "current_user_request",
+  "current_user_input",
+  "main_objective",
+  "active_skills",
+  "pending_skill_loads",
+  "active_mcp_servers",
+  "active_mcp_resources",
+  "active_connectors",
+  "active_web_search_engine",
+  "active_capability_surface",
+])
 // History is selected only when the latest request asks for prior context; match
 // both English and Chinese because the ledger is shared across bilingual turns.
 const historyTriggerPattern = /\b(previous|prior|rollback|revert|why|reason|tried|rejected|superseded)\b|之前|以前|回退|为什么|原因|试过|拒绝|废弃|覆盖/i
@@ -199,7 +211,7 @@ function historyRecordTier(record: LedgerRecord) {
 }
 
 function isAlwaysCurrent(record: LedgerRecord) {
-  return record.status === "current" && currentAlwaysKinds.has(record.kind)
+  return record.status === "current" && (currentAlwaysKinds.has(record.kind) || currentAlwaysSubjects.has(record.subject))
 }
 
 function recordRelevant(record: LedgerRecord, signal: LedgerSelectionSignal) {

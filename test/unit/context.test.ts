@@ -295,6 +295,23 @@ describe("context", () => {
     expect(ledger.indexOf("older value")).toBeLessThan(ledger.indexOf("latest value"))
   })
 
+  test("ledger selector always keeps current user trace and active capability state", () => {
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        ledgerRecord("intent", "current_user_input", "继续，压缩后的提示词里一定要保留当前用户的要求", "current", 2),
+        ledgerRecord("checkpoint", "active_capability_surface", "skills=easycode-slice-loop; mcp_servers=local-docs; connectors=docs; web_search=tavily; plugins=none (EasyCode v1 runtime)", "current", 2),
+        ledgerRecord("file", "README.md", "unrelated file note", "current", 2, { scope: { files: ["README.md"] } }),
+      ],
+    })
+    context.add(textMessage("user", "Patch src/agent/runner/index.ts only."))
+
+    const ledger = context.selectedLedgerText()
+    expect(ledger).toContain("current_user_input")
+    expect(ledger).toContain("active_capability_surface")
+    expect(ledger).not.toContain("unrelated file note")
+  })
+
   test("ledger updates replace keyed current-state entries", () => {
     const context = new ContextManager()
     context.updateLedger({

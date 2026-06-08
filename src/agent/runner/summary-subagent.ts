@@ -18,8 +18,16 @@ type SummarySubagentDeps = {
   onEvent?: (event: RunUiEvent) => void
   onBackgroundContextUpdate?: () => void | Promise<void>
   activeHypothesisSummary?: string
-  compactPrompt: (messages: Array<{ role: string; content: string }>, options?: { tokenBudget?: number; preferredLanguage?: string; activeHypothesis?: string }) => string
+  compactPrompt: (messages: Array<{ role: string; content: string }>, options?: {
+    tokenBudget?: number
+    preferredLanguage?: string
+    activeHypothesis?: string
+    currentUserRequest?: string
+    currentUserInput?: string
+    activeCapabilitySurface?: string
+  }) => string
   summaryLanguageHint: (context: ContextManagerLike, messages: Array<{ role: string; content: string }>) => string | undefined
+  ledgerValue: (context: ContextManagerLike, subject: string) => string | undefined
   runProviderTurn: (input: {
     agent: Agent
     prompt: string
@@ -56,6 +64,9 @@ export async function runSummarySubagentTask(
         tokenBudget: deps.context.strategyState.dynamicSummaryTokenBudget,
         preferredLanguage: deps.summaryLanguageHint(deps.context, task.snapshot.providerMessages),
         activeHypothesis: deps.activeHypothesisSummary,
+        currentUserRequest: deps.ledgerValue(deps.context, "current_user_request"),
+        currentUserInput: deps.ledgerValue(deps.context, "current_user_input"),
+        activeCapabilitySurface: deps.ledgerValue(deps.context, "active_capability_surface"),
       }),
     },
   ]

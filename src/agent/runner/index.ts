@@ -19,10 +19,10 @@ import { emitProviderTurnEvents, runProviderTurnStream, type ProviderTurnInput, 
 import { createSummaryTask, runSummarySubagentTask, type BackgroundAgentTask } from "./summary-subagent"
 import { refreshRepoMapCache } from "./repo-map-refresh"
 import { emitToolResultEvent, recordToolOutcome as recordToolOutcomeSideEffect, runToolCall } from "./tool-execution"
-import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypothesisCorrectionMessage, recordHypothesisViolationState, recordRunIntentState, truncateForLedger, updateActiveHypothesisState } from "./hypothesis-state"
+import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypothesisCorrectionMessage, recordActiveSkillState, recordHypothesisViolationState, recordRunIntentState, truncateForLedger, updateActiveHypothesisState } from "./hypothesis-state"
 import { effectiveModeForPrompt, markSkillLoadedInSettings, pendingSelectedSkillsForSettings, permissionServiceForMode, selectedSkillsForSettings } from "./runner-support"
 import { runValidatedProviderTurnLoop } from "./validated-provider-turn"
-import { appendOutput, assistantMessage, compactPrompt, explorationSummaryReadinessMessage, explorationSummaryStep, summaryLanguageHint } from "./runner-helpers"
+import { appendOutput, assistantMessage, compactPrompt, explorationSummaryReadinessMessage, explorationSummaryStep, ledgerValue, summaryLanguageHint } from "./runner-helpers"
 import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
 import { runFailureText } from "./failure-policy"
@@ -104,6 +104,7 @@ export class AgentRunner {
     const instructions = await this.instructions.system()
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
+    this.recordActiveSkills(selectedSkills)
     for (let step = 0; step < this.maxSteps; step += 1) {
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
       this.aspect.step(step + 1, this.maxSteps)
@@ -172,7 +173,10 @@ export class AgentRunner {
           onEvent: this.onEvent,
           toolProgressIntervalMs: this.toolProgressIntervalMs,
         }, toolCall, effectiveMode, input.signal)
-        if (toolCall.name === "skill" && result.metadata.status === "succeeded") this.markSkillLoaded(toolCall.input)
+        if (toolCall.name === "skill" && result.metadata.status === "succeeded") {
+          this.markSkillLoaded(toolCall.input)
+          this.recordActiveSkills(selectedSkills)
+        }
         this.recordToolOutcome(toolCall, result, prompt)
         this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
         this.noteExternalEvidence()
@@ -274,6 +278,7 @@ export class AgentRunner {
         activeHypothesisSummary: this.activeHypothesis?.summary,
         compactPrompt,
         summaryLanguageHint,
+        ledgerValue,
         runProviderTurn: (input) => this.runProviderTurn({
           ...input,
           messages: [],
@@ -311,6 +316,10 @@ export class AgentRunner {
 
   private recordRunIntent(prompt: string) {
     recordRunIntentState(this.context, prompt)
+  }
+
+  private recordActiveSkills(selectedSkills: Awaited<ReturnType<AgentRunner["selectedSkills"]>>) {
+    recordActiveSkillState(this.context, selectedSkills, this.settings.pendingSkillLoads ?? [])
   }
 
   private async refreshRepoMap(signal: AbortSignal | undefined, prompt?: string) {

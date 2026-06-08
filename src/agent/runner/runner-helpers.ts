@@ -38,8 +38,12 @@ export function compactPrompt(messages: Array<{ role: string; content: string }>
 }
 
 export function summaryLanguageHint(context: ContextManagerLike, messages: Array<{ role: string; content: string }>) {
-  const currentRequest = context.state.ledger?.current?.find((record) => record.kind === "intent" && record.subject === "current_user_request")?.value
+  const currentRequest = ledgerValue(context, "current_user_request")
   return detectLanguageHint(currentRequest) ?? detectLanguageHint([...messages].reverse().find((message) => message.role === "user" && message.content.trim())?.content)
+}
+
+export function ledgerValue(context: ContextManagerLike, subject: string) {
+  return context.state.ledger?.current?.find((record) => record.subject === subject)?.value
 }
 
 export function detectLanguageHint(text: string | undefined) {
