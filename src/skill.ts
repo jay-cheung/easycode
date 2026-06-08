@@ -1,7 +1,15 @@
 import path from "node:path"
 import os from "node:os"
-import { readdir } from "node:fs/promises"
+import { readdir, stat } from "node:fs/promises"
 import { easycodeDir } from "./easycode-path"
+
+export type SkillArtifact = {
+  reference: string
+  path: string
+  resolvedPath: string
+  kind: "file" | "directory" | "missing"
+  source: "markdown_link" | "inline_code"
+}
 
 export type SkillInfo = {
   id: string
@@ -9,6 +17,7 @@ export type SkillInfo = {
   description: string
   location: string
   content?: string
+  artifacts?: SkillArtifact[]
 }
 
 export interface SkillServiceLike {
@@ -27,6 +36,80 @@ function parseFrontmatter(text: string) {
     data.set(line.slice(0, idx).trim(), line.slice(idx + 1).trim().replace(/^['\"]|['\"]$/g, ""))
   }
   return { data, content: text.slice(end + 4).trim() }
+}
+
+function* extractMarkdownLinks(text: string) {
+  const regex = /\[[^\]]*\]\(([^)]+)\)/g
+  for (const match of text.matchAll(regex)) {
+    const candidate = normalizeReference(match[1] ?? "")
+    if (candidate) yield { source: "markdown_link" as const, reference: candidate }
+  }
+}
+
+function* extractInlineCodePaths(text: string) {
+  const regex = /`([^`\n]+)`/g
+  for (const match of text.matchAll(regex)) {
+    const candidate = normalizeReference(match[1] ?? "")
+    if (looksLikeLocalPathCandidate(candidate)) yield { source: "inline_code" as const, reference: candidate }
+  }
+}
+
+function normalizeReference(value: string) {
+  const trimmed = value.trim().replace(/^<|>$/g, "")
+  if (!trimmed) return ""
+  const titleSplit = trimmed.match(/^(\S+)\s+["'][^"']+["']$/)
+  return titleSplit ? titleSplit[1] : trimmed
+}
+
+function looksLikeLocalPathCandidate(value: string) {
+  if (!value || value.includes("://") || value.startsWith("#") || value.startsWith("--")) return false
+  if (value.includes(" ")) return false
+  if (value.startsWith("~/") || value.startsWith("./") || value.startsWith("../") || value.startsWith("/")) return true
+  if (value.endsWith("/")) return true
+  if (value.includes("/")) return true
+  return /\.[A-Za-z0-9]+$/.test(value)
+}
+
+function resolveSkillReference(skillFile: string, reference: string) {
+  if (reference.startsWith("~/")) return path.join(os.homedir(), reference.slice(2))
+  if (path.isAbsolute(reference)) return path.normalize(reference)
+  return path.resolve(path.dirname(skillFile), reference)
+}
+
+function displayPathForReference(reference: string, resolvedPath: string, skillFile: string) {
+  if (reference.startsWith("~/") || path.isAbsolute(reference)) return reference
+  return path.relative(path.dirname(skillFile), resolvedPath).replace(/\\/g, "/") || "."
+}
+
+async function classifyArtifact(resolvedPath: string): Promise<SkillArtifact["kind"]> {
+  try {
+    const info = await stat(resolvedPath)
+    if (info.isDirectory()) return "directory"
+    return "file"
+  } catch {
+    return "missing"
+  }
+}
+
+async function extractSkillArtifacts(skillFile: string, content: string): Promise<SkillArtifact[]> {
+  const candidates = [...extractMarkdownLinks(content), ...extractInlineCodePaths(content)]
+  const seen = new Set<string>()
+  const artifacts: SkillArtifact[] = []
+  for (const candidate of candidates) {
+    if (!looksLikeLocalPathCandidate(candidate.reference)) continue
+    const resolvedPath = resolveSkillReference(skillFile, candidate.reference)
+    const dedupeKey = resolvedPath.toLowerCase()
+    if (seen.has(dedupeKey)) continue
+    seen.add(dedupeKey)
+    artifacts.push({
+      reference: candidate.reference,
+      path: displayPathForReference(candidate.reference, resolvedPath, skillFile),
+      resolvedPath,
+      kind: await classifyArtifact(resolvedPath),
+      source: candidate.source,
+    })
+  }
+  return artifacts
 }
 
 async function isDir(dir: string) {
@@ -90,6 +173,6 @@ export class SkillService implements SkillServiceLike {
     const skill = skills.find((item) => item.id === nameOrId || item.name === nameOrId)
     if (!skill) return undefined
     const parsed = parseFrontmatter(await Bun.file(skill.location).text())
-    return { ...skill, content: parsed.content }
+    return { ...skill, content: parsed.content, artifacts: await extractSkillArtifacts(skill.location, parsed.content) }
   }
 }

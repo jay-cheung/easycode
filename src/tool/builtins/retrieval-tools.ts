@@ -1,6 +1,25 @@
 import { McpSourceService, WebSearchService, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, webCitation } from "../../retrieval"
 import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
+import type { SkillArtifact, SkillInfo } from "../../skill"
+
+function formatSkillArtifact(artifact: SkillArtifact) {
+  const detail = artifact.kind === "missing" ? "missing" : artifact.kind
+  return `- ${detail}: ${artifact.path}`
+}
+
+function formatSkillOutput(skill: SkillInfo) {
+  const sections: string[] = []
+  if (skill.artifacts && skill.artifacts.length > 0) {
+    sections.push("<skill_artifacts>")
+    sections.push("Inspect these referenced local artifacts before inventing a new workflow:")
+    sections.push(...skill.artifacts.map(formatSkillArtifact))
+    sections.push("</skill_artifacts>")
+    sections.push("")
+  }
+  if (skill.content?.trim()) sections.push(skill.content.trim())
+  return sections.join("\n").trim()
+}
 
 export function registerRetrievalTools(registry: ToolRegistry) {
   registry.register({
@@ -80,7 +99,11 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const params = SkillInput.parse(input)
       const skill = await ctx.skills.load(params.name)
       if (!skill) return { title: params.name, output: `Skill not found: ${params.name}`, metadata: { status: "failed" } }
-      return { title: `Loaded skill: ${skill.name}`, output: skill.content ?? "", metadata: { status: "succeeded", location: skill.location } }
+      return {
+        title: `Loaded skill: ${skill.name}`,
+        output: formatSkillOutput(skill),
+        metadata: { status: "succeeded", location: skill.location, artifacts: skill.artifacts ?? [], artifactCount: skill.artifacts?.length ?? 0 },
+      }
     },
   })
 

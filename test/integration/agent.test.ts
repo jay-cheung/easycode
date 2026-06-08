@@ -1029,10 +1029,13 @@ describe("agent integration", () => {
 
   test("skill-progressive-loading", async () => {
     const root = await fixture()
-    await mkdir(path.join(root, ".easycode", "skills", "demo"), { recursive: true })
-    await Bun.write(path.join(root, ".easycode", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Demo\n---\nFull demo skill")
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "scripts"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "scripts", "demo.sh"), "#!/usr/bin/env bash\n")
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Demo\n---\nUse `scripts/demo.sh` first.\nFull demo skill")
     const result = await createRunner({ root, provider: "fake", mode: "build", settings: { ...defaultSessionSettings("fake"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] } }).run("use skill demo", "build")
     expect(result.usedTools).toContain("skill")
+    expect(toolResults(result.messages).some((part) => part.output.includes("<skill_artifacts>"))).toBe(true)
+    expect(toolResults(result.messages).some((part) => part.output.includes("scripts/demo.sh"))).toBe(true)
     expect(toolResults(result.messages).some((part) => part.output.includes("Full demo skill"))).toBe(true)
     await rm(root, { recursive: true, force: true })
   })

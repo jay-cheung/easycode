@@ -71,4 +71,27 @@ describe("skill", () => {
     expect(loaded?.content).toBe("Legacy content")
     await rm(root, { recursive: true, force: true })
   })
+
+  test("extracts referenced local artifacts from skill content", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-skill-"))
+    const dir = path.join(root, ".easycode", "skills", "demo")
+    await mkdir(path.join(dir, "scripts"), { recursive: true })
+    await mkdir(path.join(dir, "templates"), { recursive: true })
+    await Bun.write(path.join(dir, "scripts", "setup.sh"), "#!/usr/bin/env bash\n")
+    await Bun.write(path.join(dir, "templates", "report.md"), "# Report\n")
+    await Bun.write(
+      path.join(dir, "SKILL.md"),
+      "---\nname: demo\ndescription: Demo\n---\nRun `scripts/setup.sh` first.\nReview [template](templates/report.md).\nCheck `missing/notes.md` if it exists.\nIgnore `bun run gate`.\n",
+    )
+    const service = new SkillService(root)
+
+    const loaded = await service.load("demo")
+
+    expect(loaded?.artifacts).toEqual([
+      expect.objectContaining({ path: "templates/report.md", kind: "file", source: "markdown_link" }),
+      expect.objectContaining({ path: "scripts/setup.sh", kind: "file", source: "inline_code" }),
+      expect.objectContaining({ path: "missing/notes.md", kind: "missing", source: "inline_code" }),
+    ])
+    await rm(root, { recursive: true, force: true })
+  })
 })

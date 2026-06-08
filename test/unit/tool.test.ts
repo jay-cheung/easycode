@@ -77,6 +77,25 @@ describe("tool", () => {
     expect(result.metadata.status).toBe("succeeded")
   })
 
+  test("skill tool surfaces referenced local artifacts before skill content", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode", "skills", "demo", "scripts"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "skills", "demo", "scripts", "bootstrap.sh"), "#!/usr/bin/env bash\n")
+    await Bun.write(
+      path.join(root, ".easycode", "skills", "demo", "SKILL.md"),
+      "---\nname: demo\ndescription: Demo\n---\nUse `scripts/bootstrap.sh` first.\nThen continue.\n",
+    )
+
+    const result = await registry.run("skill", { name: "demo" }, toolContext(root))
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.output).toContain("<skill_artifacts>")
+    expect(result.output).toContain("- file: scripts/bootstrap.sh")
+    expect(result.output).toContain("Then continue.")
+    expect(result.metadata.artifactCount).toBe(1)
+  })
+
   test("returns provider argument parse errors as tool result feedback", async () => {
     const registry = createBuiltinRegistry()
     const root = import.meta.dir

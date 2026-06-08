@@ -1016,3 +1016,15 @@
   - Correctness: the stronger rules now target the modes where task execution and planning happen, instead of leaking into summary-only prompts.
   - Maintainability: the prompt contract is more executable because it says when to load a skill, what artifacts to inspect first, and when bypass is allowed.
   - Verification: reran prompt-focused tests, cache benchmark, and the unified gate because this change affects prompt shape and prompt-cache cost.
+
+## Step 47: Skill Artifact Discovery In Runtime
+
+- Scope: carry the stronger skill-reuse contract into runtime behavior so loaded skills expose their referenced local scripts/templates/paths directly, instead of only returning raw markdown.
+- Implementation:
+  - Extended `src/skill.ts` so `SkillService.load()` extracts local artifact references from markdown links and inline code spans, resolves them against the owning `SKILL.md`, and classifies them as file, directory, or missing.
+  - Updated `src/tool/builtins/retrieval-tools.ts` so the `skill` tool now returns a `<skill_artifacts>` block ahead of the raw skill content and includes structured artifact metadata in the tool result.
+  - Added unit/integration coverage in `test/unit/skill.test.ts`, `test/unit/tool.test.ts`, and `test/integration/agent.test.ts` to lock artifact extraction, tool formatting, and the provider-visible skill loading flow.
+- Code Complete review result:
+  - Correctness: selected or first-use skills now surface the concrete local artifacts the prompt tells the model to inspect first, reducing the gap between prompt guidance and executable runtime behavior.
+  - Maintainability: artifact extraction stays inside `SkillService`, so skill-aware runtime paths share one resolver instead of each caller reparsing markdown ad hoc.
+  - Verification: reran targeted skill/tool/agent coverage, `bun run typecheck`, and the unified gate because this changes provider-visible tool output and loaded skill structure.
