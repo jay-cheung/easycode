@@ -1,452 +1,201 @@
-# EasyCode
+# EasyCode 🚀
 
-中文 / English
+EasyCode 是一个面向真实代码仓库的命令行 Coding Agent。它专注于“读代码、做计划、改代码、跑验证、长上下文记忆”的完整开发闭环，适合在本地仓库里安全、高效地完成日常修 Bug、重构、测试修复和代码探索。
 
-EasyCode 是一个面向真实代码仓库的命令行 Coding Agent。它专注于"读代码、做计划、改代码、跑验证、保留上下文"，适合在本地仓库里完成日常修 bug、重构、测试修复和代码探索。
+*EasyCode is a command-line coding agent for real repositories. It focuses on the complete development loop of "reading code, planning changes, editing safely, running verification, and preserving context," making it ideal for resolving bugs, refactoring, fixing tests, and exploring architectures locally.*
 
-EasyCode is a command-line coding agent for real repositories. It focuses on reading code, planning changes, editing safely, running verification, and preserving useful context across sessions.
+---
 
-## 项目亮点 / Highlights
+## 🌟 核心优势 / Key Highlights
 
-- **计划 / 执行分离**：`plan` 模式只读分析并输出方案，`build` 模式才允许修改文件。
-  **Plan and build modes**: `plan` is read-only; `build` can modify files after permission checks.
-- **真实仓库工作流**：内置文件读取、精确编辑、patch、bash、Git diff/status/stage/commit、代码导航等工具。
-  **Repository-native workflow**: file reads, precise edits, patch operations, bash, Git status/diff/stage/commit, and code navigation tools.
-- **安全边界明确**：默认限制写入项目外路径，危险命令会被拒绝，敏感输出会做基础脱敏。
-  **Clear safety boundaries**: project-root write limits, dangerous command denial, sandbox recovery prompts, and basic secret redaction.
-- **长上下文可持续**：支持会话保存、上下文压缩、项目记忆和技能按需加载。
-  **Long-running context**: saved sessions, compaction, project memory, and progressive skill loading.
-- **多 Provider 支持**：内置 `openai`、`deepseek`、`openai-compatible` 和离线测试用 `fake`。
-  **Multiple providers**: built-in `openai`, `deepseek`, `openai-compatible`, and offline `fake`.
-- **可验证质量**：提供离线测试、fake eval、APIx eval、cache benchmark 和真实 provider smoke test。
-  **Verifiable quality**: offline tests, fake evals, APIx evals, cache benchmarks, and opt-in real-provider smoke tests.
+### 🚦 计划与执行分离 / Plan & Build Separation
+*   **Plan 模式（只读）**：AI 仅执行探索与静态分析，输出 Markdown 格式的执行计划，绝不触碰文件。
+    *Plan mode (read-only): AI performs exploration and static analysis, outputting a Markdown plan without editing any files.*
+*   **Build 模式（读写）**：在用户确认 Plan 后，AI 会在授权下按步骤精准修改文件。
+    *Build mode (read-write): After the user approves the plan, the AI proceeds to modify files step-by-step under authorization.*
 
-## 安装 / Install
+### 🔍 增量 AST 代码索引 / AST-Grep Code Indexing
+*   不仅是正则 `grep`。EasyCode 在本地基于 `ast-grep` 维护轻量级增量 AST 索引。
+    *More than regex grep. EasyCode maintains a lightweight, incremental AST index locally powered by `ast-grep`.*
+*   支持精确的 `findDefinition`、`findReferences`、`callGraph` 和 `repoMap` 骨架缓存，能够智能过滤局部变量命名碰撞，做出更安全的重构计划。
+    *Supports precise definition, reference, call graph, and skeleton repoMap caches, filtering out local binding name collisions to plan safer edits.*
 
-从 [GitHub Releases](https://github.com/FanFan-web-developer/easycode/releases) 下载对应平台二进制并放入 `PATH`。
+### 🛡️ 智能自动审查与沙箱安全 / Sandbox & Auto-Reviewer
+*   **安全隔离**：内置项目根目录写限制，隔离的 Bash 执行环境，并自动对控制台输出中的 API Key/Secret 进行红线脱敏。
+    *Sandbox isolation: Project-root write limits, isolated bash shell execution, and automatic secret redaction from stdout.*
+*   **自动放行**：智能识别安全只读操作，免除频繁授权弹窗；仅在执行写指令或网络请求等危险动作时发起确认，降低确认疲劳。
+    *Auto-reviewer: Approves safe read-only operations automatically to avoid prompt fatigue; user authorization is only requested for risky write or network actions.*
 
-Download the right binary from [GitHub Releases](https://github.com/FanFan-web-developer/easycode/releases) and place it on your `PATH`.
+### 🧠 上下文账本与持久化项目记忆 / Ledger & Project Memory
+*   **Context Ledger**：跟踪当前假设、约束和排查决策，在多轮对话中自动执行 Compaction 压缩以降低 Token 消耗。
+    *Context ledger: Tracks current hypotheses, constraints, and decision logs, automatically compacting old history to optimize tokens.*
+*   **Project Memory**：支持持久化存储项目特定偏好、常见错误模式和成功工作流，在检测到 `继续`、`上次` 等触发词时自动召回。
+    *Project memory: Persists project-scoped preferences, failure patterns, and successful workflows, automatically recalling them on continuation keywords.*
 
-macOS arm64 示例 / macOS arm64:
+---
 
+## 🚀 快速上手 / Quick Start
+
+### 1. 安装 / Install EasyCode
+你可以直接从 [Releases](https://github.com/FanFan-web-developer/easycode/releases) 下载二进制并加入环境变量：
+*Download the binary for your platform from Releases and add it to your PATH:*
+
+**macOS arm64 一键安装 / macOS arm64 install:**
 ```bash
 curl -L https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-darwin-arm64 -o /tmp/easycode && chmod +x /tmp/easycode && sudo mv /tmp/easycode /usr/local/bin/easycode
 ```
 
-验证安装 / Check it:
+### 2. 配置 API Key / Setup API Key
+EasyCode 默认使用 **DeepSeek**（支持 reasoning 思考逻辑，且无需 `--provider` 标记）：
+*EasyCode defaults to DeepSeek (supporting reasoning effort, no `--provider` flag required):*
 
 ```bash
-easycode build --provider fake
+export DEEPSEEK_API_KEY="sk-your-deepseek-key-here"
 ```
 
-从源码构建 / Build from source:
+### 3. 运行你的第一个任务 / Run Your First Task
+在你的本地代码仓库根目录下运行以下命令：
+*Run the command in your repository root directory:*
 
 ```bash
-git clone https://github.com/FanFan-web-developer/easycode.git
-cd easycode
-bun install
-bun run build
+# 计划模式：分析任务并给出修改计划（安全无副作用）
+# Plan mode: Analyze the task and propose changes (safe and read-only)
+easycode plan --once "分析本项目如何处理大文件截断"
+
+# 执行模式：启动炫酷的交互式终端 UI（TUI）
+# Build mode: Start the interactive Terminal UI (TUI)
+easycode build --tui
 ```
 
-### DeepSeek 配置示例 / DeepSeek Configuration Example
+---
 
-DeepSeek 是 EasyCode 的**默认 provider**，支持 thinking / reasoning effort。如果只使用 DeepSeek，连 `--provider` 都不需要指定。
+## 🛠️ CLI 命令与配置 / CLI Commands & Configuration
 
-DeepSeek is the **default provider** in EasyCode. It supports thinking and reasoning effort. If you only use DeepSeek, you don't even need `--provider`.
+### 主命令 / Main Commands
 
-#### 最小配置 / Minimal Setup
+| 命令 / Command | 简体中文描述 | English Description |
+| :--- | :--- | :--- |
+| `easycode plan` | **计划模式**：只读分析，输出修改方案，不修改任何文件。 | **Plan mode**: Read-only analysis, outputs plan, no file changes. |
+| `easycode build` | **执行模式**：允许 AI 在获得授权后读取、编辑文件并执行测试。 | **Build mode**: Allows AI to read, edit files, and run commands upon approval. |
 
-```env
-DEEPSEEK_API_KEY=sk-xxx
-```
+### 命令行选项 / CLI Options
 
-然后用默认启动即可 / Then start with defaults:
+| 选项 / Option | 简体中文描述 | English Description |
+| :--- | :--- | :--- |
+| `--once <prompt>` | 单次任务模式，执行完成后退出。 | Single task mode, exits after completion. |
+| `--provider <name>` | 指定 AI provider（如 `deepseek`, `openai`, `openai-compatible`, `fake`）。 | Specify AI provider (e.g. `deepseek`, `openai`, `openai-compatible`, `fake`). |
+| `--model <id>` | 指定模型 ID（覆盖 provider 的内置默认模型）。 | Specify model ID (overrides provider default). |
+| `--max-tokens <n>` | 每次 API 调用的最大 token 数（默认 32000）。 | Max tokens per API call (default 32000). |
+| `--max-steps <n>` | 最大执行步数（默认 66）。 | Max execution steps (default 66). |
+| `--session <id>` | 加载指定的 session 进行继续开发。 | Load a specific session. |
+| `--logger` | 启用详细调试日志。 | Enable detailed debug logs. |
+| `--tui` | 启动交互式终端 UI（TUI）。 | Start the TUI interactive interface. |
 
-```bash
-easycode build      # 自动使用 deepseek 和默认模型 / automatically uses deepseek and default model
-easycode plan
-```
+---
 
-#### 完整配置 / Full Configuration
+## 📂 扩展上下文数据源 / Data Sources
 
-```env
-# === 必填 / Required ===
-DEEPSEEK_API_KEY=sk-xxx
+数据源以 JSON 文件形式配置在项目 `.easycode/` 目录下，**无需重启进程，即刻生效**：
+*Data sources are configured under `.easycode/` in JSON format and take effect **without restarting the process**:*
 
-# === 模型（优先级从高到低） / Model (priority high to low) ===
-# 1. CLI --model flag
-# 2. DEEPSEEK_MODEL env var
-# 3. EASYCODE_MODEL env var (global fallback)
-# 4. Built-in default deepseek-v4-pro
-DEEPSEEK_MODEL=deepseek-v4-pro
-
-# === API 地址（默认 https://api.deepseek.com/chat/completions）===
-# === API URL (default https://api.deepseek.com/chat/completions) ===
-DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
-
-# === 思考强度（high 或 max，默认 max）===
-# === Reasoning effort (high or max, default max) ===
-DEEPSEEK_REASONING_EFFORT=max
-
-# === 上下文窗口（默认由模型决定）===
-# === Context window (default determined by model) ===
-# DEEPSEEK_CONTEXT_WINDOW_TOKENS=65536
-
-# === Prompt 缓存最小前缀 token 数（自动缓存时有效）===
-# === Prompt cache min prefix tokens (effective when auto-caching) ===
-# DEEPSEEK_PROMPT_CACHE_MIN_PREFIX_TOKENS=1024
-```
-
-#### 常用启动方式 / Common Startup
-
-```bash
-# 默认 DeepSeek 启动 / Default DeepSeek startup
-easycode build
-
-# 显式指定 provider / Explicit provider
-easycode build --provider deepseek
-easycode plan --provider deepseek
-
-# 覆盖模型 / Override model
-easycode build --model deepseek-chat
-easycode plan --model deepseek-chat
-```
-
-## 使用 / Usage
-
-交互式执行 / Interactive:
-
-```bash
-easycode build --provider deepseek
-easycode plan --provider deepseek
-easycode build --provider deepseek --tui
-```
-
-单次任务 / Single task:
-
-```bash
-easycode build --once "修复失败的测试" --provider deepseek
-easycode plan --once "给出最小安全改动方案" --provider deepseek
-
-easycode build --once "Fix failing tests" --provider deepseek
-easycode plan --once "Propose minimal safe changes" --provider deepseek
-```
-
-本地开发时也可以直接用 Bun 运行源码 / Run directly with Bun during development:
-
-```bash
-bun run src/cli.ts build --provider fake
-bun run src/cli.ts plan --provider fake
-bun run src/cli.ts build --provider fake --tui
-```
-
-## 本地 MCP 测试服务 / Local MCP Test Server
-
-仓库内置了一个最小的本地 MCP stdio server，用来验证 MCP client 的初始化、工具调用、资源读取和 prompt 拉取，不依赖外部服务，也不会改动 EasyCode 运行时。
-
-This repository includes a minimal local MCP stdio server for validating MCP client initialization, tool calls, resource reads, and prompt retrieval without external services or runtime integration work.
-
-启动方式 / Start it:
-
-```bash
-bun run mcp:test:server
-```
-
-它支持的最小 MCP surface / Exposed surface:
-
-- `initialize`
-- `ping`
-- `tools/list`
-- `tools/call` (`echo`, `sum`, `get_server_state`)
-- `resources/list`
-- `resources/read` (`sample://readme`, `sample://config`)
-- `prompts/list`
-- `prompts/get` (`summarize-change`)
-
-示例 client 配置 / Example client config:
-
-```json
-{
-  "mcpServers": {
-    "easycode-local-test": {
-      "command": "bun",
-      "args": ["run", "/absolute/path/to/easycode/dev/mcp/test-server.ts"]
-    }
-  }
-}
-```
-
-如果只想验证这个 fixture 本身，可以直接跑仓库里的 smoke test / To validate the fixture itself:
-
-```bash
-bun test test/integration/mcp-test-server.test.ts
-```
-
-## 数据源配置 / Data Sources
-
-数据源为 AI 提供额外的上下文（文档、代码规范、搜索结果、常用命令），以只读 JSON 文件配置在项目 `.easycode/` 目录下，**无需重启进程**即可生效。
-
-Data sources provide AI with extra context (docs, code conventions, search results, common commands). Configure read-only JSON files under `.easycode/` — they take effect **without restarting the process**.
-
-### MCP（结构化知识源 / Structured Knowledge）
-
-`.easycode/mcp.json` —— 将常用文档、架构说明等预配为结构化条目，供对话中引用。
-
-`.easycode/mcp.json` — Preconfigure structured entries like docs and architecture notes for reference during conversation.
-
+### 1. MCP (模型上下文协议 / Model Context Protocol)
+`.easycode/mcp.json` —— 预配项目文档或架构指南等结构化条目供 AI 对话中按需读取。
+*`.easycode/mcp.json` — Preconfigures structured entries like docs and conventions for reference.*
 ```json
 {
   "servers": [
     {
       "name": "docs",
       "resources": [
-        { "uri": "doc://api-guide", "title": "API 指南 / API Guide", "description": "项目 API 使用说明 / Project API usage", "text": "..." }
+        { "uri": "doc://api-rules", "title": "API 开发规范", "description": "项目内部 API 规范", "text": "..." }
       ]
     }
   ]
 }
 ```
 
-保存后可用以下工具 / Available tools after saving:
-
-- **mcp_list_resources** — 列出所有配置的 MCP 资源 / list all configured MCP resources
-- **mcp_read_resource** — 按 uri 和 server 读取某条资源正文 / read a resource by uri and server
-
-### Web Search（Tavily + 本地 fixture / Local fixture）
-
-`.easycode/websearch.json` 支持两种模式 / supports two modes:
-
-- 配置 Tavily 或调用工具时传 `engine: "tavily"`：发起真实搜索。
-  Configure Tavily, or pass `engine: "tavily"` to the tool: run live search.
-- 不配置搜索引擎或显式 `live: false`：读取本地 `results` fixture，便于离线测试。
-  Omit search engines, or pass `live: false`: read local `results` fixtures for deterministic tests.
-- 如果未配置 `.easycode/websearch.json`，但环境里存在 `TAVILY_API_KEY`，运行时会自动使用 `tavily` 作为默认 live 引擎。
-  If `.easycode/websearch.json` is absent but `TAVILY_API_KEY` is present in the environment, runtime falls back to `tavily` as the default live engine.
-- 交互式会话启动时，如果未配置 Tavily，CLI 会优先提示把 `TAVILY_API_KEY` 写入全局 `~/.easycode/.env`；如果跳过，仍会保留后续提示。
-  Interactive startup first offers to save `TAVILY_API_KEY` into global `~/.easycode/.env`; if skipped, the later reminder still appears.
-
-推荐优先配置到全局 `~/.easycode/.env` / Recommended global `~/.easycode/.env`:
-
-```dotenv
-TAVILY_API_KEY=tvly-...
-```
-
-Tavily 示例 / Tavily example:
-
-```json
-{
-  "defaultEngine": "tavily",
-  "engines": [
-    {
-      "name": "tavily",
-      "type": "tavily",
-      "apiKeyEnv": "TAVILY_API_KEY",
-      "extraParams": { "search_depth": "basic", "topic": "general" }
-    }
-  ]
-}
-```
-
-`web_search` 参数 / parameters: `query`、`limit`、`engine`、`live`。默认不再额外弹权限确认，live 路径仍只支持 Tavily。API key 建议只通过环境变量提供，不要写入仓库。
-Prefer environment variables for API keys instead of committing secrets.
-
-### Connector（本地命令封装 / Local Command Wrappers）
-
-`.easycode/connectors.json` —— 把常用 shell 命令封装为工具，在对话中按需调用。执行仍会经过同一套权限策略；安全只读 scope 可以自动放行，危险或副作用命令仍需授权。
-
-`.easycode/connectors.json` — Wrap common shell commands as tools that can be invoked during conversation. Calls still flow through the same permission policy; safe read-only scopes may auto-approve, while dangerous or side-effectful commands still require review.
-
+### 2. Connectors (本地命令封装 / Command Connectors)
+`.easycode/connectors.json` —— 将常用 shell 命令封装为工具动作，供 AI 调用（受同一安全审查策略保护）。
+*`.easycode/connectors.json` — Wraps common shell commands as tools (guarded by the same security policies).*
 ```json
 {
   "tools": [
     {
       "name": "lint",
-      "description": "运行 linter 检查代码 / Run linter to check code",
+      "description": "运行项目 Linter 校验代码",
       "command": "bun run lint"
-    },
-    {
-      "name": "test",
-      "description": "运行测试 / Run tests",
-      "command": "bun test"
     }
   ]
 }
 ```
 
-保存后可用以下工具 / Available tools:
+### 3. Skills (行为指令注入 / Skills)
+支持在 `.easycode/skills/`（项目级）或 `~/.easycode/skills/`（全局级）放置 markdown 编写的开发规范。在 TUI 中使用 `/skill use <name>` 即可快速将特定开发领域规则融入会话。
+*Markdown files in `.easycode/skills/` (project-scoped) or `~/.easycode/skills/` (globally). Manage rules at runtime via `/skill use <name>`.*
 
-- **connector_list** — 列出所有可用的 connector / list all configured connectors
-- **connector_call \<name\>** — 执行指定的 shell 命令 / execute the specified shell command
-
-### Skill（行为指令注入 / Behavior Instruction Injection）
-
-Skill 是 markdown 文件，按以下优先级搜索（同名后面的覆盖前面的）：
-
-Skills are markdown files searched in the following order (later directories override earlier ones):
-
-
-| 搜索目录 / Search path | 范围 / Scope           |
-| ---------------------- | ---------------------- |
-| `.agent/skills/`       | 项目级 / Project       |
-| `.easycode/skills/`    | 项目级 / Project       |
-| `~/.agent/skills/`     | 用户全局 / User global |
-| `~/.easycode/skills/`  | 用户全局 / User global |
-
-每个 skill 文件格式如下（文件名为任意名称，支持子目录）：
-
-Each skill file follows this format (file name is arbitrary, subdirectories supported):
-
-```markdown
----
-name: code-review
-description: 代码审查规则和最佳实践 / Code review rules and best practices
 ---
 
-## 审查原则 / Review principles
+## ⌨️ 交互式 Slash 命令 / Interactive Slash Commands
 
-- 关注可维护性 > 性能优化 / Prefer maintainability over micro-optimizations
-- ...
-```
+在交互会话（CLI / TUI）中，通过 `/` 前缀控制 Agent 的行为：
+*In interactive mode, use the `/` prefix to control session settings:*
 
-保存后在交互模式下通过 slash 命令管理 / Manage at runtime with slash commands:
+| 斜杠命令 / Command | 简体中文描述 | English Description |
+| :--- | :--- | :--- |
+| `/model <provider> [id]` | 切换 AI 服务商或具体模型。 | Switch provider or model ID. |
+| `/thinking on\|off` | 开启或关闭 reasoning 思考路径的展示。 | Enable or disable model thinking. |
+| `/effort <level>` | 设置 DeepSeek 思考强度 (`low`, `medium`, `high`, `max`)。 | Set reasoning effort. |
+| `/lang <code>` | 切换 UI 语言（支持 `zh`, `en`, `ja`, `fr`, `ko`, `de`）。 | Set UI language. |
+| `/sessions` | 列出所有已保存的历史会话。 | List saved sessions. |
+| `/session switch <id>` | 切换到指定开发会话。 | Switch to another session. |
+| `/session delete <id>` | 删除指定会话（删除前将重要经验归档至长期项目记忆）。 | Archive summary to memory and delete session. |
+| `/settings` | 查看当前会话的预算、模型设置与状态。 | Show current session settings. |
 
-- `/skill list` — 列出所有可用 skill / list all available skills
-- `/skill use code-review` — 在当前会话启用 skill / enable a skill for this session
-- `/skill remove code-review` — 移除已启用的 skill / remove an enabled skill
-- `/skill clear` — 清空所有已启用 skill / disable all skills
+---
 
-启用后，skill 完整内容注入到对话上下文中，影响模型的回复风格和规则遵循。
-When enabled, the full skill content is injected into the conversation context, influencing the model's response style and rule adherence.
+## 🧪 统一验证与质量控制 / Quality Gate
 
-## CLI 命令与配置 / CLI Commands & Configuration
-
-### 主命令 / Main Commands
-
-
-| 命令 / Command             | 用途 / Description                                                                                     |
-| -------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `easycode build [options]` | 执行模式：分析 → 改代码 → 验证 / Build mode: analyze → edit → verify                               |
-| `easycode plan [options]`  | 计划模式：只读分析，输出方案，不修改文件 / Plan mode: read-only analysis, output plan, no file changes |
-
-### 命令行选项 / CLI Options
-
-
-| 选项 / Option       | 说明 / Description                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------- |
-| `--once <prompt>`   | 单次任务模式，执行完成后退出 / Single task mode, exits after completion               |
-| `--provider <name>` | 指定 AI provider（见下方列表） / Specify AI provider (see list below)                 |
-| `--model <id>`      | 指定模型 ID（覆盖 provider 默认模型） / Specify model ID (overrides provider default) |
-| `--max-tokens <n>`  | 每次 API 调用的最大 token 数（默认 32000） / Max tokens per API call (default 32000)  |
-| `--max-steps <n>`   | 最大执行步数（默认 66） / Max execution steps (default 66)                            |
-| `--root <path>`     | 项目根目录（默认当前目录） / Project root directory (default: current dir)            |
-| `--session <id>`    | 加载指定 session / Load a specific session                                            |
-| `--logger`          | 输出详细日志 / Output detailed logs                                                   |
-| `--tui`             | 启动 TUI 交互界面 / Start TUI interactive interface                                   |
-
-**示例 / Examples:**
-
-```bash
-easycode build --provider deepseek
-easycode plan --once "分析项目结构" --provider openai
-easycode plan --once "Analyze project structure" --provider openai
-easycode build --provider deepseek --tui
-easycode build --once "修复失败的测试" --provider openai --max-steps 20
-easycode build --once "Fix failing tests" --provider openai --max-steps 20
-```
-
-### 交互式 Slash 命令 / Interactive Slash Commands
-
-在交互模式下通过 `/` 前缀调用 / Type `/` in interactive mode:
-
-
-| 命令 / Command           | 功能 / Description                                               |
-| ------------------------ | ---------------------------------------------------------------- |
-| `/model <provider> [id]` | 切换 provider 或模型 / Switch provider or model                  |
-| `/image <path-or-url>`   | 给下一轮 prompt 附加图片 / Attach an image to the next prompt    |
-| `/image clear`           | 清除待发送图片 / Clear pending images                            |
-| `/skill list`            | 列出可用技能 / List available skills                             |
-| `/skill use <name>`      | 启用指定技能 / Enable a skill                                    |
-| `/skill remove <name>`   | 移除已启用的技能 / Remove an enabled skill                       |
-| `/skill clear`           | 清空所有已启用技能 / Disable all skills                          |
-| `/thinking on|off`       | 开启或关闭模型 thinking / Enable or disable model thinking       |
-| `/effort <level>`        | 设置思考强度：`low`、`medium`、`high`、`max` / Set effort        |
-| `/lang <code>`           | 设置界面语言：`en`、`zh`、`ja`、`fr`、`ko`、`de` / Set UI language |
-| `/settings`              | 查看当前会话设置 / Show current session settings                 |
-| `/sessions`              | 查看已保存会话 / List saved sessions                             |
-| `/session switch <id>`   | 切换到另一个会话 / Switch to another session                     |
-| `/session delete <id>`   | 归档并删除会话 / Archive and delete a session                    |
-| `//text`                 | 将`/text` 作为普通 prompt 发送 / Send `/text` as a normal prompt |
-
-### 环境变量 / Environment Variables
-
-在项目根目录创建 `.env`，或直接通过 shell 环境变量提供凭据。shell 环境变量优先级更高。
-
-Create `.env` in the repository root, or export variables in your shell. Shell variables win over `.env`.
-
-```env
-# Provider 选择（--provider 未指定时兜底）/ Provider selection (fallback if --provider not set)
-EASYCODE_PROVIDER=deepseek
-
-# OpenAI
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5.5
-# 启动向导回退预设 / Startup fallback presets: gpt-5.5, gpt-5.4
-
-# DeepSeek
-DEEPSEEK_API_KEY=sk-...
-DEEPSEEK_MODEL=deepseek-v4-pro
-# 启动向导回退预设 / Startup fallback presets: deepseek-v4-pro, deepseek-v4-flash
-
-# OpenAI-Compatible
-OPENAI_COMPAT_API_KEY=sk-...
-OPENAI_COMPAT_API_URL=https://your-provider.example/v1/chat/completions
-OPENAI_COMPAT_MODEL=your-model
-```
-
-### 可用 Provider / Available Providers
-
-
-| Provider 名称 / Provider | 说明 / Description                                                   |
-| ------------------------ | -------------------------------------------------------------------- |
-| `openai`                 | OpenAI API（默认模型 gpt-5-mini；启动向导优先列最新 GPT 版本 / default model gpt-5-mini; setup prefers latest GPT versions） |
-| `deepseek`               | DeepSeek API（默认模型 deepseek-v4-pro / default model deepseek-v4-pro） |
-| `openai-compatible`      | 任何 OpenAI 兼容接口 / Any OpenAI-compatible API                     |
-| `fake`                   | 离线模拟（测试/开发用）/ Offline simulation (testing/development)    |
-| `simulated`              | 同 fake，模拟模式 / Same as fake, simulation mode                    |
-
-## 验证 / Verify
+要执行统一的测试和网关检查以验证改动，只需在项目根目录运行：
+*To run the unified testing and linting gateway to verify changes:*
 
 ```bash
 bun run gate
 ```
 
-统一 gate 入口如下 / Unified gate command:
+**检查流水线依次包含 / The pipeline runs:**
+1. `typecheck` 静态类型检查 / Static type check.
+2. `bun test` 单元测试套件 / Unit tests.
+3. `fake eval` 模拟评估 / Offline fake evaluations.
+4. `APIx` 本地硬性测试指标（Hard-gate） / Local APIx hard-gate evaluation.
+5. `cache benchmark` 缓存命中与成本评估 / Cache hit and cost benchmark.
+6. `build` 生产打包验证 / Production bundle checks.
+7. 多 Provider 联合冒烟测试 / Multi-provider smoke tests.
 
-- `bun run gate`：统一 gate。固定依次跑 `typecheck`、`bun test`、`fake eval`、经过校准的本地 `APIx` hard-gate 子集、`cache benchmark`、`build`，然后再尝试真实 provider gate。真实 provider 默认检查 `deepseek`、`openai`、`openai-compatible`；缺少凭证时会记录为 `skipped`，不会让整条 gate 失败。
-  Unified gate. Runs `typecheck`, `bun test`, `fake eval`, calibrated local `APIx` hard-gate subset, `cache benchmark`, `build`, then real-provider gate. Real providers default to `deepseek`, `openai`, and `openai-compatible`; missing credentials are recorded as `skipped` and do not fail the overall gate.
-- 首次交互式配置 `deepseek` 或 `openai` 时，CLI 会优先调用各自官方 `GET /models` API 取最新可用模型，并只展示最近两个版本；如果请求失败，则回退到内置候选。仍然支持直接输入自定义 model。
-  During first-time interactive setup for `deepseek` or `openai`, the CLI first calls each provider's official `GET /models` API, keeps only the two most recent versions, and falls back to bundled presets on failure. Custom model input is still supported.
-- 首次进入交互式会话且未配置 `EASYCODE_LANG` 时，CLI 会先让用户选择界面语言，并把选择保存到 `~/.easycode/.env`。之后可以随时用 `/lang <code>` 切换，中/英/日/法/韩/德的固定文案都会同步生效。
-  On the first interactive startup without `EASYCODE_LANG`, the CLI asks the user to choose a UI language and saves it to `~/.easycode/.env`. Users can switch later with `/lang <code>`, and the fixed TUI copy updates across Chinese, English, Japanese, French, Korean, and German.
-- `repo_map` 和 `code-index` 的派生缓存默认写入全局项目目录 `~/.easycode/projects/<project-hash>/cache/`；测试环境仍使用项目内 `.easycode/cache/` 以保持隔离。
-  Derived `repo_map` and `code-index` caches default to the global project directory `~/.easycode/projects/<project-hash>/cache/`; tests still use in-repo `.easycode/cache/` for isolation.
-- 交互式会话支持 `/session switch <id>` 和 `/session delete <id>`。删除时会先把简短摘要归档到当前项目的长期记忆，再清理该 session 的 JSON、日志和计划文件。
-  Interactive sessions support `/session switch <id>` and `/session delete <id>`. Deletion first archives a short summary into project memory, then removes the session JSON, logs, and plan files.
+---
 
-如果只想单独跑某一类验证 / Run individual verification types:
+## 📝 源码构建与开发 / Source Code & Development
 
-```bash
-bun test
-bun run eval --provider fake
-bun run apix:eval --provider simulated --table
-bun run cache:bench -- --provider simulated --suite real --quiet
-bun run gate -- --provider deepseek
-```
+1.  **克隆项目 / Clone:**
+    ```bash
+    git clone https://github.com/FanFan-web-developer/easycode.git
+    cd easycode
+    ```
+2.  **安装依赖 / Install dependencies:**
+    ```bash
+    bun install
+    ```
+3.  **运行测试 / Run tests:**
+    ```bash
+    bun test
+    ```
+4.  **编译构建 / Build:**
+    ```bash
+    bun run build
+    ```
 
-如果只想把统一 gate 限制到指定真实 provider，可以显式传参 / If you want the unified gate to target specific real providers only:
+---
 
-```bash
-bun run gate -- --provider deepseek
-bun run gate -- --providers openai,openai-compatible
-bun run gate -- --provider deepseek --no-apix
-```
+## 📄 开源协议 / License
+
+本项目采用 [MIT License](./LICENSE) 开源协议。
+*Licensed under the [MIT License](./LICENSE).*
