@@ -85,9 +85,9 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-key-here"
 # Plan mode: Analyze the task and propose changes (safe and read-only)
 easycode plan --once "分析本项目如何处理大文件截断"
 
-# 执行模式：启动交互式终端 UI（TUI，默认启用）
-# Build mode: Start the interactive Terminal UI (TUI, enabled by default)
-easycode build
+# 执行模式：启动交互式终端 UI（TUI，默认启用）。直接运行 easycode 亦默认为 build 模式，首次启动会触发配置引导。
+# Build mode: Start the interactive Terminal UI (TUI, enabled by default). Running `easycode` directly defaults to build mode and triggers the setup wizard on first run.
+easycode
 ```
 
 ---
@@ -98,6 +98,7 @@ easycode build
 
 | 命令 / Command | 简体中文描述 | English Description |
 | :--- | :--- | :--- |
+| `easycode` | **默认执行模式**：等同于 `easycode build`，首次运行引导配置语言和 API Key。 | **Default build mode**: Equivalent to `easycode build`, triggers setup wizard (language, API key) on first run. |
 | `easycode plan` | **计划模式**：只读分析，输出修改方案，不修改任何文件。 | **Plan mode**: Read-only analysis, outputs plan, no file changes. |
 | `easycode build` | **执行模式**：允许 AI 在获得授权后读取、编辑文件并执行测试。 | **Build mode**: Allows AI to read, edit files, and run commands upon approval. |
 
