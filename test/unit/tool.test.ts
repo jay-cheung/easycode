@@ -161,6 +161,7 @@ describe("tool", () => {
     expect(registry.get("grep")?.description).toContain("Last-resort plain text search")
     expect(registry.get("bash")?.description).toContain("Last-resort shell command execution")
     expect(registry.get("bash")?.description).toContain("prefer repo_map, find_definition, find_references, call_graph, rg_search, read_lines, and git_* tools first")
+    expect(registry.get("memory_promote")?.description).toContain("durable cross-session lesson")
   })
 
   test("registers semantic navigation and diff tools in plan and build mode", () => {
@@ -169,7 +170,7 @@ describe("tool", () => {
       expect(registry.list("plan").some((tool) => tool.name === name)).toBe(true)
       expect(registry.list("build").some((tool) => tool.name === name)).toBe(true)
     }
-    for (const name of ["patch", "git_stage", "git_commit", "git_restore_guarded", "memory_add", "connector_call"]) {
+    for (const name of ["patch", "git_stage", "git_commit", "git_restore_guarded", "memory_add", "memory_promote", "connector_call"]) {
       expect(registry.list("plan").some((tool) => tool.name === name)).toBe(false)
       expect(registry.list("build").some((tool) => tool.name === name)).toBe(true)
     }
@@ -344,13 +345,38 @@ describe("tool", () => {
     const root = await tmpdir()
     const ctx = toolContext(root)
 
-    const added = await registry.run("memory_add", { text: "OPENAI_API_KEY=sk-secret123456 for task", tags: ["task"] }, ctx)
+    const added = await registry.run("memory_add", { text: "OPENAI_API_KEY=sk-secret123456 for task", kind: "task_state", tags: ["task"], scope: { topics: ["continuation"] } }, ctx)
     const queried = await registry.run("memory_query", { query: "task" }, ctx)
 
     expect(added.metadata.status).toBe("succeeded")
+    expect(added.metadata.kind).toBe("task_state")
     expect(queried.output).toContain("task")
+    expect(queried.output).toContain("[task_state]")
     expect(queried.output).toContain("[redacted]")
     expect(queried.output).not.toContain("sk-secret123456")
+  })
+
+  test("memory_promote stores concise durable lessons and rejects oversized payloads", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const ctx = toolContext(root)
+
+    const promoted = await registry.run("memory_promote", {
+      text: "Remember that this repo expects bun run gate after each completed slice.",
+      kind: "successful_workflow",
+      tags: ["workflow"],
+      scope: { topics: ["verification"] },
+    }, ctx)
+    const rejected = await registry.run("memory_promote", {
+      text: "x".repeat(401),
+      kind: "repo_fact",
+    }, ctx)
+
+    expect(promoted.metadata.status).toBe("succeeded")
+    expect(promoted.metadata.kind).toBe("successful_workflow")
+    expect(promoted.output).toContain("Promoted")
+    expect(rejected.metadata.status).toBe("failed")
+    expect(rejected.output).toContain("under 400 characters")
   })
 
   test("connector tools list and call static configured commands", async () => {

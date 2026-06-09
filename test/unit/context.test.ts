@@ -198,7 +198,7 @@ describe("context", () => {
 
     const messages = context.compose({ agent: createAgent("build"), skills: [], tools: [readTool] })
 
-    expect(messages[0].content).toContain("Code exploration order")
+    expect(messages[0].content).toContain("Navigation and cache contract")
     expect(messages[0].content).toContain("symbol-aware edit plan")
     expect(messages[0].content).toContain("excluded same-name matches")
     expect(messages[0].content).not.toContain("Available tools:")
@@ -252,7 +252,7 @@ describe("context", () => {
     expect(messages).toHaveLength(2)
     expect(messages[0]).toMatchObject({ role: "system", content: expect.stringContaining("known summary") })
     expect(content.includes("Context execution contract")).toBe(false)
-    expect(content.includes("Tool usage priority")).toBe(false)
+    expect(content.includes("Navigation and cache contract")).toBe(false)
     expect(messages[1]).toMatchObject({ role: "user", content: "hello" })
   })
 
@@ -469,6 +469,7 @@ describe("context", () => {
   test("large historical tool outputs are truncated for token estimates and provider input", () => {
     const context = new ContextManager({ maxTokens: 20_000 })
     context.add(textMessage("user", "show logs"))
+    context.add(toolCallMessage({ id: "call_logs", name: "bash", input: { command: "cat logs" } }))
     context.add(toolResultMessage({ callID: "call_logs", toolName: "bash", status: "succeeded", output: "x".repeat(28_000) }))
 
     const messages = context.compose()

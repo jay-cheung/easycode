@@ -75,6 +75,32 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (prompt.includes("memory recall eval")) {
+      const providerText = input.providerMessages.map((message) => message.content).join("\n")
+      const recalled = providerText.includes("<project_memory_recall>") && providerText.includes("stale retry flag")
+      yield { type: "text_delta", text: recalled ? "Memory recall used: stale retry flag." : "Memory recall missing." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("promote workflow lesson into memory")) {
+      const promotionDone = hasToolResult(input.messages, "memory_promote")
+      if (!promotionDone) {
+        yield {
+          type: "tool_call",
+          call: call("memory_promote", {
+            text: "After bounded slices, run focused tests before bun run gate.",
+            kind: "successful_workflow",
+            tags: ["workflow", "verification"],
+            scope: { topics: ["verification"] },
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Promotion completed." }
+      yield { type: "done" }
+      return
+    }
     if (input.mode === "plan") {
       const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
       if (prompt.includes("plan-exit") && !planExitAlreadyRan) {

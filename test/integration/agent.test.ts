@@ -9,6 +9,7 @@ import { defaultPermissionRules, PermissionService } from "../../src/permission"
 import { FakeProvider } from "../../src/provider"
 import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
 import type { LogEvent } from "../../src/logger"
+import { ProjectMemoryStore } from "../../src/memory"
 import { SessionStore } from "../../src/session"
 import { defaultSessionSettings } from "../../src/settings"
 import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
@@ -106,6 +107,73 @@ describe("agent integration", () => {
     expect(cacheExistedAtProvider).toBe(true)
     expect(events.some((event) => event.type === "repo_map" && event.status === "succeeded" && event.cachePath === ".easycode/cache/repo-map.json")).toBe(true)
     expect(result.messages.some((message) => message.parts.some((part) => part.type === "text" && part.text.includes("Done.")))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("auto recalls project memory for continuation-style prompts", async () => {
+    const root = await fixture()
+    await new ProjectMemoryStore(root).add({
+      kind: "session_archive",
+      text: "Previous payment retry investigation concluded that a stale retry flag caused duplicate retries.",
+      tags: ["payment", "retry"],
+      scope: { files: ["src/payment/retry.ts"], topics: ["payments"] },
+    })
+    let providerInput = ""
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        providerInput = input.providerMessages.map((message) => message.content).join("\n")
+        yield { type: "text_delta", text: "Recalled." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("继续处理 payment retry 的问题", "build")
+
+    expect(result.status).toBe("completed")
+    expect(providerInput).toContain("<project_memory_recall>")
+    expect(providerInput).toContain("stale retry flag")
+    expect(result.messages.some((message) => message.role === "system" && message.parts.some((part) => part.type === "text" && part.text.includes("<project_memory_recall>")))).toBe(true)
+    expect(result.messages.some((message) => message.role === "assistant" && message.parts.some((part) => part.type === "text" && part.text.includes("Recalled.")))).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("promotes durable workflow lessons through the runner", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (!toolResults(input.messages).some((part) => part.toolName === "memory_promote")) {
+          yield {
+            type: "tool_call",
+            call: {
+              id: "promote_memory",
+              name: "memory_promote",
+              input: {
+                text: "After bounded slices, run focused tests before bun run gate.",
+                kind: "successful_workflow",
+                tags: ["workflow", "verification"],
+                scope: { topics: ["verification"] },
+              },
+            },
+          }
+          return
+        }
+        yield { type: "text_delta", text: "Promotion completed." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("promote workflow lesson into memory", "build")
+    const records = await new ProjectMemoryStore(root).query("workflow verification", 5, { kinds: ["successful_workflow"] })
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["memory_promote"])
+    expect(records).toEqual([
+      expect.objectContaining({
+        kind: "successful_workflow",
+        text: "After bounded slices, run focused tests before bun run gate.",
+        tags: ["workflow", "verification"],
+      }),
+    ])
     await rm(root, { recursive: true, force: true })
   })
 
@@ -553,8 +621,8 @@ describe("agent integration", () => {
     }
     const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
     expect(result.status).toBe("completed")
-    expect(providerMessageContents[0].some((content) => content.includes("Code exploration order"))).toBe(true)
-    expect(providerMessageContents[1].some((content) => content.includes("Code exploration order"))).toBe(true)
+    expect(providerMessageContents[0].some((content) => content.includes("Navigation and cache contract"))).toBe(true)
+    expect(providerMessageContents[1].some((content) => content.includes("Navigation and cache contract"))).toBe(true)
     expect(providerMessageContents[0].some((content) => content.includes("Available tools:"))).toBe(false)
     expect(providerMessageContents[1].some((content) => content.includes("Available tools:"))).toBe(false)
     expect(providerMessageContents[1].some((content) => content.includes("Fix"))).toBe(true)

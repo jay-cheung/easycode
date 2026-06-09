@@ -22,6 +22,9 @@
 - `/lang <code>` updates the fixed CLI/TUI language for the current session and persists the default in `~/.easycode/.env`.
 - `/session switch <id>` switches the active interactive session and reloads that session's saved settings.
 - `/session delete <id>` archives a short summary into project memory, deletes the session file, logs, and saved plans, and keeps the interactive shell on a valid session.
+- Project memory records in `.easycode/memory.json` are structured, backward-compatible, and queryable through `memory_query`.
+- Continuation-style prompts such as `继续`, `上次`, `resume`, or `continue` can trigger bounded automatic project-memory recall.
+- `memory_promote` stores only promotable durable lesson kinds and rejects oversized narrative memory payloads.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.
 - `/image` attaches an image to the next prompt only when the active provider supports images.

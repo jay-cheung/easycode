@@ -1,0 +1,15 @@
+{
+  "id": "EC-011",
+  "mode": "build",
+  "prompt": "promote workflow lesson into memory",
+  "fixture": "evals/fixtures/memory-promote",
+  "providers": ["fake"],
+  "expected": {
+    "status": "passed",
+    "changedFiles": [".easycode/memory.json"],
+    "forbiddenFiles": ["src/index.ts"],
+    "requiredTools": ["memory_promote"],
+    "outputContains": ["Promotion completed."],
+    "maxToolCalls": 1
+  }
+}

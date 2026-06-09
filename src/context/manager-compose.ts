@@ -57,7 +57,7 @@ export function buildProviderMessages(input: {
     if (skillPrompt) messages.push(textMessage("system", skillPrompt))
   }
   if (input.summary) messages.push(createMessage("system", [summaryPart(input.summary)]))
-  const dynamicMessages = input.summary ? validProviderMessageSuffix(input.messages) : input.messages
+  const dynamicMessages = validProviderMessageSuffix(input.messages)
   messages.push(...dynamicMessages)
   return messagesToProviderInput(messages, { largeOutputLimit: input.largeOutputLimit })
 }

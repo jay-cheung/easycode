@@ -28,6 +28,8 @@
 - `EC-006`: Skill content is progressively loaded.
 - `EC-007`: Bash timeout and truncation are surfaced.
 - `EC-008`: Invalid tool args can be fed back to the model.
+- `EC-010`: Continuation-style prompts auto-recall relevant project memory.
+- `EC-011`: Durable workflow lessons can be promoted into project memory.
 - `EC-REAL-001`: Real provider smoke eval with no tools and output matching.
 
 Tasks without `providers` are fake-provider deterministic evals. Real provider evals must opt in with `providers` and should avoid deterministic fake-only tool-sequence assertions unless explicitly intended.

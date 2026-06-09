@@ -1,5 +1,32 @@
 # Progress Log
 
+## Step 33: Durable Memory Promotion Paths
+
+- Scope: add an explicit promotion path for durable cross-session memory so the model can store stable lessons intentionally, instead of overloading generic `memory_add` for every long-term use case.
+- Implementation:
+  - Updated `src/memory.ts` with `ProjectMemoryPromotableKind`, a `promote()` API, and concise-text guardrails that reject oversized narrative payloads for durable lessons.
+  - Added `memory_promote` in `src/tool/builtins/workspace-tools.ts` plus the corresponding schema in `src/tool/builtins/common.ts`, limiting promotion to `preference`, `repo_fact`, `failure_pattern`, `successful_workflow`, and `task_state`.
+  - Tightened the build-mode prompt contract in `src/prompt/agent.ts` so the model is explicitly told when long-term memory promotion is appropriate and when it is not.
+- Verification:
+  - `bun test test/unit/memory.test.ts test/unit/tool.test.ts test/unit/prompt.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this phase adds explicit promotion mechanics only; automatic reflection-driven promotion of repeated lessons remains a later roadmap phase.
+
+## Step 32: Structured Project Memory And Auto Recall
+
+- Scope: turn project memory from a text-only archive into a structured long-term memory layer with bounded automatic recall for continuation-style prompts, without introducing embeddings or external storage.
+- Implementation:
+  - Added [specs/015-memory-module-roadmap.md](specs/015-memory-module-roadmap.md) to define EasyCode's memory architecture, typed long-term record model, write/recall policy, and phased roadmap.
+  - Updated `src/memory.ts` so project memory records now carry `kind` and optional `scope`, old note-style records remain readable, and formatted/queryable structured output is available to tools and runtime recall paths.
+  - Updated `src/tool/builtins/workspace-tools.ts` and `src/tool/builtins/common.ts` so `memory_add` can write typed records with optional scope and `memory_query` renders structured records instead of anonymous free-text lines.
+  - Updated `src/session/index.ts` so deleted sessions are archived as `session_archive` records, and updated `src/agent/runner/index.ts` so prompts like `继续`, `上次`, `resume`, or `continue` can inject a bounded `<project_memory_recall>` block into the current run.
+- Verification:
+  - `bun test test/unit/memory.test.ts test/unit/session.test.ts test/unit/tool.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this phase keeps retrieval local and deterministic; vector search, reflection-driven promotion, and broader task checkpointing remain later phases.
+
 ## Step 31: Receiver-Type-Aware Method Resolution
 
 - Scope: make semantic code navigation distinguish same-name class/interface methods by receiver type instead of collapsing back to bare-name matching when the call site is `service.login()` or `this.login()`.
@@ -1137,3 +1164,15 @@
   - Correctness: first-use skill loading now surfaces more relevant evidence instead of spending its limited auto-inspection budget on assets or packaging noise that rarely help task execution.
   - Maintainability: the high-signal filter is a small explicit policy table in the runner, so future additions are local and do not require changing prompt text or artifact extraction.
   - Verification: reran focused skill/runner/agent coverage, `bun run typecheck`, `bun run cache:bench -- --provider simulated --suite real --quiet`, and the unified gate because this slice changes runtime inspection selection but must not regress prompt prefix caching.
+
+## Step 51: Memory Eval Coverage For Recall And Promotion
+
+- Scope: add default-gate eval coverage for the new project-memory runtime paths so continuation recall and durable lesson promotion are exercised end to end, not only through unit tests.
+- Implementation:
+  - Extended `src/provider/fake.ts` with deterministic fake-provider branches for a continuation-style memory-recall prompt and a `memory_promote` workflow prompt.
+  - Added `evals/tasks/EC-010.json` and `evals/tasks/EC-011.json`, plus the dedicated `evals/fixtures/memory-recall/` fixture with scoped archived memory.
+  - Added runner integration coverage in `test/integration/agent.test.ts` to assert `memory_promote` writes a structured `successful_workflow` record through the normal tool execution path.
+- Code Complete review result:
+  - Correctness: the default fake eval suite now proves that project-memory recall reaches provider-visible context and that durable lesson promotion writes the expected structured memory artifact.
+  - Maintainability: memory evals reuse the existing lightweight fake-provider harness instead of introducing a separate bespoke test runner.
+  - Verification: reran focused memory/eval/agent coverage, `bun run typecheck`, and the unified gate because this slice changes both provider-visible fake behavior and the default eval corpus.

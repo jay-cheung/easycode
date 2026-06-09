@@ -285,6 +285,7 @@ describe("session store", () => {
     expect(await Bun.file(path.join(logsDir, `${safe}.jsonl`)).exists()).toBe(false)
     expect(await Bun.file(path.join(logsDir, `${safe}.txt`)).exists()).toBe(false)
     expect(await Bun.file(path.join(plansDir, "1.md")).exists()).toBe(false)
+    expect(records.at(-1)?.kind).toBe("session_archive")
     expect(records.at(-1)?.text).toContain("Deleted session \"archive/me\".")
     expect(records.at(-1)?.text).toContain("payment retry investigation")
     await rm(root, { recursive: true, force: true })

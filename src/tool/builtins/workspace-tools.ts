@@ -1,9 +1,9 @@
 import { ConnectorService } from "../../connector"
-import { ProjectMemoryStore } from "../../memory"
+import { formatProjectMemoryRecord, ProjectMemoryStore } from "../../memory"
 import { BashInput, bashApprovalForCommand, bashCwd, bashResultToToolResult, executeBashWithSandboxRecovery, scopedBashApproval } from "../bash"
 import { EditInput, PatchInput, WriteInput, relativePattern } from "../fs"
 import type { ToolDef, ToolRegistry } from "../registry"
-import { ConnectorCallInput, ConnectorListInput, LedgerInput, MemoryAddInput, MemoryQueryInput, objectSchema } from "./common"
+import { ConnectorCallInput, ConnectorListInput, LedgerInput, MemoryAddInput, MemoryPromoteInput, MemoryQueryInput, objectSchema } from "./common"
 
 export function registerWorkspaceTools(registry: ToolRegistry) {
   registry.register({
@@ -128,31 +128,79 @@ export function registerWorkspaceTools(registry: ToolRegistry) {
 
   registry.register({
     name: "memory_query",
-    description: "Query short project memory records for cross-session task state.",
+    description: "Query structured project memory for cross-session task state, preferences, archived sessions, or repeated failure/workflow notes.",
     inputSchema: MemoryQueryInput,
-    jsonSchema: objectSchema({ query: { type: "string" }, maxResults: { type: "number" } }),
+    jsonSchema: objectSchema({ query: { type: "string" }, maxResults: { type: "number" } }, ["query"]),
     permission: "read",
     modes: ["build", "plan"],
     patterns: () => [".easycode/memory.json"],
     execute: async (input, ctx) => {
       const params = MemoryQueryInput.parse(input)
       const records = await new ProjectMemoryStore(ctx.sandbox.root).query(params.query, params.maxResults)
-      return { title: "project memory", output: records.map((record) => `${record.id} [${record.tags.join(",")}]: ${record.text}`).join("\n") || "No matching memory records.", metadata: { status: "succeeded", count: records.length } }
+      return { title: "project memory", output: records.map((record) => formatProjectMemoryRecord(record)).join("\n") || "No matching memory records.", metadata: { status: "succeeded", count: records.length } }
     },
   })
 
   registry.register({
     name: "memory_add",
-    description: "Add a short project memory record. Do not store secrets or raw logs.",
+    description: "Add a short structured project memory record. Use this for durable preferences, repo facts, repeated failures, reusable workflows, or explicit cross-session task checkpoints. Do not store secrets or raw logs.",
     inputSchema: MemoryAddInput,
-    jsonSchema: objectSchema({ text: { type: "string" }, tags: { type: "array", items: { type: "string" } } }),
+    jsonSchema: objectSchema({
+      text: { type: "string" },
+      kind: { type: "string", description: "note, session_archive, preference, repo_fact, failure_pattern, successful_workflow, or task_state" },
+      tags: { type: "array", items: { type: "string" } },
+      scope: {
+        type: "object",
+        properties: {
+          files: { type: "array", items: { type: "string" } },
+          symbols: { type: "array", items: { type: "string" } },
+          topics: { type: "array", items: { type: "string" } },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    }, ["text"]),
     permission: "write",
     modes: ["build"],
     patterns: () => [".easycode/memory.json"],
     execute: async (input, ctx) => {
       const params = MemoryAddInput.parse(input)
-      const record = await new ProjectMemoryStore(ctx.sandbox.root).add({ text: params.text, tags: params.tags })
-      return { title: "project memory", output: `Added ${record.id}`, metadata: { status: "succeeded", id: record.id, tags: record.tags } }
+      const record = await new ProjectMemoryStore(ctx.sandbox.root).add({ text: params.text, kind: params.kind, tags: params.tags, scope: params.scope })
+      return { title: "project memory", output: `Added ${record.id} [${record.kind}]`, metadata: { status: "succeeded", id: record.id, kind: record.kind, tags: record.tags } }
+    },
+  })
+
+  registry.register({
+    name: "memory_promote",
+    description: "Promote one durable cross-session lesson into project memory. Use this only for stable preferences, reusable repo facts, recurring failure diagnoses, successful workflows, or explicit task checkpoints. Do not store raw logs, transient chatter, or long narratives.",
+    inputSchema: MemoryPromoteInput,
+    jsonSchema: objectSchema({
+      text: { type: "string", description: "One concise durable lesson, under 400 characters." },
+      kind: { type: "string", description: "preference, repo_fact, failure_pattern, successful_workflow, or task_state" },
+      tags: { type: "array", items: { type: "string" } },
+      scope: {
+        type: "object",
+        properties: {
+          files: { type: "array", items: { type: "string" } },
+          symbols: { type: "array", items: { type: "string" } },
+          topics: { type: "array", items: { type: "string" } },
+        },
+        required: [],
+        additionalProperties: false,
+      },
+    }, ["text", "kind"]),
+    permission: "write",
+    modes: ["build"],
+    patterns: () => [".easycode/memory.json"],
+    execute: async (input, ctx) => {
+      const params = MemoryPromoteInput.parse(input)
+      const record = await new ProjectMemoryStore(ctx.sandbox.root).promote({
+        text: params.text,
+        kind: params.kind,
+        tags: params.tags,
+        scope: params.scope,
+      })
+      return { title: "project memory", output: `Promoted ${record.id} [${record.kind}]`, metadata: { status: "succeeded", id: record.id, kind: record.kind, tags: record.tags } }
     },
   })
 

@@ -120,6 +120,8 @@ export class SessionStore {
     const archived = await new ProjectMemoryStore(this.root).add({
       text: archivedSessionText(session),
       tags: archivedSessionTags(session),
+      kind: "session_archive",
+      scope: { topics: ["session_archive", safeSessionID(session.id)] },
       source: "assistant",
     })
 

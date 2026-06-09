@@ -14,22 +14,8 @@ const contextExecutionContract = [
   "- Keep dynamic run facts in the ledger or message history, after the stable static prefix, to protect prompt-cache reuse.",
 ].join("\n")
 
-// Keep exploration policy in the stable system prefix so every provider turn
-// gets the same tool-ordering contract without duplicating schemas.
-const toolPriorityDirective = [
-  "Code exploration order:",
-  "1. repo_map with query to shortlist relevant files and symbols.",
-  "2. find_definition for owning definitions; find_references for usages; call_graph for bounded callers/callees or impact paths.",
-  "3. rg_search only for exact text/regex, literals, logs, or prose/config patterns that semantic tools cannot express.",
-  "4. read_lines for exact ranges once a location is known.",
-  "5. list / git_diff / read / grep / edit|write / bash.",
-  "For symbol-affecting work, follow the symbol-aware edit plan requirement before edit/write or a code-change recommendation.",
-  "Use grep only as a last-resort plain-text fallback. Use bash only when dedicated tools cannot express the needed inspection or action.",
-  "Do not full-read files over 100 lines. Never read or expose the derived code-index cache file.",
-].join("\n")
-
 export function buildContextSystemPrompt(agent: Pick<Agent, "systemPrompt" | "mode">) {
-  return [agent.systemPrompt, contextExecutionContract, toolPriorityDirective].join("\n\n")
+  return [agent.systemPrompt, contextExecutionContract].join("\n\n")
 }
 
 export function buildInstructionPrompt(instructions: InstructionInfo[]) {

@@ -1,6 +1,6 @@
 import path from "node:path"
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike } from "../../context"
-import { createID, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
+import { createID, textMessage, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
 import { defaultPermissionRules, PermissionService } from "../../permission"
 import { createProvider, type Provider, type ProviderName } from "../../provider"
 import { Sandbox } from "../../sandbox"
@@ -9,6 +9,7 @@ import { InstructionService, type InstructionServiceLike } from "../../instructi
 import { createBuiltinRegistry, type ToolRegistryLike } from "../../tool"
 import { createRunAspect, type RunAspect } from "../../instrumentation"
 import type { Logger } from "../../logger"
+import { ProjectMemoryStore, renderProjectMemoryRecall, shouldAutoRecallProjectMemory, type ProjectMemoryRecord } from "../../memory"
 import * as protocol from "../protocol"
 import { defaultSessionSettings, type SessionSettings } from "../../settings"
 import type { RunUiEvent } from "../../ui/timeline"
@@ -22,6 +23,7 @@ import { refreshRepoMapCache } from "./repo-map-refresh"
 import { emitToolResultEvent, recordToolOutcome as recordToolOutcomeSideEffect, runToolCall } from "./tool-execution"
 import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypothesisCorrectionMessage, recordActiveSkillState, recordHypothesisViolationState, recordRunIntentState, truncateForLedger, updateActiveHypothesisState } from "./hypothesis-state"
 import { effectiveModeForPrompt, markSkillLoadedInSettings, pendingSelectedSkillsForSettings, permissionServiceForMode, selectedSkillsForSettings } from "./runner-support"
+import { ledgerRecord } from "../ledger"
 import { runValidatedProviderTurnLoop } from "./validated-provider-turn"
 import { appendOutput, assistantMessage, compactPrompt, explorationSummaryReadinessMessage, explorationSummaryStep, ledgerValue, summaryLanguageHint } from "./runner-helpers"
 import { createCancelledRunResult } from "./runner-outcomes"
@@ -62,6 +64,8 @@ const autoInspectFileExtensions = new Set([
 const autoInspectFileBasenames = new Set(["Dockerfile", "Makefile", "justfile"])
 const autoInspectIgnoredBasenames = new Set(["Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"])
 const autoInspectIgnoredDirectories = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"])
+const autoRecallMemoryKinds = ["session_archive", "preference", "repo_fact", "failure_pattern", "successful_workflow", "task_state"] as const
+const maxAutoRecalledMemoryRecords = 3
 
 export class AgentRunner {
   readonly root: string
@@ -130,6 +134,7 @@ export class AgentRunner {
     this.context.add(userMessage(prompt, input.images ?? []))
     this.noteExternalEvidence()
     this.recordRunIntent(prompt)
+    await this.maybeRecallProjectMemory(prompt)
     await this.refreshRepoMap(input.signal, prompt)
     if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
     const tools = this.registry.list(effectiveMode)
@@ -353,6 +358,24 @@ export class AgentRunner {
     recordRunIntentState(this.context, prompt)
   }
 
+  private async maybeRecallProjectMemory(prompt: string) {
+    if (!shouldAutoRecallProjectMemory(prompt)) return
+    const records = await new ProjectMemoryStore(this.root).query(prompt, maxAutoRecalledMemoryRecords, { kinds: [...autoRecallMemoryKinds] })
+    if (records.length === 0) return
+    const rendered = renderProjectMemoryRecall(records, compactLine(prompt))
+    if (this.context.state.messages.some((message) => message.role === "system" && message.parts.some((part) => part.type === "text" && part.text === rendered))) return
+    this.context.add(textMessage("system", rendered))
+    const turn = this.context.state.messages.length
+    this.context.updateLedger({
+      current: records.map((record) =>
+        ledgerRecord("checkpoint", "project_memory_recall", truncateForLedger(memoryLedgerValue(record), 240), "current", turn, {
+          evidence: { source: "assistant" },
+          scope: memoryScopeToLedger(record),
+        })
+      ),
+    })
+  }
+
   private recordActiveSkills(selectedSkills: Awaited<ReturnType<AgentRunner["selectedSkills"]>>) {
     recordActiveSkillState(this.context, selectedSkills, this.settings.pendingSkillLoads ?? [])
   }
@@ -477,4 +500,16 @@ function shouldAutoInspectFile(projectPath: string) {
 function shouldAutoInspectDirectory(projectPath: string) {
   const basename = path.basename(projectPath)
   return !autoInspectIgnoredDirectories.has(basename)
+}
+
+function memoryLedgerValue(record: ProjectMemoryRecord) {
+  const tags = record.tags.length > 0 ? ` tags=${record.tags.join(",")}` : ""
+  return `[${record.kind}]${tags} ${record.text}`
+}
+
+function memoryScopeToLedger(record: ProjectMemoryRecord) {
+  const files = record.scope?.files
+  const symbols = record.scope?.symbols
+  const topics = [...(record.scope?.topics ?? []), record.kind, ...record.tags]
+  return files || symbols || topics.length > 0 ? { files, symbols, topics } : undefined
 }
