@@ -85,9 +85,9 @@ export DEEPSEEK_API_KEY="sk-your-deepseek-key-here"
 # Plan mode: Analyze the task and propose changes (safe and read-only)
 easycode plan --once "分析本项目如何处理大文件截断"
 
-# 执行模式：启动炫酷的交互式终端 UI（TUI）
-# Build mode: Start the interactive Terminal UI (TUI)
-easycode build --tui
+# 执行模式：启动交互式终端 UI（TUI，默认启用）
+# Build mode: Start the interactive Terminal UI (TUI, enabled by default)
+easycode build
 ```
 
 ---
@@ -112,7 +112,7 @@ easycode build --tui
 | `--max-steps <n>` | 最大执行步数（默认 66）。 | Max execution steps (default 66). |
 | `--session <id>` | 加载指定的 session 进行继续开发。 | Load a specific session. |
 | `--logger` | 启用详细调试日志。 | Enable detailed debug logs. |
-| `--tui` | 启动交互式终端 UI（TUI）。 | Start the TUI interactive interface. |
+| `--no-tui` | 禁用交互式终端 UI（TUI），退回到普通 CLI 命令行输出。 | Disable the interactive Terminal UI (TUI) and fallback to plain CLI output. |
 
 ---
 
