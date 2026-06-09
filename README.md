@@ -154,8 +154,12 @@ easycode
 ```
 
 ### 3. Skills (行为指令注入 / Skills)
-支持在 `.easycode/skills/`（项目级）或 `~/.easycode/skills/`（全局级）放置 markdown 编写的开发规范。在 TUI 中使用 `/skill use <name>` 即可快速将特定开发领域规则融入会话。
-*Markdown files in `.easycode/skills/` (project-scoped) or `~/.easycode/skills/` (globally). Manage rules at runtime via `/skill use <name>`.*
+支持在 `.easycode/skills/`（项目级）或 `~/.easycode/skills/`（全局级）放置 markdown 编写的开发规范。
+*Markdown files in `.easycode/skills/` (project-scoped) or `~/.easycode/skills/` (globally).*
+*   **命令启用**：在 TUI 中使用 `/skill use <name>` 即可快速将特定开发领域规则融入会话。
+    *Via slash command: Use `/skill use <name>` in the TUI to quickly load the skill.*
+*   **自然语言启用**：也可以直接在对话中通过自然语言要求 AI 启用（例如：“使用代码审查规范”）。AI 会自动通过内置的 `skill` 工具完成按需渐进式加载。
+    *Via natural language: Simply ask the AI to load a skill in the conversation (e.g. "use the code-review skill"). The AI will automatically call the built-in `skill` tool for progressive loading.*
 
 ---
 
