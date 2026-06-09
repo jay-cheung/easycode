@@ -176,9 +176,9 @@ describe("cli startup model selection", () => {
 
 describe("cli args", () => {
   test("session mode is the default and does not accept startup prompts", () => {
-    expect(parseArgs([])).toMatchObject({ mode: "build", once: false, session: undefined, prompt: "" })
+    expect(parseArgs([])).toMatchObject({ mode: "plan", once: false, session: undefined, prompt: "" })
     expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: undefined, prompt: "" })
-    expect(parseArgs(["--provider", "fake"])).toMatchObject({ mode: "build", once: false, provider: "fake", prompt: "" })
+    expect(parseArgs(["--provider", "fake"])).toMatchObject({ mode: "plan", once: false, provider: "fake", prompt: "" })
     expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 

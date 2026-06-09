@@ -30,6 +30,8 @@ import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
 import { runFailureText } from "./failure-policy"
 import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
+import { loadStructuredPlan, saveStructuredPlan, type PlanStepStatus } from "../../plans"
+import { Planner, Replanner, PlanTracker } from "../planner"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
@@ -83,6 +85,7 @@ export class AgentRunner {
   readonly providerProgressIntervalMs: number
   readonly settings: SessionSettings
   readonly onBackgroundContextUpdate?: () => void | Promise<void>
+  readonly sessionId?: string
   private summarySubagent: BackgroundAgentTask | undefined
   private nextSummarySubagentID = 1
   private hasProposedPlan: boolean
@@ -91,6 +94,7 @@ export class AgentRunner {
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
+    this.sessionId = options.sessionId
     this.aspect = options.aspect ?? createRunAspect(options.logger)
     this.provider = this.aspect.instrumentProvider(options.provider)
     this.registry = this.aspect.instrumentRegistry(options.registry ?? createBuiltinRegistry())
@@ -123,7 +127,70 @@ export class AgentRunner {
   }
 
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[]; signal?: AbortSignal } = {}): Promise<AgentRunResult> {
-    const effectiveMode = this.effectiveMode(prompt, mode)
+    const ledger = this.context.state.ledger
+    const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+    let resolvedMode = mode
+    let plan: any = undefined
+    
+    if (planIdRecord) {
+      resolvedMode = "build"
+      const planId = planIdRecord.value
+      const sessionId = this.sessionId || "default"
+      plan = await loadStructuredPlan(this.root, sessionId, planId)
+      if (plan) {
+        const isProceed = prompt.trim() === "Proceed with the approved plan." ||
+                          prompt.trim() === "Proceed." ||
+                          prompt.trim() === "确认" ||
+                          prompt.trim() === "执行" ||
+                          /^(y|yes|ok|approve|approved)$/i.test(prompt.trim())
+        if (!isProceed) {
+          const currentStepRecord = ledger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
+          const currentStepId = currentStepRecord?.value || ""
+          const stepStatuses: Record<string, PlanStepStatus> = {}
+          for (const step of plan.steps) {
+            const stepStatusRecord = ledger?.current.find(r => r.subject === `plan_step_status_${step.id}` && r.status === "current")
+            stepStatuses[step.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
+          }
+          if (currentStepId) {
+            stepStatuses[currentStepId] = (ledger?.current.find(r => r.subject === "plan_step_status" && r.status === "current")?.value as PlanStepStatus) || "pending"
+          }
+          
+          const newPlan = await Replanner.replan(
+            prompt,
+            plan,
+            stepStatuses,
+            currentStepId,
+            "User changed scope/objective",
+            this.provider
+          )
+          await saveStructuredPlan(this.root, sessionId, newPlan.id, newPlan)
+          
+          const nextStep = newPlan.steps.find(s => stepStatuses[s.id] !== "completed") || newPlan.steps[0]
+          if (nextStep) {
+            await PlanTracker.updateStepStatus(this.context, this.root, sessionId, newPlan, stepStatuses, nextStep.id, "running", {
+              replanReason: "scope_change"
+            })
+            plan = newPlan
+          }
+        } else {
+          const currentStepRecord = ledger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
+          if (currentStepRecord) {
+            const currentStepId = currentStepRecord.value
+            const currentStatusRecord = ledger?.current.find(r => r.subject === "plan_step_status" && r.status === "current")
+            if (!currentStatusRecord || currentStatusRecord.value === "pending") {
+              const stepStatuses: Record<string, PlanStepStatus> = {}
+              for (const step of plan.steps) {
+                const stepStatusRecord = ledger?.current.find(r => r.subject === `plan_step_status_${step.id}` && r.status === "current")
+                stepStatuses[step.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
+              }
+              await PlanTracker.updateStepStatus(this.context, this.root, sessionId, plan, stepStatuses, currentStepId, "running")
+            }
+          }
+        }
+      }
+    }
+
+    const effectiveMode = this.effectiveMode(prompt, resolvedMode)
     const agent = createAgent(effectiveMode)
     const usedTools: string[] = []
     let latestAssistantText = ""
@@ -152,6 +219,40 @@ export class AgentRunner {
         throw error
       }
       if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
+
+      let activeHypothesisMsgs = this.activeHypothesisMessages()
+      const latestLedger = this.context.state.ledger
+      const activePlanIdRec = latestLedger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+      if (activePlanIdRec) {
+        const planId = activePlanIdRec.value
+        const sessionId = this.sessionId || "default"
+        const currentPlan = await loadStructuredPlan(this.root, sessionId, planId)
+        const currentStepRec = latestLedger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
+        if (currentPlan && currentStepRec) {
+          const stepId = currentStepRec.value
+          const s = currentPlan.steps.find(stepItem => stepItem.id === stepId)
+          if (s) {
+            activeHypothesisMsgs = [
+              ...activeHypothesisMsgs,
+              {
+                role: "system" as const,
+                content: `[Active Plan Step Reminder]
+Active Plan: ${currentPlan.title || planId}
+Current Step: ${s.id} (kind: ${s.kind})
+Goal: ${s.goal}
+Target Files: ${s.targetFiles?.join(", ") || "none"}
+Done When: ${s.doneWhen || "not specified"}
+Fallback: ${s.fallback || "none"}
+
+Focus ONLY on achieving the goal of this step. Do not deviate.
+When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' to proceed.
+If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear explanation.`
+              }
+            ]
+          }
+        }
+      }
+
       const preparedTurn = prepareProviderTurnRequest({
         context: this.context,
         step,
@@ -163,7 +264,7 @@ export class AgentRunner {
         pendingSkillLoads: this.pendingSelectedSkills(selectedSkills),
         tools,
         usedTools,
-        activeHypothesisMessages: this.activeHypothesisMessages(),
+        activeHypothesisMessages: activeHypothesisMsgs,
       })
       state = this.aspect.transition("streaming", { step: step + 1 })
       const turn = await this.runValidatedProviderTurn({
@@ -222,8 +323,68 @@ export class AgentRunner {
           await this.autoInspectSkillArtifacts(result, effectiveMode, input.signal, prompt, usedTools)
         }
         if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
+        
+        if (toolCall.name === "plan_step_fail") {
+          const failedStepId = result.metadata.failedStepId as string
+          const failReason = result.metadata.reason as string
+          const latestLedger2 = this.context.state.ledger
+          const planIdRec = latestLedger2?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+          if (planIdRec) {
+            const planId = planIdRec.value
+            const sessionId = this.sessionId || "default"
+            const currentPlan = await loadStructuredPlan(this.root, sessionId, planId)
+            if (currentPlan) {
+              const stepStatuses: Record<string, PlanStepStatus> = {}
+              for (const s of currentPlan.steps) {
+                const stepStatusRecord = latestLedger2?.current.find(r => r.subject === `plan_step_status_${s.id}` && r.status === "current")
+                stepStatuses[s.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
+              }
+              stepStatuses[failedStepId] = "failed"
+              
+              const newPlan = await Replanner.replan(
+                prompt,
+                currentPlan,
+                stepStatuses,
+                failedStepId,
+                failReason,
+                this.provider
+              )
+              await saveStructuredPlan(this.root, sessionId, newPlan.id, newPlan)
+              
+              const nextStep = newPlan.steps.find(s => stepStatuses[s.id] !== "completed") || newPlan.steps[0]
+              if (nextStep) {
+                await PlanTracker.updateStepStatus(this.context, this.root, sessionId, newPlan, stepStatuses, nextStep.id, "running", {
+                  replanReason: "tool_failure"
+                })
+              }
+            }
+          }
+        }
+        
         if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
           const output = result.output
+          const planMarkdown = protocol.stripPlanTags(result.output)
+          const planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
+          
+          const planId = planJson.id || `plan_${Date.now()}`
+          planJson.id = planId
+          const sessionId = this.sessionId || "default"
+          await saveStructuredPlan(this.root, sessionId, planId, planJson)
+          
+          const turn = this.context.state.messages.length
+          this.context.updateLedger({
+            current: [
+              ledgerRecord("checkpoint", "current_plan_id", planId, "current", turn),
+              ledgerRecord("checkpoint", "current_plan_step", planJson.steps[0]?.id || "none", "current", turn),
+              ledgerRecord("checkpoint", "plan_step_status", "pending", "current", turn),
+            ]
+          })
+          
+          const stepStatuses: Record<string, PlanStepStatus> = {}
+          for (const stepItem of planJson.steps) stepStatuses[stepItem.id] = "pending"
+          if (planJson.steps[0]) stepStatuses[planJson.steps[0].id] = "pending"
+          await PlanTracker.writeMemoryCheckpoint(this.root, planJson, stepStatuses, planJson.steps[0]?.id || "none")
+
           const displayText = protocol.stripPlanTags(result.output)
           emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
           this.hasProposedPlan = true
@@ -356,6 +517,13 @@ export class AgentRunner {
 
   private recordRunIntent(prompt: string) {
     recordRunIntentState(this.context, prompt)
+    if (this.sessionId) {
+      this.context.updateLedger({
+        current: [
+          ledgerRecord("checkpoint", "current_session_id", this.sessionId, "current", this.context.state.messages.length)
+        ]
+      })
+    }
   }
 
   private async maybeRecallProjectMemory(prompt: string) {
@@ -452,9 +620,9 @@ export class AgentRunner {
   }
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings })
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId })
 }
 
 function autoSkillArtifactCalls(value: unknown, root: string): ToolCall[] {

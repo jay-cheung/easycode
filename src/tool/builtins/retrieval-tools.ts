@@ -1,7 +1,10 @@
 import { McpSourceService, WebSearchService, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, webCitation } from "../../retrieval"
-import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, objectSchema } from "./common"
+import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, PlanStepCompleteInput, PlanStepFailInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
+import { loadStructuredPlan, type PlanStepStatus } from "../../plans"
+import { PlanTracker } from "../../agent/planner"
+import { ledgerRecord } from "../../agent/ledger"
 
 function formatSkillArtifact(artifact: SkillArtifact) {
   const detail = artifact.kind === "missing" ? "missing" : artifact.kind
@@ -119,5 +122,96 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const params = PlanExitInput.parse(input)
       return { title: "Plan", output: `<proposed_plan>\n${params.markdown.trim()}\n</proposed_plan>`, metadata: { status: "succeeded" } }
     },
+  })
+
+  registry.register({
+    name: "plan_step_complete",
+    description: "Mark the current plan step as completed and advance to the next step. Only use in build mode with an active plan.",
+    inputSchema: PlanStepCompleteInput,
+    jsonSchema: objectSchema({ message: { type: "string" } }, []),
+    permission: "plan_step_complete",
+    modes: ["build"],
+    patterns: () => ["*"],
+    execute: async (input, ctx) => {
+      if (!ctx.context) return { title: "Error", output: "Context manager missing.", metadata: { status: "failed" } }
+      const ledger = ctx.context.state.ledger
+      const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+      if (!planIdRecord) return { title: "Error", output: "No active plan found.", metadata: { status: "failed" } }
+      
+      const planId = planIdRecord.value
+      const currentStepRecord = ledger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
+      if (!currentStepRecord) return { title: "Error", output: "No active step found.", metadata: { status: "failed" } }
+      
+      const currentStepId = currentStepRecord.value
+      const sessionIdRecord = ledger?.current.find(r => r.subject === "current_session_id" && r.status === "current")
+      const sessionId = sessionIdRecord?.value ?? "default"
+      
+      const plan = await loadStructuredPlan(ctx.sandbox.root, sessionId, planId)
+      if (!plan) return { title: "Error", output: `Could not load structured plan ${planId}.`, metadata: { status: "failed" } }
+      
+      const stepStatuses: Record<string, PlanStepStatus> = {}
+      for (const step of plan.steps) {
+        const stepStatusRecord = ledger?.current.find(r => r.subject === `plan_step_status_${step.id}` && r.status === "current")
+        stepStatuses[step.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
+      }
+      stepStatuses[currentStepId] = (ledger?.current.find(r => r.subject === "plan_step_status" && r.status === "current")?.value as PlanStepStatus) || "pending"
+      
+      const currentIndex = plan.steps.findIndex(s => s.id === currentStepId)
+      const nextStep = plan.steps[currentIndex + 1]
+      
+      if (nextStep) {
+        await PlanTracker.updateStepStatus(ctx.context, ctx.sandbox.root, sessionId, plan, stepStatuses, currentStepId, "completed")
+        await PlanTracker.updateStepStatus(ctx.context, ctx.sandbox.root, sessionId, plan, stepStatuses, nextStep.id, "running")
+        
+        ctx.context.updateLedger({
+          current: [
+            ledgerRecord("checkpoint", `plan_step_status_${currentStepId}`, "completed", "current", ctx.context.state.messages.length)
+          ]
+        })
+        
+        return {
+          title: "Plan Step Completed",
+          output: `Step ${currentStepId} completed successfully. Proceeding to Step ${nextStep.id}: ${nextStep.goal}`,
+          metadata: { status: "succeeded", nextStepId: nextStep.id }
+        }
+      } else {
+        await PlanTracker.updateStepStatus(ctx.context, ctx.sandbox.root, sessionId, plan, stepStatuses, currentStepId, "completed")
+        await PlanTracker.clearActivePlan(ctx.context, ctx.sandbox.root, planId)
+        
+        return {
+          title: "Plan Completed",
+          output: `All steps in plan ${plan.title || planId} completed successfully!`,
+          metadata: { status: "succeeded", planCompleted: true }
+        }
+      }
+    }
+  })
+
+  registry.register({
+    name: "plan_step_fail",
+    description: "Mark the current plan step as failed and request a replan. Only use in build mode with an active plan when a step cannot be completed.",
+    inputSchema: PlanStepFailInput,
+    jsonSchema: objectSchema({ reason: { type: "string" } }, ["reason"]),
+    permission: "plan_step_fail",
+    modes: ["build"],
+    patterns: () => ["*"],
+    execute: async (input, ctx) => {
+      const params = PlanStepFailInput.parse(input)
+      if (!ctx.context) return { title: "Error", output: "Context manager missing.", metadata: { status: "failed" } }
+      const ledger = ctx.context.state.ledger
+      const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+      if (!planIdRecord) return { title: "Error", output: "No active plan found.", metadata: { status: "failed" } }
+      
+      const currentStepRecord = ledger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
+      if (!currentStepRecord) return { title: "Error", output: "No active step found.", metadata: { status: "failed" } }
+      
+      const currentStepId = currentStepRecord.value
+      
+      return {
+        title: "Plan Step Failed",
+        output: `Step ${currentStepId} failed: ${params.reason}. Replanning is being triggered...`,
+        metadata: { status: "failed", failedStepId: currentStepId, reason: params.reason }
+      }
+    }
   })
 }

@@ -14,6 +14,13 @@ const currentAlwaysSubjects = new Set([
   "active_connectors",
   "active_web_search_engine",
   "active_capability_surface",
+  "current_plan_id",
+  "current_plan_step",
+  "plan_step_status",
+  "plan_blocker",
+  "plan_verification_target",
+  "plan_last_replan_reason",
+  "current_session_id",
 ])
 // History is selected only when the latest request asks for prior context; match
 // both English and Chinese because the ledger is shared across bilingual turns.

@@ -7,7 +7,8 @@ import { createLogger, emitLog } from "./logger"
 import { detectUiLanguage, uiText } from "./i18n"
 import type { AgentMode, ImagePart } from "./message"
 import { textMessage } from "./message"
-import { savePlan } from "./plans"
+import { savePlan, loadStructuredPlan, isComplexPlan } from "./plans"
+import { PlanTracker } from "./agent/planner"
 import { hasProvider, listProviders } from "./provider"
 import { SessionStore, type SessionTokenUsage } from "./session"
 import { normalizeSessionSettings } from "./settings"
@@ -39,9 +40,10 @@ export {
 } from "./cli/startup"
 
 function parseArgs(argv: string[]) {
-  const normalizedArgv = normalizeModeArgv(argv)
-  const mode = normalizedArgv[0]
-  if (mode !== "build" && mode !== "plan") throw new Error(usage())
+  const first = argv[0]
+  const mode = (first === "build" || first === "plan") ? first : "plan"
+  const normalizedArgv = (first === "build" || first === "plan") ? argv.slice(1) : argv
+
   const providerIndex = normalizedArgv.indexOf("--provider")
   const rootIndex = normalizedArgv.indexOf("--root")
   const sessionIndex = normalizedArgv.indexOf("--session")
@@ -69,22 +71,22 @@ function parseArgs(argv: string[]) {
   if (modelIndex !== -1 && (!model || model.startsWith("--"))) throw new Error("--model requires an id")
   const maxTokens = numericFlag(normalizedArgv, maxTokensIndex, "--max-tokens")
   const maxSteps = numericFlag(normalizedArgv, maxStepsIndex, "--max-steps")
-  const prompt = normalizedArgv.slice(1).filter((arg, index, items) => {
-    const realIndex = index + 1
-    return !arg.startsWith("--") && arg !== "-k" && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
+  const prompt = normalizedArgv.filter((arg, index, items) => {
+    if (arg.startsWith("--") || arg === "-k") return false
+    if (providerIndex !== -1 && index === providerIndex + 1) return false
+    if (rootIndex !== -1 && index === rootIndex + 1) return false
+    if (sessionIndex !== -1 && index === sessionIndex + 1) return false
+    if (modelIndex !== -1 && index === modelIndex + 1) return false
+    if (maxTokensIndex !== -1 && index === maxTokensIndex + 1) return false
+    if (maxStepsIndex !== -1 && index === maxStepsIndex + 1) return false
+    return true
   }).join(" ")
   if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
   return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once, tui, insecure }
 }
 
-function normalizeModeArgv(argv: string[]) {
-  const mode = argv[0]
-  if (mode === "build" || mode === "plan") return argv
-  return ["build", ...argv]
-}
-
 function usage() {
-  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id] [--insecure|-k]`
+  return `Usage: easycode [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id] [--insecure|-k]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {
@@ -137,7 +139,15 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   try {
     const controller = new AbortController()
     const permission = permissionService(args.mode, reader, () => controller.abort(), tui)
-    const result = await createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent }).run(args.prompt, args.mode, { signal: controller.signal })
+    const runnerInstance = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent, sessionId: args.session ?? "once" })
+    let result = await runnerInstance.run(args.prompt, args.mode, { signal: controller.signal })
+    
+    const ledger = runnerInstance.context.state.ledger
+    const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+    if (planIdRecord && result.status === "completed") {
+      result = await runnerInstance.run("Proceed with the approved plan.", "build", { signal: controller.signal })
+    }
+    
     timeline.finish()
     return result.status
   } finally {
@@ -200,6 +210,12 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
     let activeMode = args.mode
+    const initialHasActivePlan = context.state.ledger?.current.some(r => r.subject === "current_plan_id" && r.status === "current")
+    if (initialHasActivePlan) {
+      activeMode = "build"
+    } else if (args.mode !== "build") {
+      activeMode = "plan"
+    }
     let runner: ReturnType<typeof createRunner> | undefined
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
     const timeline = tui ?? new TimelineRenderer(output, activeSettings.language)
@@ -218,7 +234,14 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       return saveChain
     }
     const getRunner = () => {
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context) })
+      const hasActivePlan = context.state.ledger?.current.some(r => r.subject === "current_plan_id" && r.status === "current")
+      if (hasActivePlan) {
+        activeMode = "build"
+      } else if (args.mode !== "build") {
+        activeMode = "plan"
+      }
+      tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session })
       return runner
     }
     const writeSessionMessage = (text: string) => writeCliText(tui, text, uiText(activeSettings.language).sessionTitle)
@@ -316,24 +339,59 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           emitLog(logger, { type: "error", name: "plan.save_failed", detail: { error: String(err) } })
           console.error("Failed to save plan file:", err)
         })
-        const choice = (await reader.question(
-          tui?.planApprovalPrompt() ?? "[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: "
-        )).trim().toLowerCase() || "a"
-        tui?.resumeAfterPrompt()
-        if (choice === "r" || choice.startsWith("reject")) {
-          continue
+        
+        const planIdRecord = activeRunner.context.state.ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+        const planId = planIdRecord?.value
+        
+        let isComplex = true
+        if (planId) {
+          const planJson = await loadStructuredPlan(args.root, session, planId)
+          if (planJson && !isComplexPlan(planJson)) {
+            isComplex = false
+          }
         }
-        if (choice === "e" || choice.startsWith("edit")) {
-          const editDesc = await reader.question("What would you like changed? ")
-          if (editDesc) queuedPrompts.push(`Revise the plan: ${editDesc}`)
-          continue
-        }
-        if (!(choice === "n" || choice.startsWith("new"))) {
+        
+        if (!isComplex) {
           activeMode = "build"
           tui?.configure({ mode: activeMode }, "approved")
           runner = undefined
           queuedPrompts.push("Proceed with the approved plan.")
+          continue
         }
+        
+        const choice = (await reader.question(
+          tui?.planApprovalPrompt() ?? "[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: "
+        )).trim().toLowerCase() || "a"
+        tui?.resumeAfterPrompt()
+        
+        if (choice === "r" || choice.startsWith("reject")) {
+          if (planId) {
+            await PlanTracker.clearActivePlan(activeRunner.context, args.root, planId)
+          }
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (choice === "e" || choice.startsWith("edit")) {
+          if (planId) {
+            await PlanTracker.clearActivePlan(activeRunner.context, args.root, planId)
+          }
+          await saveSession(activeRunner.context)
+          const editDesc = await reader.question("What would you like changed? ")
+          if (editDesc) queuedPrompts.push(`Revise the plan: ${editDesc}`)
+          continue
+        }
+        if (choice === "n" || choice.startsWith("new")) {
+          if (planId) {
+            await PlanTracker.clearActivePlan(activeRunner.context, args.root, planId)
+          }
+          await saveSession(activeRunner.context)
+          continue
+        }
+        
+        activeMode = "build"
+        tui?.configure({ mode: activeMode }, "approved")
+        runner = undefined
+        queuedPrompts.push("Proceed with the approved plan.")
       }
       if (result.status !== "completed") continue
     }

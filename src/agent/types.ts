@@ -52,4 +52,5 @@ export type AgentRunnerOptions = {
   toolProgressIntervalMs?: number
   providerProgressIntervalMs?: number
   settings?: SessionSettings
+  sessionId?: string
 }
