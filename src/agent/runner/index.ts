@@ -360,7 +360,13 @@ export class AgentRunner {
 
   private async maybeRecallProjectMemory(prompt: string) {
     if (!shouldAutoRecallProjectMemory(prompt)) return
-    const records = await new ProjectMemoryStore(this.root).query(prompt, maxAutoRecalledMemoryRecords, { kinds: [...autoRecallMemoryKinds] })
+    const activeFiles = this.context.state.ledger?.current
+      .flatMap((record) => record.scope?.files ?? [])
+      .filter(Boolean) ?? []
+    const records = await new ProjectMemoryStore(this.root).query(prompt, maxAutoRecalledMemoryRecords, {
+      kinds: [...autoRecallMemoryKinds],
+      activeFiles,
+    })
     if (records.length === 0) return
     const rendered = renderProjectMemoryRecall(records, compactLine(prompt))
     if (this.context.state.messages.some((message) => message.role === "system" && message.parts.some((part) => part.type === "text" && part.text === rendered))) return

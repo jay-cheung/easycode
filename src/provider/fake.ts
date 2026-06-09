@@ -75,6 +75,20 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (prompt.includes("run code safely")) {
+      const providerText = input.providerMessages.map((message) => message.content).join("\n")
+      const recalled = providerText.includes("<project_memory_recall>") && providerText.includes("safeSandbox")
+      yield { type: "text_delta", text: recalled ? "Memory recall used: failure recovery." : "Memory recall missing." }
+      yield { type: "done" }
+      return
+    }
+    if (prompt.includes("write test helper")) {
+      const providerText = input.providerMessages.map((message) => message.content).join("\n")
+      const recalled = providerText.includes("<project_memory_recall>") && providerText.includes("2 spaces indent")
+      yield { type: "text_delta", text: recalled ? "Memory recall used: preference retention." : "Memory recall missing." }
+      yield { type: "done" }
+      return
+    }
     if (prompt.includes("memory recall eval")) {
       const providerText = input.providerMessages.map((message) => message.content).join("\n")
       const recalled = providerText.includes("<project_memory_recall>") && providerText.includes("stale retry flag")

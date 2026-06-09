@@ -1,0 +1,13 @@
+{
+  "id": "EC-014",
+  "mode": "build",
+  "prompt": "resume payment retry memory recall eval and briefly restate the prior diagnosis.",
+  "fixture": "evals/fixtures/memory-noise",
+  "providers": ["fake"],
+  "expected": {
+    "status": "passed",
+    "forbiddenFiles": [".easycode/memory.json", "src/payment/retry.ts"],
+    "outputContains": ["Memory recall used: stale retry flag."],
+    "maxToolCalls": 0
+  }
+}

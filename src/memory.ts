@@ -37,17 +37,47 @@ export class ProjectMemoryStore {
     return (await this.load()).records
   }
 
-  async query(query: string, limit = 5, options: { kinds?: ProjectMemoryKind[] } = {}) {
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+  async query(query: string, limit = 5, options: { kinds?: ProjectMemoryKind[]; activeFiles?: string[] } = {}) {
+    const triggerWords = new Set([
+      "continue", "resume", "previous", "prior", "last", "time", "again", "before", "eval", "prompt", "briefly", "restate", "diagnosis",
+      "继续", "之前", "上次", "刚才", "刚刚", "恢复"
+    ])
+    const terms = query
+      .toLowerCase()
+      .replace(/[.,\/#!$%\^&\*;:{}=\-_`~()?]/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .filter((term) => !triggerWords.has(term))
+
     const kinds = options.kinds ? new Set(options.kinds) : undefined
     const records = await this.list()
-    return records
+    
+    const scored = records
       .filter((record) => !kinds || kinds.has(record.kind))
-      .map((record) => ({ record, score: memoryScore(record, terms) }))
+      .map((record) => {
+        let score = memoryScore(record, terms)
+        if (score > 0 && options.activeFiles && record.scope?.files) {
+          const hasOverlap = record.scope.files.some((file) => options.activeFiles?.includes(file))
+          if (hasOverlap) {
+            score += 3.0
+          }
+        }
+        return { record, score }
+      })
       .filter((item) => item.score > 0)
       .sort((left, right) => right.score - left.score || right.record.createdAt - left.record.createdAt)
-      .slice(0, Math.max(1, Math.min(20, Math.round(limit))))
-      .map((item) => item.record)
+
+    const seenTexts = new Set<string>()
+    const uniqueRecords: ProjectMemoryRecord[] = []
+    for (const item of scored) {
+      const normalizedText = item.record.text.toLowerCase().replace(/\s+/g, " ").trim()
+      if (!seenTexts.has(normalizedText)) {
+        seenTexts.add(normalizedText)
+        uniqueRecords.push(item.record)
+      }
+    }
+
+    return uniqueRecords.slice(0, Math.max(1, Math.min(20, Math.round(limit))))
   }
 
   async add(input: { text: string; tags?: string[]; source?: ProjectMemoryRecord["source"]; kind?: ProjectMemoryKind; scope?: ProjectMemoryScope }) {

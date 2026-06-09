@@ -1,0 +1,13 @@
+{
+  "id": "EC-013",
+  "mode": "build",
+  "prompt": "resume execution: write test helper according to the user formatting preferences.",
+  "fixture": "evals/fixtures/memory-preference",
+  "providers": ["fake"],
+  "expected": {
+    "status": "passed",
+    "forbiddenFiles": [".easycode/memory.json", "src/index.ts"],
+    "outputContains": ["Memory recall used: preference retention."],
+    "maxToolCalls": 0
+  }
+}

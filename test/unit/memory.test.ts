@@ -110,4 +110,39 @@ describe("project memory", () => {
     expect(await store.delete("nonexistent_id")).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
+
+  test("query applies trigger-word filtering, scope boost, and deduplication", async () => {
+    const root = await tmpdir()
+    const store = new ProjectMemoryStore(root)
+
+    await store.add({
+      kind: "session_archive",
+      text: "Previous payment retry investigation concluded that a stale retry flag caused duplicate retries.",
+      tags: ["payment", "retry"],
+      scope: { files: ["src/payment/retry.ts"] },
+    })
+
+    await store.add({
+      kind: "session_archive",
+      text: "Previous payment retry investigation concluded that a stale retry flag caused duplicate retries.",
+      tags: ["payment", "retry"],
+      scope: { files: ["src/payment/retry.ts"] },
+    })
+
+    await store.add({
+      kind: "note",
+      text: "resume task before last time",
+      tags: ["noise"],
+    })
+
+    const results = await store.query("resume payment retry check", 5, {
+      kinds: ["session_archive", "note"],
+      activeFiles: ["src/payment/retry.ts"],
+    })
+
+    expect(results.length).toBe(1)
+    expect(results[0].text).toContain("stale retry flag")
+
+    await rm(root, { recursive: true, force: true })
+  })
 })

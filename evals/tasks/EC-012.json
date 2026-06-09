@@ -1,0 +1,13 @@
+{
+  "id": "EC-012",
+  "mode": "build",
+  "prompt": "resume execution: run code safely and briefly restate the failure pattern details.",
+  "fixture": "evals/fixtures/memory-failure",
+  "providers": ["fake"],
+  "expected": {
+    "status": "passed",
+    "forbiddenFiles": [".easycode/memory.json", "src/index.ts"],
+    "outputContains": ["Memory recall used: failure recovery."],
+    "maxToolCalls": 0
+  }
+}
