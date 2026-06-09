@@ -66,6 +66,15 @@ export class ProjectMemoryStore {
     return record
   }
 
+  async delete(id: string) {
+    const data = await this.load()
+    const index = data.records.findIndex((record) => record.id === id)
+    if (index === -1) return false
+    data.records.splice(index, 1)
+    await this.save(data)
+    return true
+  }
+
   async promote(input: { text: string; kind: ProjectMemoryPromotableKind; tags?: string[]; source?: ProjectMemoryRecord["source"]; scope?: ProjectMemoryScope }) {
     const normalized = compactMemoryPromotionText(input.text)
     if (!normalized) throw new Error("memory_promote requires non-empty text")

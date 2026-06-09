@@ -92,4 +92,22 @@ describe("project memory", () => {
     expect(promoted.text).toBe("After a bounded slice, run focused tests first and bun run gate last.")
     await rm(root, { recursive: true, force: true })
   })
+
+  test("delete removes a record by id and returns false for missing ids", async () => {
+    const root = await tmpdir()
+    const store = new ProjectMemoryStore(root)
+
+    const record = await store.add({
+      kind: "task_state",
+      text: "Implement onClick handler",
+      tags: ["task", "checkpoint"],
+      scope: { topics: ["task_checkpoint"] },
+    })
+
+    expect(await store.delete(record.id)).toBe(true)
+    expect(await store.list()).toEqual([])
+    expect(await store.delete(record.id)).toBe(false)
+    expect(await store.delete("nonexistent_id")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
 })

@@ -6,6 +6,7 @@ import type { ContextManagerLike } from "./context"
 import { createLogger, emitLog } from "./logger"
 import { detectUiLanguage, uiText } from "./i18n"
 import type { AgentMode, ImagePart } from "./message"
+import { textMessage } from "./message"
 import { savePlan } from "./plans"
 import { hasProvider, listProviders } from "./provider"
 import { SessionStore, type SessionTokenUsage } from "./session"
@@ -13,7 +14,7 @@ import { normalizeSessionSettings } from "./settings"
 import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { LineReader, eofPrompt } from "./cli/line-reader"
-import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, writeCliText } from "./cli/session-helpers"
+import { activeTaskCheckpoints, collectRunInput, formatTaskCheckpointsBlock, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, writeCliText } from "./cli/session-helpers"
 import { configuredUiLanguage, interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveLanguage, setupInteractiveWebSearchEnv } from "./cli/startup"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
@@ -194,6 +195,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let { context, settings: activeSettings, tokenUsage: sessionTokenUsage } = await loadSessionState(session)
     tui?.setSessionTokenUsage(sessionTokenUsage)
     await maybeShowWebSearchSetupHint(args.root, activeSettings.language, tui)
+    await showAndInjectTaskCheckpoints(args.root, activeSettings, context, tui)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
@@ -236,6 +238,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       tui?.startSession(session)
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
       if (!tui) timeline.setLanguage?.(activeSettings.language)
+      await showAndInjectTaskCheckpoints(args.root, activeSettings, context, tui)
     }
 
     while (true) {
@@ -344,6 +347,18 @@ function timelineEventHandler(timeline: { event(event: RunUiEvent): void }) {
   return (event: RunUiEvent) => {
     timeline.event(event)
   }
+}
+
+async function showAndInjectTaskCheckpoints(root: string, settings: { language: import("./settings").SessionSettings["language"] }, context: ContextManagerLike, tui?: TuiRenderer) {
+  const records = await activeTaskCheckpoints(root)
+  if (records.length === 0) return
+  const copy = uiText(settings.language)
+  const lines = [copy.activeTaskCheckpoints, ...records.map((record) => `  ${record.id} [${record.kind}]: ${record.text}`)]
+  writeCliText(tui, lines.join("\n"), copy.taskTitle)
+  const block = formatTaskCheckpointsBlock(records)
+  if (!block) return
+  if (context.state.messages.some((message) => message.role === "system" && message.parts.some((part) => part.type === "text" && part.text.includes("<active_task_checkpoints>")))) return
+  context.add(textMessage("system", block))
 }
 
 if (import.meta.main) {

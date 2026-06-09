@@ -56,6 +56,8 @@ export type SlashErrorCode =
   | "session_switch_requires_name"
   | "session_delete_requires_name"
   | "thinking_requires_value"
+  | "task_checkpoint_requires_text"
+  | "task_resolve_requires_id"
 
 export function languageLabel(language: UiLanguage) {
   return languageLabels[language]
@@ -143,6 +145,12 @@ type UiCopy = {
   skillActivated: (id: string) => string
   noActiveSkillFound: (name: string) => string
   skillRemoved: (ids: string) => string
+  taskTitle: string
+  taskCheckpointCreated: (id: string) => string
+  taskCheckpointResolved: (id: string) => string
+  taskCheckpointNotFound: (id: string) => string
+  noTaskCheckpoints: string
+  activeTaskCheckpoints: string
   languageCurrent: (current: string, options: string) => string
   languageInvalid: (value: string, options: string) => string
   languageUpdated: (value: string, envPath: string) => string
@@ -260,6 +268,9 @@ function buildEnglishCopy(): UiCopy {
       "  /sessions               list saved sessions",
       "  /session switch <id>    switch to another session",
       "  /session delete <id>    archive and delete a session",
+      "  /task                   list active task checkpoints",
+      "  /task checkpoint <text> save a cross-session task checkpoint",
+      "  /task resolve <id>      resolve and remove a task checkpoint",
       "  //text                  send /text as a normal prompt",
     ].join("\n"),
     webSearchTitle: "Web Search",
@@ -299,6 +310,8 @@ function buildEnglishCopy(): UiCopy {
       session_switch_requires_name: "/session switch requires a session id",
       session_delete_requires_name: "/session delete requires a session id",
       thinking_requires_value: "/thinking requires on or off",
+      task_checkpoint_requires_text: "/task checkpoint requires a description",
+      task_resolve_requires_id: "/task resolve requires a checkpoint id",
     })[code],
     modelSet: (model) => `Model set to ${model}`,
     providerUnknown: (provider, available) => `Unknown provider: ${provider}. Available providers: ${available}`,
@@ -316,6 +329,12 @@ function buildEnglishCopy(): UiCopy {
     skillActivated: (id) => `Skill active: ${id}`,
     noActiveSkillFound: (name) => `No active skill found: ${name}`,
     skillRemoved: (ids) => `Skill removed: ${ids}`,
+    taskTitle: "Task",
+    taskCheckpointCreated: (id) => `Task checkpoint saved (${id}).`,
+    taskCheckpointResolved: (id) => `Task checkpoint resolved: ${id}`,
+    taskCheckpointNotFound: (id) => `Task checkpoint not found: ${id}`,
+    noTaskCheckpoints: "No active task checkpoints.",
+    activeTaskCheckpoints: "Active task checkpoints:",
     languageCurrent: (current, options) => `Current UI language: ${current}\nAvailable: ${options}`,
     languageInvalid: (value, options) => `Unsupported language: ${value}. Available: ${options}`,
     languageUpdated: (value, envPath) => `UI language set to ${value}. Saved to ${envPath}`,
@@ -458,6 +477,9 @@ const copies: Record<UiLanguage, UiCopy> = {
       "  /sessions               查看保存的会话",
       "  /session switch <id>    切换到其他会话",
       "  /session delete <id>    归档并删除一个会话",
+      "  /task                   查看活跃任务检查点",
+      "  /task checkpoint <text> 保存跨会话任务检查点",
+      "  /task resolve <id>      完成并移除任务检查点",
       "  //text                  把 /text 当普通提示词发送",
     ].join("\n"),
     startingNewSession: (name) => `开始新会话：${name}`,
@@ -484,6 +506,8 @@ const copies: Record<UiLanguage, UiCopy> = {
       session_switch_requires_name: "/session switch 需要会话 id",
       session_delete_requires_name: "/session delete 需要会话 id",
       thinking_requires_value: "/thinking 需要 on 或 off",
+      task_checkpoint_requires_text: "/task checkpoint 需要一段描述文字",
+      task_resolve_requires_id: "/task resolve 需要检查点 id",
     })[code],
     modelSet: (model) => `模型已切换为 ${model}`,
     providerUnknown: (provider, available) => `未知 provider：${provider}。可用项：${available}`,
@@ -501,6 +525,12 @@ const copies: Record<UiLanguage, UiCopy> = {
     skillActivated: (id) => `技能已启用：${id}`,
     noActiveSkillFound: (name) => `当前未启用该技能：${name}`,
     skillRemoved: (ids) => `已移除技能：${ids}`,
+    taskTitle: "任务",
+    taskCheckpointCreated: (id) => `任务检查点已保存（${id}）。`,
+    taskCheckpointResolved: (id) => `任务检查点已完成：${id}`,
+    taskCheckpointNotFound: (id) => `未找到任务检查点：${id}`,
+    noTaskCheckpoints: "没有活跃的任务检查点。",
+    activeTaskCheckpoints: "活跃任务检查点：",
     languageCurrent: (current, options) => `当前界面语言：${current}\n可选：${options}`,
     languageInvalid: (value, options) => `不支持的语言：${value}。可选：${options}`,
     languageUpdated: (value, envPath) => `界面语言已切换为 ${value}，并保存到 ${envPath}`,

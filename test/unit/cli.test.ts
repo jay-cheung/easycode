@@ -526,6 +526,54 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("task command creates, lists, and resolves checkpoints", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("/task checkpoint Fix the login bug\n/task list\n/task\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Task checkpoint saved")
+    expect(stdout).toContain("Active task checkpoints:")
+    expect(stdout).toContain("Fix the login bug")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session startup displays active task checkpoints", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "memory.json"), JSON.stringify({
+      records: [{
+        id: "mem_task_1",
+        kind: "task_state",
+        text: "Refactor auth module",
+        tags: ["task", "checkpoint"],
+        scope: { topics: ["task_checkpoint"] },
+        createdAt: Date.now(),
+      }],
+    }))
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Active task checkpoints:")
+    expect(stdout).toContain("Refactor auth module")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("lang command updates session language and global preference", async () => {
     const root = await tmpdir()
     const home = await tmpdir()

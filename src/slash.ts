@@ -12,6 +12,9 @@ export type SlashCommand =
   | { type: "skill"; action: "use"; name: string }
   | { type: "skill"; action: "remove"; name: string }
   | { type: "skill"; action: "clear" }
+  | { type: "task"; action: "list" }
+  | { type: "task"; action: "checkpoint"; text: string }
+  | { type: "task"; action: "resolve"; target: string }
   | { type: "model"; model: string }
   | { type: "provider"; name: string }
   | { type: "effort"; value: string }
@@ -60,6 +63,19 @@ export function parseSlashCommand(input: string): SlashCommand {
       return skillName ? { type: "skill", action: "use", name: skillName } : { type: "error", code: "skill_use_requires_name" }
     }
     return { type: "skill", action: "use", name: args.join(" ") }
+  }
+  if (name === "task") {
+    const action = args[0]?.toLowerCase()
+    if (!action || action === "list") return { type: "task", action: "list" }
+    if (action === "checkpoint" || action === "save" || action === "add") {
+      const text = args.slice(1).join(" ")
+      return text ? { type: "task", action: "checkpoint", text } : { type: "error", code: "task_checkpoint_requires_text" }
+    }
+    if (action === "resolve" || action === "done" || action === "remove" || action === "rm") {
+      const target = args.slice(1).join(" ")
+      return target ? { type: "task", action: "resolve", target } : { type: "error", code: "task_resolve_requires_id" }
+    }
+    return { type: "task", action: "checkpoint", text: args.join(" ") }
   }
   if (name === "model") {
     const model = args.join(" ")

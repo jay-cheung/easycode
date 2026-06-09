@@ -16,6 +16,13 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/sessions")).toEqual({ type: "sessions" })
     expect(parseSlashCommand("/session switch archive")).toEqual({ type: "session", action: "switch", target: "archive" })
     expect(parseSlashCommand("/session delete archive")).toEqual({ type: "session", action: "delete", target: "archive" })
+    expect(parseSlashCommand("/task")).toEqual({ type: "task", action: "list" })
+    expect(parseSlashCommand("/task list")).toEqual({ type: "task", action: "list" })
+    expect(parseSlashCommand("/task checkpoint Implement onClick test")).toEqual({ type: "task", action: "checkpoint", text: "Implement onClick test" })
+    expect(parseSlashCommand("/task save Fix the login bug")).toEqual({ type: "task", action: "checkpoint", text: "Fix the login bug" })
+    expect(parseSlashCommand("/task resolve mem_abc123")).toEqual({ type: "task", action: "resolve", target: "mem_abc123" })
+    expect(parseSlashCommand("/task done mem_abc123")).toEqual({ type: "task", action: "resolve", target: "mem_abc123" })
+    expect(parseSlashCommand("/task some fallback text")).toEqual({ type: "task", action: "checkpoint", text: "some fallback text" })
   })
 
   test("returns error for model and provider with no args", () => {
@@ -23,6 +30,8 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/provider")).toEqual({ type: "error", code: "provider_requires_name" })
     expect(parseSlashCommand("/session switch")).toEqual({ type: "error", code: "session_switch_requires_name" })
     expect(parseSlashCommand("/session delete")).toEqual({ type: "error", code: "session_delete_requires_name" })
+    expect(parseSlashCommand("/task checkpoint")).toEqual({ type: "error", code: "task_checkpoint_requires_text" })
+    expect(parseSlashCommand("/task resolve")).toEqual({ type: "error", code: "task_resolve_requires_id" })
   })
 
   test("accepts the thingking typo as a thinking alias", () => {
