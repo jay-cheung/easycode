@@ -83,8 +83,4 @@ export class TuiState {
   shouldRenderPanel() {
     return this.running && !this.streaming && !this.pausedForPrompt
   }
-
-  shouldWriteDirectly() {
-    return this.streaming || this.pausedForPrompt
-  }
 }

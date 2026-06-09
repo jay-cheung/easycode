@@ -25,7 +25,7 @@ export type ProviderRunMetrics = {
 
 export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
-  | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number }
+  | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number; phase?: "waiting" | "thinking" | "answering" }
   | { type: "provider_metrics"; metrics: ProviderRunMetrics; interim?: boolean }
   | { type: "context_compaction"; status: "started" | "completed" | "failed"; inputMessages?: number; summaryChars?: number; summaryTokens?: number; elapsedMs?: number; error?: string }
   | { type: "repo_map"; status: "succeeded" | "failed"; cacheHit?: boolean; files?: number; relevantFiles?: number; cachePath?: string; error?: string }

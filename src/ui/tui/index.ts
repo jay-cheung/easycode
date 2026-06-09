@@ -131,7 +131,13 @@ export class TuiRenderer {
         this.providerCallCount++
         this.currentProviderPhaseKey = `provider:${event.provider}:${event.model ?? "unknown"}:${this.providerCallCount}`
       }
-      this.state.setStatus(copy.statusWaitingProvider(event.provider), this.currentProviderPhaseKey)
+      let statusText = copy.statusWaitingProvider(event.provider)
+      if (event.phase === "thinking") {
+        statusText = copy.statusThinking
+      } else if (event.phase === "answering") {
+        statusText = copy.statusAnswering
+      }
+      this.state.setStatus(statusText, this.currentProviderPhaseKey)
     } else if (event.type === "tool_call") {
       this.state.setStatus(copy.statusExecutingTool(event.call.name), `tool:${event.call.id}:call`)
     } else if (event.type === "tool_progress") {
@@ -171,8 +177,14 @@ export class TuiRenderer {
       this.status(event.status)
     }
 
-    // Forward to timeline
-    this.timeline.event(event)
+    // Forward to timeline (excluding progress and metrics events which are already displayed in the TUI status panel / cards)
+    if (
+      event.type !== "provider_progress" &&
+      event.type !== "tool_progress" &&
+      event.type !== "provider_metrics"
+    ) {
+      this.timeline.event(event)
+    }
   }
 
   finish() {

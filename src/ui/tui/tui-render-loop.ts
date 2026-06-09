@@ -48,10 +48,6 @@ export function drawStatusPanel(input: RenderLoopDeps) {
 
 export function writeTextWithPanel(input: RenderLoopDeps, text: string) {
   if (input.state.running) {
-    if (input.state.shouldWriteDirectly()) {
-      input.output.write(text)
-      return input.lastPanelSnapshot
-    }
     eraseStatusPanel(input.output, input.state)
     input.output.write(text)
     return drawStatusPanel(input)
@@ -62,10 +58,6 @@ export function writeTextWithPanel(input: RenderLoopDeps, text: string) {
 
 export function writeTimelineText(input: RenderLoopDeps, text: string) {
   if (input.state.running) {
-    if (input.state.shouldWriteDirectly()) {
-      input.output.write(text)
-      return input.lastPanelSnapshot
-    }
     eraseStatusPanel(input.output, input.state)
     input.output.write(text)
     if (!text.endsWith("\n")) {

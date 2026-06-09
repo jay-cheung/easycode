@@ -53,7 +53,9 @@ export async function runProviderTurnStream(
   const emitDeltas = input.emitDeltas ?? true
   const observeContextUsage = input.observeContextUsage ?? true
   let failureText: string | undefined
-  const stopProviderProgress = startProviderProgressTimer(deps, input)
+  const startedAt = Date.now()
+  let currentPhase: "waiting" | "thinking" | "answering" = "waiting"
+  const stopProviderProgress = startProviderProgressTimer(deps, input, startedAt, () => currentPhase)
   const metricCall = startProviderMetricCall(input.providerMetrics)
   if (input.providerMetrics && deps.onEvent) {
     deps.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
@@ -70,6 +72,10 @@ export async function runProviderTurnStream(
       if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
       if (event.type === "reasoning_delta") {
         stopProviderProgress()
+        if (currentPhase === "waiting") {
+          currentPhase = "thinking"
+          deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: currentPhase })
+        }
         reasoningChunks.push(event.text)
         replayEvents.push({ type: "reasoning_delta", text: event.text })
         if (emitDeltas) {
@@ -79,6 +85,10 @@ export async function runProviderTurnStream(
       }
       if (event.type === "text_delta") {
         stopProviderProgress()
+        if (currentPhase !== "answering") {
+          currentPhase = "answering"
+          deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: currentPhase })
+        }
         textChunks.push(event.text)
         replayEvents.push({ type: "text_delta", text: event.text })
         if (emitDeltas) {
@@ -170,14 +180,15 @@ function extractFallbackToolCalls(result: ProviderTurnResult, emitDeltas: boolea
 function startProviderProgressTimer(
   deps: Pick<ProviderTurnDeps, "onEvent" | "providerProgressIntervalMs" | "provider">,
   input: ProviderTurnInput,
+  startedAt: number,
+  getPhase: () => "waiting" | "thinking" | "answering",
 ) {
   if (!deps.onEvent || deps.providerProgressIntervalMs <= 0) return () => {}
-  const startedAt = Date.now()
   let stopped = false
-  deps.onEvent({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: 0 })
+  deps.onEvent({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: 0, phase: getPhase() })
   const timer = setInterval(() => {
     if (stopped) return
-    deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt })
+    deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: getPhase() })
   }, deps.providerProgressIntervalMs)
   return () => {
     if (stopped) return
