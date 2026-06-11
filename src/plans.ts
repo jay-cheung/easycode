@@ -1,5 +1,5 @@
 import path from "node:path"
-import { mkdirSync, readdirSync, unlinkSync } from "node:fs"
+import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { easycodeDir } from "./easycode-path"
 
 const MAX_PLANS_PER_SESSION = 20
@@ -16,8 +16,8 @@ function cleanupOldPlans(dir: string): void {
   try {
     const files = readdirSync(dir)
       .filter((f) => f.endsWith(".md"))
-      .map((f) => ({ name: f, time: parseInt(f.replace(".md", ""), 10) }))
-      .sort((a, b) => b.time - a.time)
+      .map((f) => ({ name: f, mtime: statSync(path.join(dir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)
     if (files.length > MAX_PLANS_PER_SESSION) {
       for (const file of files.slice(MAX_PLANS_PER_SESSION)) {
         unlinkSync(path.join(dir, file.name))
@@ -32,12 +32,29 @@ export function stripPlanTags(text: string): string {
   return text.replace(/<\/?proposed_plan>/gi, "").trim()
 }
 
+function extractPlanId(markdown: string): string | undefined {
+  const jsonMatch = markdown.match(/```json\s*([\s\S]*?)\s*```/)
+  const jsonText = jsonMatch ? jsonMatch[1] : undefined
+  if (!jsonText) return undefined
+  try {
+    const parsed = JSON.parse(jsonText.trim())
+    if (parsed && typeof parsed === "object" && typeof parsed.id === "string") {
+      return parsed.id.trim()
+    }
+  } catch {
+    // ignore parsing errors
+  }
+  return undefined
+}
+
 export async function savePlan(root: string, sessionId: string, planMarkdown: string): Promise<string | undefined> {
   if (!planMarkdown) return
   const dir = planStoreDir(root, sessionId)
   mkdirSync(dir, { recursive: true })
-  const timestamp = Date.now()
-  const filePath = path.join(dir, `${timestamp}.md`)
+  const planId = extractPlanId(planMarkdown)
+  const filename = planId ? `${safePlanSegment(planId)}.md` : `${Date.now()}.md`
+  const filePath = path.join(dir, filename)
+
   await Bun.write(filePath, stripPlanTags(planMarkdown))
   cleanupOldPlans(dir)
   return filePath
