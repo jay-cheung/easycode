@@ -107,6 +107,27 @@ describe("session store", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("default compacted sessions keep the latest three completed turns on save and restore", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `message ${i} ${"detail ".repeat(20)}`))
+      context.add(textMessage("assistant", `reply ${i}`))
+    }
+    context.state.summary = "summary"
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.messages).toHaveLength(6)
+    expect(saved?.messages[0].parts[0]).toMatchObject({ type: "text", text: expect.stringContaining("message 1") })
+
+    const restored = await store.context("demo")
+    expect(restored.state.messages).toHaveLength(6)
+    expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: expect.stringContaining("message 1") })
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("prunes already compacted session messages on restore", async () => {
     const root = await tmpdir()
     const store = new SessionStore(root)

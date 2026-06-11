@@ -10,7 +10,7 @@ import { createCompactionResult, createSnapshotCompactionResult } from "./manage
 import { buildCompactionSnapshot, buildProviderMessages } from "./manager-compose"
 import { addWindowStats, cloneStrategy, emptyWindowStats, estimateStaticPrefixTokens, staticPrefixMessageCount, type WindowStats } from "./manager-helpers"
 import { createBudgetStats, createCacheStats, createLedgerStats, ledgerTokenBudget, renderSelectedLedgerText, compactionBasis } from "./manager-stats"
-import { clampStrategyState, createInitialStrategyState, defaultSafetyMultiplier, initialMaxTokens, maxSafetyMultiplier, minMaxTokens, minSafetyMultiplier, minTokenFloorForOptions, responseReserveTokensForMax, safetyMultiplierForOptions } from "./strategy"
+import { clampStrategyState, createInitialStrategyState, defaultCompactPreserveTokens, defaultSafetyMultiplier, initialMaxTokens, maxSafetyMultiplier, minMaxTokens, minSafetyMultiplier, minTokenFloorForOptions, responseReserveTokensForMax, safetyMultiplierForOptions } from "./strategy"
 import { estimateSummaryTokens, estimateTextTokens } from "./tokens"
 import type { ContextBudgetStats, ContextCacheStats, ContextCompactionSnapshot, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
 
@@ -32,7 +32,9 @@ export class ContextManager implements ContextManagerLike {
     this.contextWindowTokens = options.contextWindowTokens ?? maxTokens
     this.responseReserveTokens = responseReserveTokensForMax(maxTokens, options.responseReserveTokens)
     this.pricing = options.pricing ?? defaultCachePricing()
-    this.compactPreserveTokens = options.compactPreserveTokens ?? 3_000
+    // Keep enough raw tail after compaction to usually retain the configured
+    // recent-turn window instead of collapsing immediately to one turn.
+    this.compactPreserveTokens = options.compactPreserveTokens ?? defaultCompactPreserveTokens(maxTokens)
     this.safetyMultiplier = safetyMultiplierForOptions(options)
     this._strategyState = createInitialStrategyState(options, maxTokens)
     this.state = { messages: [], tokenEstimate: 0, maxTokens }

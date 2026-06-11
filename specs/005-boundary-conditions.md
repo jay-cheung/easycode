@@ -28,7 +28,7 @@
 ## Context
 - Token count is estimated with a local mixed-language heuristic: CJK characters count as 0.6 tokens and other characters count as 0.3 tokens.
 - Compaction triggers above `maxTokens * 0.75`.
-- Compaction asks the provider to generate a summary with the compact prompt, then preserves that summary plus the latest 2 complete user turns.
+- Compaction asks the provider to generate a summary with the compact prompt, then preserves that summary plus the latest 3 complete user turns by default.
 - The compaction contract must retain the current user requirement, a traceable direct user-input snippet, and the active capability surface (for example selected skills, MCP usage, connectors, or web-search engine) when they matter for continuation.
 
 ## Provider

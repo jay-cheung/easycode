@@ -1,5 +1,19 @@
 # Progress Log
 
+## Step 34: Compaction Tail Retention And 64k Default Window
+
+- Scope: reduce summary-mode continuity loss by keeping a materially larger raw conversation tail after compaction and raising the default context budget to a 64k window.
+- Implementation:
+  - Updated `src/context/strategy.ts`, `src/context/manager.ts`, and `src/settings.ts` so the default session/context budget is now `64_000` tokens and the default post-compaction preserved-tail budget scales with the window instead of staying pinned at `3_000`.
+  - Kept the active-window contract at three recent user turns, and aligned `src/context/tokens.ts` plus session persistence behavior so compacted contexts and restored sessions now keep the last three completed user/assistant rounds by default under normal-sized turns.
+  - Updated boundary/acceptance specs and added regression coverage in `test/unit/context.test.ts` and `test/unit/session.test.ts` for default three-turn retention.
+- Verification:
+  - `bun test test/unit/context.test.ts test/unit/session.test.ts test/unit/slash.test.ts`
+  - `bun run typecheck`
+  - `bun run cache:bench -- --provider simulated --suite real --quiet`
+  - `bun run gate`
+- Notes: explicit user overrides for `maxTokens`, `preserveRecentUserTurns`, or `compactPreserveTokens` still win; this slice changes only the default continuation policy.
+
 ## Step 33: Durable Memory Promotion Paths
 
 - Scope: add an explicit promotion path for durable cross-session memory so the model can store stable lessons intentionally, instead of overloading generic `memory_add` for every long-term use case.

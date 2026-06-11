@@ -8,7 +8,8 @@ import { providerMessageToResponseInput } from "../../src/provider"
 describe("context", () => {
   test("uses larger default context and execution budgets", () => {
     const context = new ContextManager()
-    expect(context.state.maxTokens).toBe(32_000)
+    expect(context.state.maxTokens).toBe(64_000)
+    expect(context.compactPreserveTokens).toBe(16_000)
     expect(context.strategyState.maxSteps).toBe(66)
   })
 
@@ -44,6 +45,25 @@ describe("context", () => {
     expect(context.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "message 2 with enough content" })
   })
 
+  test("default compaction keeps the latest three completed user-assistant turns", () => {
+    const context = new ContextManager({ maxTokens: 128, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `message ${i} ${"detail ".repeat(20)}`))
+      context.add(textMessage("assistant", `reply ${i}`))
+    }
+
+    expect(context.compact("model summary")).toBe(true)
+    expect(context.state.messages.map((message) => message.role)).toEqual([
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+      "user",
+      "assistant",
+    ])
+    expect(context.state.messages[0].parts[0]).toMatchObject({ type: "text", text: expect.stringContaining("message 1") })
+  })
+
   test("compact prunes preserved recent turns to a small provider-safe suffix", () => {
     const context = new ContextManager({ maxTokens: 100, compactAt: 0.5, preserveRecentUserTurns: 2, compactPreserveTokens: 30 })
     context.add(textMessage("user", "older user"))
@@ -69,7 +89,7 @@ describe("context", () => {
   })
 
   test("compact returns false below threshold without mutating state", () => {
-    const context = new ContextManager({ maxTokens: 32_000, compactAt: 0.9 })
+    const context = new ContextManager({ maxTokens: 64_000, compactAt: 0.9 })
     context.state.summary = "existing summary"
     context.add(textMessage("user", "short request"))
     const messages = [...context.state.messages]

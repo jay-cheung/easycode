@@ -20,7 +20,7 @@ export function estimateSummaryTokens(summary: string | undefined) {
  * Keep the last user turns while preserving provider-valid tool call/result pairs.
  * Used for active conversation context after older turns become compaction input.
  */
-export function recentUserTurnMessages(messages: Message[], preserveRecentUserTurns = 2) {
+export function recentUserTurnMessages(messages: Message[], preserveRecentUserTurns = 3) {
   return validProviderMessageSuffix(splitRecentUserTurns(messages, preserveRecentUserTurns).recent)
 }
 

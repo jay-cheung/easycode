@@ -32,7 +32,7 @@
 - Project/global instruction files are loaded before dynamic conversation history.
 - `/skill use <name>` persists active skill selection and requires one first-use `skill` tool load.
 - Skills expose title/description before full content is requested.
-- Context compaction preserves summary plus the most recent two user turns.
+- Context compaction preserves summary plus the most recent three user turns by default.
 - Context compaction summaries keep the latest user language, respect the active summary token budget, preserve the current diagnostic hypothesis when still supported, and avoid replaying raw tool noise by default.
 - MCP stays default-allowed, and WebSearch is default-allowed with structured citations, logger events, eval fixtures, and Tavily-only live search when configured.
 - LSP/AST indexing demonstrates an advantage over text search by resolving definitions/references and constraining edits to symbols rather than same-name text matches.

@@ -40,7 +40,7 @@ describe("slash commands", () => {
   })
 
   test("normalizes session settings", () => {
-    expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", language: expect.any(String), thinking: true, effort: "high", maxTokens: 32_000, maxSteps: 66 })
+    expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", language: expect.any(String), thinking: true, effort: "high", maxTokens: 64_000, maxSteps: 66 })
     expect(normalizeSessionSettings({ provider: "deepseek", effort: "max", selectedSkills: ["demo", "demo", ""], pendingSkillLoads: ["demo", "demo", ""] }, "fake")).toMatchObject({
       provider: "deepseek",
       effort: "max",
