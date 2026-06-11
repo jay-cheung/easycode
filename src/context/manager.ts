@@ -1,6 +1,6 @@
 import { defaultCachePricing, type CachePricing } from "../cache-policy"
 import type { InstructionInfo } from "../instruction"
-import { messagesToProviderInput, type Message, type ProviderInputMessage } from "../message"
+import { canonicalizeHistoryMessage, messagesToProviderInput, type Message, type ProviderInputMessage } from "../message"
 import type { Agent } from "../agent"
 import { hasSkillPrompt } from "../prompt"
 import type { SkillInfo } from "../skill"
@@ -53,7 +53,7 @@ export class ContextManager implements ContextManagerLike {
   }
 
   add(message: Message) {
-    this.state.messages.push(message)
+    this.state.messages.push(canonicalizeHistoryMessage(message))
     this.recalculateTokenEstimate()
   }
 
@@ -125,6 +125,8 @@ export class ContextManager implements ContextManagerLike {
     if (conflicts.length) this.state.ledger = mergeLedger(this.state.ledger, { current: conflicts })
     this.state.summary = result.nextSummary
     this.state.messages = result.preservedMessages
+    this.lastStaticPrefixTokens = 0
+    this.state.latestActualInputTokens = undefined
     this.recalculateTokenEstimate()
     return true
   }
@@ -147,6 +149,8 @@ export class ContextManager implements ContextManagerLike {
     if (conflicts.length) this.state.ledger = mergeLedger(this.state.ledger, { current: conflicts })
     this.state.summary = result.nextSummary
     this.state.messages = result.preservedMessages
+    this.lastStaticPrefixTokens = 0
+    this.state.latestActualInputTokens = undefined
     this.recalculateTokenEstimate()
     return true
   }
@@ -171,7 +175,6 @@ export class ContextManager implements ContextManagerLike {
       ...(input ?? {}),
       summary: this.state.summary,
       messages: this.state.messages,
-      largeOutputLimit: this.largeOutputLimit(),
     })
   }
 
@@ -180,13 +183,9 @@ export class ContextManager implements ContextManagerLike {
   }
 
   private recalculateTokenEstimate() {
-    const messageProviderInput = messagesToProviderInput(this.state.messages, { largeOutputLimit: this.largeOutputLimit() })
+    const messageProviderInput = messagesToProviderInput(this.state.messages)
     const messageTokens = estimateTextTokens(messageProviderInput.map((message) => message.content).join("\n"))
     this.state.tokenEstimate = messageTokens + estimateSummaryTokens(this.state.summary)
-  }
-
-  private largeOutputLimit() {
-    return Math.ceil(this._strategyState.toolResultTokenBudget / 0.3)
   }
 
   private maxStaticPrefixTokens = 0

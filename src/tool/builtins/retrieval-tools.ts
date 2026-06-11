@@ -84,7 +84,17 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       return {
         title: params.query,
         output: formatWebResults(response.results),
-        metadata: { status: "succeeded", query: params.query, engine: response.engine, count: response.results.length, elapsedMs: Date.now() - startedAt, sources: response.results.map(webCitation), live: response.live, warning: response.warning },
+        metadata: {
+          status: "succeeded",
+          query: params.query,
+          engine: response.engine,
+          count: response.results.length,
+          elapsedMs: Date.now() - startedAt,
+          sources: response.results.map(webCitation),
+          resultsPreview: response.results.slice(0, 5),
+          live: response.live,
+          warning: response.warning,
+        },
       }
     },
   })
@@ -104,7 +114,14 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       return {
         title: `Loaded skill: ${skill.name}`,
         output: formatSkillOutput(skill),
-        metadata: { status: "succeeded", location: skill.location, artifacts: skill.artifacts ?? [], artifactCount: skill.artifacts?.length ?? 0 },
+        metadata: {
+          status: "succeeded",
+          skillName: skill.name,
+          skillDescription: skill.description,
+          location: skill.location,
+          artifacts: skill.artifacts ?? [],
+          artifactCount: skill.artifacts?.length ?? 0,
+        },
       }
     },
   })

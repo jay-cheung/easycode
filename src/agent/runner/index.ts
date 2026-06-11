@@ -1,6 +1,6 @@
 import path from "node:path"
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike } from "../../context"
-import { createID, textMessage, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
+import { canonicalizeAssistantHistory, createID, textMessage, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
 import { defaultPermissionRules, PermissionService } from "../../permission"
 import { createProvider, type Provider, type ProviderName } from "../../provider"
 import { Sandbox } from "../../sandbox"
@@ -201,9 +201,12 @@ export class AgentRunner {
 
             const lastMsg = this.context.state.messages.at(-1)
             if (lastMsg && lastMsg.role === "assistant") {
+              const reasoningPart = lastMsg.parts.find((part) => part.type === "reasoning")
               const textPart = lastMsg.parts.find(p => p.type === "text")
               if (textPart) {
-                textPart.text = updatedText
+                const canonical = canonicalizeAssistantHistory(reasoningPart?.type === "reasoning" ? reasoningPart.text : "", updatedText)
+                if (reasoningPart?.type === "reasoning") reasoningPart.text = canonical.reasoningText
+                textPart.text = canonical.text
               }
             }
 

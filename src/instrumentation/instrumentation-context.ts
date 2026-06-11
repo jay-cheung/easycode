@@ -1,4 +1,4 @@
-import type { Message } from "../message"
+import { canonicalizeHistoryMessage, type Message } from "../message"
 import type { ContextLedger, ContextManagerLike } from "../context"
 import { emitLog, type Logger } from "../logger"
 
@@ -52,8 +52,9 @@ export class LoggingContextDecorator implements ContextManagerLike {
   }
 
   add(message: Message) {
-    this.logAdd(message)
-    this.inner.add(message)
+    const canonical = canonicalizeHistoryMessage(message)
+    this.logAdd(canonical)
+    this.inner.add(canonical)
   }
 
   setLedger(ledger: ContextLedger | undefined) {

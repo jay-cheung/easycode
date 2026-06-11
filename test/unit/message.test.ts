@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, validProviderMessageSuffix } from "../../src/message"
+import { canonicalizeAssistantHistory, canonicalizeHistoryMessage, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, validProviderMessageSuffix } from "../../src/message"
 
 describe("message", () => {
   test("converts text and tool parts", () => {
@@ -29,5 +29,56 @@ describe("message", () => {
 
     expect(suffix.map((message) => message.role)).toEqual(["user", "assistant", "tool", "tool"])
     expect(messagesToProviderInput(suffix).map((message) => message.role)).toEqual(["user", "assistant", "tool", "tool"])
+  })
+
+  test("canonicalizes skill and web-search tool history into compact summaries", () => {
+    const skill = canonicalizeHistoryMessage(toolResultMessage({
+      callID: "call_skill",
+      toolName: "skill",
+      status: "succeeded",
+      output: "<skill_artifacts>\n- file: scripts/demo.sh\n</skill_artifacts>\nFull demo skill body",
+      metadata: {
+        status: "succeeded",
+        skillName: "demo",
+        skillDescription: "Demo skill",
+        location: "/tmp/demo/SKILL.md",
+        artifacts: [{ kind: "file", path: "scripts/demo.sh" }],
+      },
+    }))
+    const web = canonicalizeHistoryMessage(toolResultMessage({
+      callID: "call_web",
+      toolName: "web_search",
+      status: "succeeded",
+      output: "",
+      metadata: {
+        status: "succeeded",
+        query: "latest codex",
+        engine: "tavily",
+        count: 4,
+        resultsPreview: [
+          { title: "A", url: "https://a.test", snippet: "alpha" },
+          { title: "B", url: "https://b.test", snippet: "beta" },
+          { title: "C", url: "https://c.test", snippet: "gamma" },
+          { title: "D", url: "https://d.test", snippet: "delta" },
+        ],
+      },
+    }))
+
+    const [skillPart] = skill.parts
+    const [webPart] = web.parts
+    expect(String(skillPart.type === "tool_result" ? skillPart.output : "")).toContain("Loaded skill: demo")
+    expect(skillPart).toMatchObject({ type: "tool_result", metadata: expect.objectContaining({ historySummaryKind: "skill_compact", historyCompacted: true }) })
+    if (skillPart.type !== "tool_result" || webPart.type !== "tool_result") throw new Error("expected tool results")
+    expect(String(skillPart.output)).toContain("skill body omitted from persistent history")
+    expect(String(skillPart.output)).not.toContain("Full demo skill body")
+    expect(String(webPart.output)).toContain("Web search: latest codex")
+    expect(String(webPart.output)).toContain("+1 more search results omitted")
+  })
+
+  test("canonicalizes assistant transcript text before logging", () => {
+    const canonical = canonicalizeAssistantHistory("r".repeat(3_000), "<proposed_plan>\n" + "step\n".repeat(1_500) + "</proposed_plan>")
+    expect(canonical.reasoningText).toContain("[truncated")
+    expect(canonical.text).toContain("<proposed_plan>")
+    expect(canonical.text).toContain("[truncated")
   })
 })

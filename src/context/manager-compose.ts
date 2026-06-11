@@ -46,7 +46,6 @@ export function buildProviderMessages(input: {
   tools?: ToolDef[]
   summary?: string
   messages: Message[]
-  largeOutputLimit: number
 }): ProviderInputMessage[] {
   const messages: Message[] = []
   if (input.agent && input.skills && input.tools) {
@@ -59,5 +58,5 @@ export function buildProviderMessages(input: {
   if (input.summary) messages.push(createMessage("system", [summaryPart(input.summary)]))
   const dynamicMessages = validProviderMessageSuffix(input.messages)
   messages.push(...dynamicMessages)
-  return messagesToProviderInput(messages, { largeOutputLimit: input.largeOutputLimit })
+  return messagesToProviderInput(messages)
 }

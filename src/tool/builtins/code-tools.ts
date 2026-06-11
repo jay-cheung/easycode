@@ -23,7 +23,7 @@ export function registerCodeTools(registry: ToolRegistry) {
           metadata: { status: "failed", error: "large_file_read_forbidden", lineCount, maxLines: maxFullReadLines },
         }
       }
-      return { title: params.filePath, output, metadata: { status: "succeeded", lineCount } }
+      return { title: params.filePath, output, metadata: { status: "succeeded", filePath: params.filePath, lineCount } }
     },
   })
 

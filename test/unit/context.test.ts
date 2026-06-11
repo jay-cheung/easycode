@@ -486,6 +486,48 @@ describe("context", () => {
     expect(context.state.tokenEstimate).toBeLessThan(before)
   })
 
+  test("compact clears stale static-prefix and actual-input compaction state", () => {
+    const context = new ContextManager({ maxTokens: 100, compactAt: 0.5, preserveRecentUserTurns: 1 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `历史消息 ${i} `.repeat(20)))
+      context.add(textMessage("assistant", `回复 ${i}`))
+    }
+
+    context.recordUsage(9_999)
+    const first = context.planRequest({ step: 0, agent: createAgent("build"), skills: [], tools: [] })
+    expect(first.budgetStats.staticPrefixTokens).toBeGreaterThan(0)
+    expect(first.budgetStats.compactionBasis).toBe(9_999)
+
+    expect(context.compact("short summary")).toBe(true)
+    const afterCompact = context.planRequest({ step: 1, agent: createAgent("build"), skills: [], tools: [] })
+
+    expect(context.state.latestActualInputTokens).toBeUndefined()
+    expect(afterCompact.budgetStats.staticPrefixTokens).toBeGreaterThan(0)
+    expect(afterCompact.budgetStats.compactionBasis).toBeLessThan(9_999)
+  })
+
+  test("compactSnapshot clears stale static-prefix and actual-input compaction state", () => {
+    const context = new ContextManager({ maxTokens: 100, compactAt: 0.5, preserveRecentUserTurns: 1 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `历史消息 ${i} `.repeat(20)))
+      context.add(textMessage("assistant", `回复 ${i}`))
+    }
+
+    const snapshot = context.compactionSnapshot()
+    expect(snapshot).toBeDefined()
+    context.recordUsage(8_888)
+    const first = context.planRequest({ step: 0, agent: createAgent("build"), skills: [], tools: [] })
+    expect(first.budgetStats.staticPrefixTokens).toBeGreaterThan(0)
+    expect(first.budgetStats.compactionBasis).toBe(8_888)
+
+    expect(context.compactSnapshot("snapshot summary", snapshot!)).toBe(true)
+    const afterCompact = context.planRequest({ step: 1, agent: createAgent("build"), skills: [], tools: [] })
+
+    expect(context.state.latestActualInputTokens).toBeUndefined()
+    expect(afterCompact.budgetStats.staticPrefixTokens).toBeGreaterThan(0)
+    expect(afterCompact.budgetStats.compactionBasis).toBeLessThan(8_888)
+  })
+
   test("large historical tool outputs are truncated for token estimates and provider input", () => {
     const context = new ContextManager({ maxTokens: 20_000 })
     context.add(textMessage("user", "show logs"))
@@ -497,9 +539,10 @@ describe("context", () => {
     const providerToolResult = messages.flatMap((message) => message.parts ?? []).find((part) => part.type === "tool_result")
 
     expect(context.state.tokenEstimate).toBeLessThan(4_000)
-    expect(providerInput).toContain("[truncated")
+    expect(providerInput).toContain("command: bash")
+    expect(providerInput).toContain("[history compacted: omitted")
     expect(providerInput).not.toContain("x".repeat(9_000))
-    expect(providerToolResult).toMatchObject({ type: "tool_result", output: expect.stringContaining("[truncated") })
+    expect(providerToolResult).toMatchObject({ type: "tool_result", output: expect.stringContaining("[history compacted: omitted") })
     expect(providerToolResult).not.toMatchObject({ output: expect.stringContaining("x".repeat(9_000)) })
   })
 })

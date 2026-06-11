@@ -1,5 +1,5 @@
 import type { AgentRunState } from "../agent"
-import type { ProviderInputMessage } from "../message"
+import { canonicalizeAssistantHistory, type ProviderInputMessage } from "../message"
 import { ProviderError, type Provider } from "../provider"
 import type { SkillServiceLike } from "../skill"
 import { type ContextManagerLike } from "../context"
@@ -117,12 +117,15 @@ export class LoggingRunAspect implements RunAspect {
             if (event.type === "tool_call") toolCalls.push({ tool: event.call.name, callID: event.call.id })
             yield event
           }
-          emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: output.length, output, toolCalls } })
-          emitProviderTranscript(logger, { provider: provider.name, model: provider.model, prompt: input.prompt, input: inputText, output, reasoningContent, toolCalls, usage })
-          if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_output", detail: { summary: output } })
+          const canonical = canonicalizeAssistantHistory(reasoningContent, output)
+          emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent: canonical.reasoningText, textLength: canonical.text.length, output: canonical.text, toolCalls } })
+          emitProviderTranscript(logger, { provider: provider.name, model: provider.model, prompt: input.prompt, input: inputText, output: canonical.text, reasoningContent: canonical.reasoningText, toolCalls, usage })
+          if (summaryRequest) emitLog(logger, { type: "provider", name: "provider.summary_output", detail: { summary: canonical.text } })
         } catch (error) {
-          if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent, textLength: error.output.length, output: error.output, toolCalls } })
-          emitProviderTranscript(logger, { provider: provider.name, model: provider.model, prompt: input.prompt, input: inputText, output, reasoningContent, toolCalls, usage, error: providerErrorDetail(provider.name, error) })
+          const failureOutput = error instanceof ProviderError && error.output ? error.output : output
+          const canonical = canonicalizeAssistantHistory(reasoningContent, failureOutput)
+          if (error instanceof ProviderError && error.output) emitLog(logger, { type: "provider", name: "provider.output", detail: { provider: provider.name, reasoningContent: canonical.reasoningText, textLength: canonical.text.length, output: canonical.text, toolCalls } })
+          emitProviderTranscript(logger, { provider: provider.name, model: provider.model, prompt: input.prompt, input: inputText, output: canonical.text, reasoningContent: canonical.reasoningText, toolCalls, usage, error: providerErrorDetail(provider.name, error) })
           emitLog(logger, { type: "error", name: "provider.error", detail: providerErrorDetail(provider.name, error) })
           throw error
         }

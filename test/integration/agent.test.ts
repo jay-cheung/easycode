@@ -223,6 +223,29 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("provider transcript output stays consistent with canonical assistant history", async () => {
+    const root = await fixture()
+    const events: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "reasoning_delta", text: "r".repeat(3_000) }
+        yield { type: "text_delta", text: "<proposed_plan>\n" + "step\n".repeat(1_500) + "</proposed_plan>" }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Return a very long plan", "build")
+    const transcript = events.find((event) => event.type === "provider" && event.name === "provider.transcript")
+    const lastAssistant = result.messages.at(-1)
+    const assistantText = lastAssistant?.parts.find((part) => part.type === "text")
+
+    expect(result.status).toBe("completed")
+    expect(assistantText?.type).toBe("text")
+    expect(String(transcript?.detail?.output)).toBe(assistantText?.type === "text" ? assistantText.text : "")
+    expect(String(transcript?.detail?.output)).toContain("[truncated")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("emits provider metrics with APIx usage aggregation", async () => {
     const root = await fixture()
     const events: RunUiEvent[] = []
@@ -1211,7 +1234,7 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider, context }).run("current request", "build")
     expect(result.status).toBe("completed")
     expect(context.state.summary).toBe("Model generated summary.")
-    expect(context.state.latestActualInputTokens).toBe(45)
+    expect(context.state.latestActualInputTokens).toBeUndefined()
 
     const store = new SessionStore(root)
     await store.save("demo", context)
@@ -1260,9 +1283,10 @@ describe("agent integration", () => {
     await Bun.write(path.join(root, ".easycode", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: Demo\n---\nUse `scripts/demo.sh` first.\nFull demo skill")
     const result = await createRunner({ root, provider: "fake", mode: "build", settings: { ...defaultSessionSettings("fake"), selectedSkills: ["demo"], pendingSkillLoads: ["demo"] } }).run("use skill demo", "build")
     expect(result.usedTools).toContain("skill")
-    expect(toolResults(result.messages).some((part) => part.output.includes("<skill_artifacts>"))).toBe(true)
+    expect(toolResults(result.messages).some((part) => part.output.includes("Loaded skill: demo"))).toBe(true)
     expect(toolResults(result.messages).some((part) => part.output.includes("scripts/demo.sh"))).toBe(true)
-    expect(toolResults(result.messages).some((part) => part.output.includes("Full demo skill"))).toBe(true)
+    expect(toolResults(result.messages).some((part) => part.output.includes("skill body omitted from persistent history"))).toBe(true)
+    expect(toolResults(result.messages).every((part) => !part.output.includes("Full demo skill"))).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
 
