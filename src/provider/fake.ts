@@ -9,11 +9,47 @@ export class FakeProvider implements Provider {
   readonly capabilities: ProviderCapabilities = { apiStyle: "local", supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high", "max"], supportsJsonObjectResponse: true, supportsMaxOutputTokens: true, promptCacheMode: "reported", promptCacheMinPrefixTokens: numberFromEnv("FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS") }
   private readonly promptCounts = new Map<string, number>()
 
+  static customResponses: Array<{
+    match: (input: ProviderInput) => boolean
+    response: Array<ProviderEvent> | ((input: ProviderInput) => AsyncIterable<ProviderEvent> | Array<ProviderEvent>)
+  }> = []
+
+  static registerResponse(
+    match: string | RegExp | ((input: ProviderInput) => boolean),
+    response: Array<ProviderEvent> | ((input: ProviderInput) => AsyncIterable<ProviderEvent> | Array<ProviderEvent>)
+  ) {
+    const matcher = typeof match === "function"
+      ? match
+      : typeof match === "string"
+        ? (input: ProviderInput) => input.prompt.toLowerCase().includes(match.toLowerCase())
+        : (input: ProviderInput) => match.test(input.prompt)
+
+    FakeProvider.customResponses.push({ match: matcher, response })
+  }
+
+  static clearResponses() {
+    FakeProvider.customResponses = []
+  }
+
   constructor(options: ProviderOptions = {}) {
     this.model = options.model
   }
 
   async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
+    for (const custom of FakeProvider.customResponses) {
+      if (custom.match(input)) {
+        const res = typeof custom.response === "function" ? custom.response(input) : custom.response
+        if (res && typeof res === "object" && Symbol.asyncIterator in res) {
+          yield* res as AsyncIterable<ProviderEvent>
+        } else if (Array.isArray(res)) {
+          for (const event of res) {
+            yield event
+          }
+        }
+        return
+      }
+    }
+
     const prompt = input.prompt.toLowerCase()
     if (prompt.includes("summarize conversation for context compaction")) {
       yield { type: "text_delta", text: "<summary>\nFake compact summary.\n</summary>" }

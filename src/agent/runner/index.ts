@@ -4,8 +4,8 @@ import { createID, textMessage, userMessage, toolCallMessage, toolResultMessage,
 import { defaultPermissionRules, PermissionService } from "../../permission"
 import { createProvider, type Provider, type ProviderName } from "../../provider"
 import { Sandbox } from "../../sandbox"
-import { SkillService, type SkillArtifact, type SkillServiceLike } from "../../skill"
-import { InstructionService, type InstructionServiceLike } from "../../instruction"
+import { SkillService, type SkillArtifact, type SkillServiceLike, type SkillInfo } from "../../skill"
+import { InstructionService, type InstructionServiceLike, type InstructionInfo } from "../../instruction"
 import { createBuiltinRegistry, type ToolRegistryLike, type ToolDef } from "../../tool"
 import { createRunAspect, type RunAspect } from "../../instrumentation"
 import type { Logger } from "../../logger"
@@ -234,7 +234,7 @@ export class AgentRunner {
     await this.refreshRepoMap(input.signal, prompt)
     
     if (input.signal?.aborted) {
-      return { aborted: true, effectiveMode, agent, usedTools, providerMetrics, state, tools: [], instructions: "", skills: [], selectedSkills: [] }
+      return { aborted: true, effectiveMode, agent, usedTools, providerMetrics, state, tools: [], instructions: [], skills: [], selectedSkills: [] }
     }
     
     const tools = this.registry.list(effectiveMode)
@@ -263,10 +263,11 @@ export class AgentRunner {
     signal: AbortSignal | undefined,
     usedTools: string[],
     prompt: string,
-    selectedSkills: SkillArtifact[],
+    selectedSkills: SkillInfo[],
     reasoningTranscript: string,
     providerMetrics: ProviderMetricsAccumulator,
   ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel" } | { action: "continue"; state: any }> {
+    usedTools.push(toolCall.name)
     let state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
     const result = await runToolCall({
       registry: this.registry,
@@ -365,9 +366,9 @@ export class AgentRunner {
     effectiveMode: AgentMode,
     agent: Agent,
     tools: ToolDef[],
-    instructions: string,
-    skills: SkillArtifact[],
-    selectedSkills: SkillArtifact[],
+    instructions: InstructionInfo[],
+    skills: SkillInfo[],
+    selectedSkills: SkillInfo[],
     usedTools: string[],
     reasoningTranscript: string,
     latestAssistantText: string,

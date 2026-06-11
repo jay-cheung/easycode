@@ -1,5 +1,7 @@
 # Progress Log
 
+Status: Draft
+
 ## Step 36: Unified Run Mode And Planning UX Convergence
 
 - Scope: remove the public `build` vs `plan` split, make direct prompts the default single-run entrypoint without requiring `--once`, and keep the new planning layer operating behind one unified runtime contract.

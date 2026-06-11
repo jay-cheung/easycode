@@ -1,5 +1,7 @@
 # LSP and AST Enhancement Spec
 
+Status: Draft
+
 ## Objective
 
 LSP/AST support improves EasyCode beyond text search by giving the agent code-structure facts and safer edit boundaries.

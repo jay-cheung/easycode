@@ -684,6 +684,67 @@ describe("provider", () => {
       { type: "tool_call", call: { id: "call_text_1", name: "read", input: { filePath: "README.md" }, rawArguments: '{"filePath":"README.md"}' } },
     ])
   })
+
+  test("fake provider custom responses register and clear", async () => {
+    const provider = new FakeProvider()
+    
+    // Register by string match
+    FakeProvider.registerResponse("custom-prompt", [
+      { type: "text_delta", text: "Matched custom string." },
+      { type: "done" }
+    ])
+
+    const events1 = []
+    for await (const event of provider.stream({ mode: "build", prompt: "This is a custom-prompt test", messages: [], providerMessages: [], tools: [] })) {
+      events1.push(event)
+    }
+    expect(events1).toEqual([
+      { type: "text_delta", text: "Matched custom string." },
+      { type: "done" }
+    ])
+
+    // Register by RegExp match
+    FakeProvider.registerResponse(/regex-\d+/, [
+      { type: "text_delta", text: "Matched custom regex." },
+      { type: "done" }
+    ])
+
+    const events2 = []
+    for await (const event of provider.stream({ mode: "build", prompt: "regex-1234", messages: [], providerMessages: [], tools: [] })) {
+      events2.push(event)
+    }
+    expect(events2).toEqual([
+      { type: "text_delta", text: "Matched custom regex." },
+      { type: "done" }
+    ])
+
+    // Register by custom function matcher
+    FakeProvider.registerResponse(
+      (input) => input.mode === "plan" && input.prompt.includes("custom-fn"),
+      [
+        { type: "text_delta", text: "Matched custom function." },
+        { type: "done" }
+      ]
+    )
+
+    const events3 = []
+    for await (const event of provider.stream({ mode: "plan", prompt: "custom-fn test", messages: [], providerMessages: [], tools: [] })) {
+      events3.push(event)
+    }
+    expect(events3).toEqual([
+      { type: "text_delta", text: "Matched custom function." },
+      { type: "done" }
+    ])
+
+    // Clear responses
+    FakeProvider.clearResponses()
+    const events4 = []
+    for await (const event of provider.stream({ mode: "build", prompt: "This is a custom-prompt test", messages: [], providerMessages: [], tools: [] })) {
+      events4.push(event)
+    }
+    // Should fallback to default behavior (e.g. read tool call etc.)
+    expect(events4.some(e => e.type === "tool_call")).toBe(true)
+  })
 })
 
 function sseResponse(events: unknown[]) {
