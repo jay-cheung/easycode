@@ -110,6 +110,7 @@ Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`
     const userPrompt = `Replan request.`
     const rawResponse = await askProvider(provider, userPrompt, systemPrompt)
     const newPlan = parseExecutionPlanFromResponse(rawResponse)
+    newPlan.id = currentPlan.id
 
     // Validate completed steps were not modified by the replan
     for (const step of currentPlan.steps) {
