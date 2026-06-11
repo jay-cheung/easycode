@@ -127,6 +127,27 @@ describe("Planning Layer & Executable Plans", () => {
     expect(() => parseExecutionPlanFromResponse("not-json")).toThrow(InvalidExecutionPlanError)
   })
 
+  test("normalizeExecutionPlan detects non-existent step dependencies", () => {
+    const invalidPlan = {
+      id: "plan_invalid_dep",
+      steps: [
+        { id: "step_1", goal: "inspect", kind: "inspect" as const, dependsOn: ["non_existent_step"] }
+      ]
+    }
+    expect(() => parseExecutionPlanFromResponse(JSON.stringify(invalidPlan))).toThrow(InvalidExecutionPlanError)
+  })
+
+  test("normalizeExecutionPlan detects circular dependencies", () => {
+    const cyclicPlan = {
+      id: "plan_cyclic",
+      steps: [
+        { id: "step_1", goal: "inspect", kind: "inspect" as const, dependsOn: ["step_2"] },
+        { id: "step_2", goal: "edit", kind: "edit" as const, dependsOn: ["step_1"] }
+      ]
+    }
+    expect(() => parseExecutionPlanFromResponse(JSON.stringify(cyclicPlan))).toThrow(InvalidExecutionPlanError)
+  })
+
   test("PlanTracker updates step statuses in ledger and checkpoints to memory", async () => {
     const root = await tmpdir()
     try {

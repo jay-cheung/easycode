@@ -194,20 +194,33 @@ export class AgentRunner {
       activePlanState = await loadStructuredPlanState(this.root, sessionId, planId)
       if (activePlanState) {
         if (isPlanRevisionPrompt(prompt)) {
-          const newPlan = await Replanner.replan(
-            prompt,
-            activePlanState.plan,
-            activePlanState.checkpoint.stepStatuses,
-            activePlanState.checkpoint.currentStepId ?? "",
-            "User changed scope/objective",
-            this.provider
-          )
-          activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
-            stepStatuses: activePlanState.checkpoint.stepStatuses,
-            currentStepId: activePlanState.checkpoint.currentStepId,
-            status: "running",
-            lastReplanReason: "scope_change",
-          })
+          try {
+            const newPlan = await Replanner.replan(
+              prompt,
+              activePlanState.plan,
+              activePlanState.checkpoint.stepStatuses,
+              activePlanState.checkpoint.currentStepId ?? "",
+              "User changed scope/objective",
+              this.provider
+            )
+            activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
+              stepStatuses: activePlanState.checkpoint.stepStatuses,
+              currentStepId: activePlanState.checkpoint.currentStepId,
+              status: "running",
+              lastReplanReason: "scope_change",
+            })
+          } catch (replanError) {
+            activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, activePlanState.plan, {
+              ...activePlanState.checkpoint,
+              status: "blocked",
+              blocker: `Plan revision failed: ${replanError instanceof Error ? replanError.message : String(replanError)}`,
+              lastReplanReason: "scope_change",
+            })
+            this.onEvent?.({
+              type: "failure",
+              text: `Failed to revise plan: ${replanError instanceof Error ? replanError.message : String(replanError)}`
+            })
+          }
         } else if (isPlanApprovalPrompt(prompt) && activePlanState.checkpoint.currentStepId) {
           const currentStatus = activePlanState.checkpoint.stepStatuses[activePlanState.checkpoint.currentStepId] ?? "pending"
           if (currentStatus === "pending") {
@@ -316,20 +329,34 @@ export class AgentRunner {
         const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
         if (currentPlanState) {
           const stepStatuses = { ...currentPlanState.checkpoint.stepStatuses, [failedStepId]: "failed" as const }
-          const newPlan = await Replanner.replan(
-            prompt,
-            currentPlanState.plan,
-            stepStatuses,
-            failedStepId,
-            failReason,
-            this.provider
-          )
-          await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
-            stepStatuses,
-            currentStepId: currentPlanState.checkpoint.currentStepId,
-            status: "running",
-            lastReplanReason: "tool_failure",
-          })
+          try {
+            const newPlan = await Replanner.replan(
+              prompt,
+              currentPlanState.plan,
+              stepStatuses,
+              failedStepId,
+              failReason,
+              this.provider
+            )
+            await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
+              stepStatuses,
+              currentStepId: currentPlanState.checkpoint.currentStepId,
+              status: "running",
+              lastReplanReason: "tool_failure",
+            })
+          } catch (replanError) {
+            await PlanTracker.activatePlan(this.context, this.root, sessionId, currentPlanState.plan, {
+              ...currentPlanState.checkpoint,
+              stepStatuses,
+              status: "blocked",
+              blocker: `Replanning failed: ${replanError instanceof Error ? replanError.message : String(replanError)}`,
+              lastReplanReason: "tool_failure",
+            })
+            this.onEvent?.({
+              type: "failure",
+              text: `Replanning failed: ${replanError instanceof Error ? replanError.message : String(replanError)}`
+            })
+          }
         }
       }
     }

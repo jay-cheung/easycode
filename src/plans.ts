@@ -98,6 +98,38 @@ export function normalizeExecutionPlan(input: unknown): ExecutionPlan {
     throw new InvalidExecutionPlanError("Structured plan must contain at least one step.")
   }
   const steps = raw.steps.map(normalizePlanStep)
+
+  // Validate dependsOn references exist
+  const stepIds = new Set(steps.map((s) => s.id))
+  for (const step of steps) {
+    for (const dep of step.dependsOn ?? []) {
+      if (!stepIds.has(dep)) {
+        throw new InvalidExecutionPlanError(`Plan step '${step.id}' depends on non-existent step '${dep}'.`)
+      }
+    }
+  }
+
+  // Validate no circular dependencies
+  const visited = new Map<string, "visiting" | "visited">()
+  const stepMap = new Map(steps.map((s) => [s.id, s]))
+  function checkCycle(stepId: string): void {
+    if (visited.get(stepId) === "visiting") {
+      throw new InvalidExecutionPlanError(`Circular dependency detected in plan involving step '${stepId}'.`)
+    }
+    if (visited.get(stepId) === "visited") return
+    visited.set(stepId, "visiting")
+    const step = stepMap.get(stepId)
+    if (step) {
+      for (const dep of step.dependsOn ?? []) {
+        checkCycle(dep)
+      }
+    }
+    visited.set(stepId, "visited")
+  }
+  for (const step of steps) {
+    checkCycle(step.id)
+  }
+
   return { id, title, steps }
 }
 
