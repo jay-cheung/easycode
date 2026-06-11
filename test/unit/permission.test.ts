@@ -20,12 +20,12 @@ describe("permission", () => {
 
   test("always approval is remembered", async () => {
     const service = new PermissionService([{ permission: "edit", pattern: "*", action: "ask" }])
-    const pending = service.authorize({ permission: "edit", patterns: ["src/a.ts"], always: ["src/a.ts"], metadata: {} })
+    const pending = service.authorize({ permission: "edit", patterns: ["/src/a.ts"], always: ["/src/a.ts"], metadata: {} })
     const request = [...service.pending.values()][0]
     expect(request.permission).toBe("edit")
     service.reply(request.id, "always")
     await pending
-    expect(service.evaluate("edit", "src/a.ts")).toBe("allow")
+    expect(service.evaluate("edit", "/src/a.ts")).toBe("allow")
   })
 
   test("once approval can be remembered for repeat-safe requests", async () => {
@@ -49,8 +49,8 @@ describe("permission", () => {
 
   test("once approval is not remembered unless requested", async () => {
     const service = new PermissionService([{ permission: "edit", pattern: "*", action: "ask" }], () => "once")
-    await service.authorize({ permission: "edit", patterns: ["src/a.ts"], always: ["src/a.ts"], metadata: {} })
-    expect(service.evaluate("edit", "src/a.ts")).toBe("ask")
+    await service.authorize({ permission: "edit", patterns: ["/src/a.ts"], always: ["/src/a.ts"], metadata: {} })
+    expect(service.evaluate("edit", "/src/a.ts")).toBe("ask")
   })
 
   test("authorize can reuse precomputed decisions", async () => {
@@ -62,33 +62,33 @@ describe("permission", () => {
     }
 
     await service.authorize(
-      { permission: "edit", patterns: ["src/a.ts"], always: ["src/a.ts"], metadata: {} },
-      [{ pattern: "src/a.ts", action: "allow" }],
+      { permission: "edit", patterns: ["/src/a.ts"], always: ["/src/a.ts"], metadata: {} },
+      [{ pattern: "/src/a.ts", action: "allow" }],
     )
   })
 
   test("remembered approvals are deduped", async () => {
     const service = new PermissionService([{ permission: "edit", pattern: "*", action: "ask" }], () => "always")
 
-    await service.authorize({ permission: "edit", patterns: ["src/a.ts"], always: ["src/a.ts"], metadata: {} })
-    await service.authorize({ permission: "edit", patterns: ["src/a.ts"], always: ["src/a.ts"], metadata: {} })
+    await service.authorize({ permission: "edit", patterns: ["/src/a.ts"], always: ["/src/a.ts"], metadata: {} })
+    await service.authorize({ permission: "edit", patterns: ["/src/a.ts"], always: ["/src/a.ts"], metadata: {} })
 
-    expect(service.approved).toEqual([{ permission: "edit", pattern: "src/a.ts", action: "allow" }])
+    expect(service.approved).toEqual([{ permission: "edit", pattern: "/src/a.ts", action: "allow" }])
   })
 
   test("withRules snapshots approvals without sharing future approvals", async () => {
     const service = new PermissionService([{ permission: "edit", pattern: "*", action: "ask" }], () => "always")
 
-    await service.authorize({ permission: "edit", patterns: ["src/a.ts"], always: ["src/a.ts"], metadata: {} })
+    await service.authorize({ permission: "edit", patterns: ["/src/a.ts"], always: ["/src/a.ts"], metadata: {} })
     const child = service.withRules([{ permission: "edit", pattern: "*", action: "ask" }])
-    await service.authorize({ permission: "edit", patterns: ["src/b.ts"], always: ["src/b.ts"], metadata: {} })
+    await service.authorize({ permission: "edit", patterns: ["/src/b.ts"], always: ["/src/b.ts"], metadata: {} })
 
-    expect(child.evaluate("edit", "src/a.ts")).toBe("allow")
-    expect(child.evaluate("edit", "src/b.ts")).toBe("ask")
+    expect(child.evaluate("edit", "/src/a.ts")).toBe("allow")
+    expect(child.evaluate("edit", "/src/b.ts")).toBe("ask")
 
     // Verify child mutations do not affect parent
-    await child.authorize({ permission: "edit", patterns: ["src/c.ts"], always: ["src/c.ts"], metadata: {} })
-    expect(service.evaluate("edit", "src/c.ts")).toBe("ask")
+    await child.authorize({ permission: "edit", patterns: ["/src/c.ts"], always: ["/src/c.ts"], metadata: {} })
+    expect(service.evaluate("edit", "/src/c.ts")).toBe("ask")
   })
 
   test("denies curl pipe shell without denying curl or shell alone", () => {
@@ -196,8 +196,8 @@ describe("permission", () => {
 
     await expect(service.authorize({
       permission: "edit",
-      patterns: ["src/a.ts"],
-      always: ["src/a.ts"],
+      patterns: ["/src/a.ts"],
+      always: ["/src/a.ts"],
       metadata: { tool: "edit" },
     })).rejects.toThrow("Permission rejected")
 
@@ -215,8 +215,32 @@ describe("permission", () => {
     expect(requested).toEqual([
       "bash:bash:readonly:cat:/repo/.env",
       "bash:bash:readonly:cat:/repo/.envrc",
-      "edit:src/a.ts",
+      "edit:/src/a.ts",
       "bash:bash:exact:curl -H Authorization:secret https://example.com",
     ])
+  })
+
+  test("allows edit and write inside project root by default while asking for sensitive or outside files", () => {
+    const rules = defaultPermissionRules("build")
+    // Safe project root edits and writes
+    expect(evaluatePermission("edit", "src/index.ts", rules)).toBe("allow")
+    expect(evaluatePermission("write", "src/utils.ts", rules)).toBe("allow")
+    expect(evaluatePermission("edit", "index.js", rules)).toBe("allow")
+
+    // Sensitive files must ask
+    expect(evaluatePermission("edit", ".env", rules)).toBe("ask")
+    expect(evaluatePermission("edit", "src/.env", rules)).toBe("ask")
+    expect(evaluatePermission("write", "secrets/key.txt", rules)).toBe("ask")
+
+    // Files outside project root must ask
+    expect(evaluatePermission("edit", "../outside.ts", rules)).toBe("ask")
+    expect(evaluatePermission("edit", "/etc/passwd", rules)).toBe("ask")
+
+    // User-defined specific rule takes precedence
+    const customRules = [
+      { permission: "edit", pattern: "src/admin/*", action: "deny" as const },
+      ...rules
+    ]
+    expect(evaluatePermission("edit", "src/admin/db.ts", customRules)).toBe("deny")
   })
 })

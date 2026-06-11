@@ -272,7 +272,7 @@ export class AgentRunner {
     const result = await runToolCall({
       registry: this.registry,
       sandbox: this.sandbox,
-      permission: this.permission,
+      permission: this.permissionFor(effectiveMode),
       permissionFor: (mode) => this.permissionFor(mode),
       skills: this.skills,
       context: this.context,

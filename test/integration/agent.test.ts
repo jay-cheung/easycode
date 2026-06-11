@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
@@ -39,6 +39,10 @@ async function waitForPendingPermission(permission: PermissionService, timeoutMs
 }
 
 describe("agent integration", () => {
+  afterEach(() => {
+    FakeProvider.clearResponses()
+  })
+
   test("build-simple-edit", async () => {
     const root = await fixture()
     const result = await createRunner({ root, provider: "fake", mode: "build" }).run("Fix the failing test", "build")
@@ -996,9 +1000,41 @@ describe("agent integration", () => {
 
   test("permission-ask-once", async () => {
     const root = await fixture()
+    const call = (name: string, input: Record<string, unknown> = {}) => ({ id: `call_${name}`, name, input })
+    const hasToolResult = (messages: any[], name: string) => toolResults(messages).some((part) => part.toolName === name)
+
+    FakeProvider.registerResponse("Fix the failing test with custom rules", (input) => {
+      const messages = input.messages
+      const fileAlreadyRead = hasToolResult(messages, "read")
+      if (!fileAlreadyRead) {
+        return [
+          { type: "tool_call" as const, call: call("read", { filePath: "src/add.ts" }) },
+          { type: "done" as const }
+        ]
+      }
+      const fileAlreadyEdited = hasToolResult(messages, "edit")
+      if (!fileAlreadyEdited) {
+        return [
+          { type: "tool_call" as const, call: call("edit", { filePath: ".env", oldString: "SECRET=x", newString: "SECRET=y" }) },
+          { type: "done" as const }
+        ]
+      }
+      const testsAlreadyRan = hasToolResult(messages, "bash")
+      if (!testsAlreadyRan) {
+        return [
+          { type: "tool_call" as const, call: call("bash", { command: "bun run test" }) },
+          { type: "done" as const }
+        ]
+      }
+      return [
+        { type: "text_delta" as const, text: "Task completed." },
+        { type: "done" as const }
+      ]
+    })
+
     const permission = new PermissionService(defaultPermissionRules("build"))
     const runner = new AgentRunner({ root, provider: new FakeProvider(), permission })
-    const pending = runner.run("Fix the failing test", "build")
+    const pending = runner.run("Fix the failing test with custom rules", "build")
     const request = await waitForPendingPermission(permission)
     expect(request.permission).toBe("edit")
     permission.reply(request.id, "once")

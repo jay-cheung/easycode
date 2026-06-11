@@ -93,11 +93,46 @@ function isCurlPipedToShellCommand(pattern: string) {
   return false
 }
 
+function isSafeProjectRootEditPattern(pattern: string) {
+  const normalized = pattern.replaceAll("\\", "/").trim()
+
+  // Must not be an absolute path
+  if (normalized.startsWith("/") || /^[a-zA-Z]:\//.test(normalized)) {
+    return false
+  }
+
+  // Must not escape the root
+  if (normalized.startsWith("../") || normalized.includes("/../") || normalized === "..") {
+    return false
+  }
+
+  // Must not contain sensitive path names (like .env or secrets)
+  if (containsSensitivePath(normalized)) {
+    return false
+  }
+
+  return true
+}
+
 export function evaluatePermission(permission: string, pattern: string, rules: PermissionRule[]): PermissionAction {
   if (permission === "bash" && isCurlPipedToShellCommand(pattern)) {
     return "deny"
   }
+
   const matches = rules.filter((rule) => matchPattern(rule.permission, permission) && matchPattern(rule.pattern, pattern))
+
+  // If the permission is edit/write, and we only matched catch-all rule(s) (pattern === "*"),
+  // we can relax the permission to "allow" if the file is inside the project root and not sensitive.
+  if ((permission === "edit" || permission === "write") && isSafeProjectRootEditPattern(pattern)) {
+    const hasSpecificRule = matches.some((rule) => rule.pattern !== "*" && rule.permission === permission)
+    if (!hasSpecificRule) {
+      const wildcardMatches = matches.filter((rule) => rule.permission === permission && rule.pattern === "*")
+      if (wildcardMatches.length === matches.filter((rule) => rule.permission === permission).length) {
+        return "allow"
+      }
+    }
+  }
+
   if (matches.some((rule) => rule.action === "deny")) return "deny"
   if (matches.some((rule) => rule.action === "ask")) return "ask"
   if (matches.some((rule) => rule.action === "allow")) return "allow"
