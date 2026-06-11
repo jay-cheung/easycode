@@ -40,7 +40,7 @@ export function registerGitTools(registry: ToolRegistry) {
     jsonSchema: objectSchema({ files: { type: "array", items: { type: "string" }, description: "Project-relative files to stage." } }),
     permission: "bash",
     modes: ["build"],
-    patterns: () => [scopedBashApproval("git:stage", "explicit-files", []).target],
+    patterns: () => [scopedBashApproval("git:stage", "explicit-files", [], false).target],
     execute: async (input, ctx) => gitStageToolResult(GitStageInput.parse(input), ctx),
   })
 
@@ -51,7 +51,7 @@ export function registerGitTools(registry: ToolRegistry) {
     jsonSchema: objectSchema({ message: { type: "string" }, files: { type: "array", items: { type: "string" } } }),
     permission: "bash",
     modes: ["build"],
-    patterns: () => [scopedBashApproval("git:commit", "explicit-files", []).target],
+    patterns: () => [scopedBashApproval("git:commit", "explicit-files", [], false).target],
     execute: async (input, ctx) => gitCommitToolResult(GitCommitInput.parse(input), ctx),
   })
 
@@ -84,7 +84,7 @@ export function registerGitTools(registry: ToolRegistry) {
     jsonSchema: objectSchema({ files: { type: "array", items: { type: "string" } }, staged: { type: "boolean" }, worktree: { type: "boolean" } }),
     permission: "bash",
     modes: ["build"],
-    patterns: () => [scopedBashApproval("git:restore", "explicit-files", []).target],
+    patterns: () => [scopedBashApproval("git:restore", "explicit-files", [], false).target],
     execute: async (input, ctx) => gitRestoreToolResult(GitRestoreInput.parse(input), ctx),
   })
 }

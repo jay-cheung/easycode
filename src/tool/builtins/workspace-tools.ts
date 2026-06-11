@@ -225,7 +225,7 @@ export function registerWorkspaceTools(registry: ToolRegistry) {
     jsonSchema: objectSchema({ name: { type: "string" } }),
     permission: "bash",
     modes: ["build"],
-    patterns: () => [scopedBashApproval("connector", "configured-command", []).target],
+    patterns: () => [scopedBashApproval("connector", "configured-command", [], false).target],
     execute: async (input, ctx) => {
       const params = ConnectorCallInput.parse(input)
       const { tool, result } = await new ConnectorService(ctx.sandbox.root).call(params.name, ctx.sandbox, ctx.signal)

@@ -77,13 +77,14 @@ function rawBashApproval(command: string, repeatSafe: boolean): BashApproval {
   }
 }
 
-export function scopedBashApproval(kind: string, scope: string, rememberPatterns: string[]): BashApproval {
-  const target = `bash:readonly:${kind}:${scope}`
-  const labelScope = rememberPatterns.length > 0 ? rememberPatterns.map((pattern) => pattern.replace(`bash:readonly:${kind}:`, "")).join(", ") : scope
+export function scopedBashApproval(kind: string, scope: string, rememberPatterns: string[], readonly: boolean = true): BashApproval {
+  const prefix = readonly ? "bash:readonly:" : "bash:scoped:"
+  const target = `${prefix}${kind}:${scope}`
+  const labelScope = rememberPatterns.length > 0 ? rememberPatterns.map((pattern) => pattern.replace(`${prefix}${kind}:`, "")).join(", ") : scope
   return {
     target,
     rememberPatterns: rememberPatterns.length > 0 ? rememberPatterns : [target],
-    label: `readonly ${kind} ${labelScope}`,
+    label: readonly ? `readonly ${kind} ${labelScope}` : `${kind} ${labelScope}`,
     repeatSafe: true,
   }
 }
