@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import type { PermissionAction } from "./message"
 
 export type PermissionRule = {
@@ -39,11 +40,8 @@ export class PermissionRejectedError extends Error {
   }
 }
 
-let permissionCounter = 0
-
 function nextPermissionID() {
-  permissionCounter += 1
-  return `perm_${Date.now().toString(36)}_${permissionCounter.toString(36)}`
+  return `perm_${randomUUID()}`
 }
 
 function escapeRegExp(input: string) {
@@ -65,6 +63,9 @@ function patternRegExp(pattern: string) {
   const regexp = new RegExp(source)
   patternCache.set(normalized, regexp)
   if (patternCache.size > patternCacheLimit) {
+    // Note: Map.prototype.keys().next().value returns the first key in insertion order.
+    // In V8, Map iterator traversal starts from the beginning of the insertion list,
+    // making next() conceptually O(1) in practice, thus achieving O(1) LRU eviction.
     const oldest = patternCache.keys().next().value
     if (oldest !== undefined) patternCache.delete(oldest)
   }
@@ -75,7 +76,27 @@ export function matchPattern(pattern: string, value: string) {
   return patternRegExp(pattern).test(value.replaceAll("\\", "/"))
 }
 
+function isCurlPipedToShellCommand(pattern: string) {
+  let command = pattern
+  if (command.startsWith("bash:exact:")) {
+    command = command.slice("bash:exact:".length)
+  }
+  const text = command.trim().toLowerCase()
+  if (!/\b(curl|wget)\b/.test(text)) return false
+  const parts = text.split("|")
+  if (parts.length < 2) return false
+  const afterPipe = parts[parts.length - 1].trim()
+  const words = afterPipe.split(/\s+/)
+  const program = words[0]
+  if (["sh", "bash", "source", "/bin/sh", "/bin/bash"].includes(program)) return true
+  if (program === "sudo" && words[1] && ["sh", "bash", "/bin/sh", "/bin/bash"].includes(words[1])) return true
+  return false
+}
+
 export function evaluatePermission(permission: string, pattern: string, rules: PermissionRule[]): PermissionAction {
+  if (permission === "bash" && isCurlPipedToShellCommand(pattern)) {
+    return "deny"
+  }
   const matches = rules.filter((rule) => matchPattern(rule.permission, permission) && matchPattern(rule.pattern, pattern))
   if (matches.some((rule) => rule.action === "deny")) return "deny"
   if (matches.some((rule) => rule.action === "ask")) return "ask"
@@ -228,9 +249,6 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "bash", pattern: "sudo*", action: "deny" },
     { permission: "bash", pattern: "git push*", action: "deny" },
     { permission: "bash", pattern: "docker*", action: "deny" },
-    // The pipe is literal here: deny curl-pipe-shell, but do not deny curl or shell commands by themselves.
-    { permission: "bash", pattern: "*curl*|*sh*", action: "deny" },
-    { permission: "bash", pattern: "*curl*|*bash*", action: "deny" },
     { permission: "sandbox_bypass", pattern: "*", action: "ask" },
     { permission: "skill", pattern: "*", action: "ask" },
     { permission: "mcp", pattern: "*", action: "allow" },

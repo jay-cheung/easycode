@@ -6,7 +6,7 @@ import { createProvider, type Provider, type ProviderName } from "../../provider
 import { Sandbox } from "../../sandbox"
 import { SkillService, type SkillArtifact, type SkillServiceLike } from "../../skill"
 import { InstructionService, type InstructionServiceLike } from "../../instruction"
-import { createBuiltinRegistry, type ToolRegistryLike } from "../../tool"
+import { createBuiltinRegistry, type ToolRegistryLike, type ToolDef } from "../../tool"
 import { createRunAspect, type RunAspect } from "../../instrumentation"
 import type { Logger } from "../../logger"
 import { ProjectMemoryStore, renderProjectMemoryRecall, shouldAutoRecallProjectMemory, type ProjectMemoryRecord } from "../../memory"
@@ -127,6 +127,61 @@ export class AgentRunner {
   }
 
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[]; signal?: AbortSignal } = {}): Promise<AgentRunResult> {
+    const prep = await this.prepareRun(prompt, mode, input)
+    if (prep.aborted) {
+      return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
+    }
+
+    let reasoningTranscript = ""
+    let latestAssistantText = ""
+    let state = prep.state
+
+    for (let step = 0; step < this.maxSteps; step += 1) {
+      const stepResult = await this.runStep(
+        step,
+        prompt,
+        prep.effectiveMode,
+        prep.agent,
+        prep.tools,
+        prep.instructions,
+        prep.skills,
+        prep.selectedSkills,
+        prep.usedTools,
+        reasoningTranscript,
+        latestAssistantText,
+        state,
+        prep.providerMetrics,
+        input
+      )
+
+      if (stepResult.action === "cancel") {
+        return this.cancelledResult(stepResult.reasoningTranscript ?? reasoningTranscript, prep.usedTools, stepResult.output, prep.providerMetrics)
+      }
+
+      if (stepResult.action === "exit") {
+        return stepResult.result
+      }
+
+      reasoningTranscript = stepResult.reasoningTranscript
+      latestAssistantText = stepResult.latestAssistantText
+      state = stepResult.state
+    }
+
+    const maxStepsText = runFailureText(`Stopped after maxSteps (${this.maxSteps}).`, "max_steps")
+    const text = appendOutput(latestAssistantText, maxStepsText)
+    this.onEvent?.({ type: "failure", text: maxStepsText })
+    this.onTextDelta?.(maxStepsText)
+    this.context.add(assistantMessage(reasoningTranscript, text))
+    state = this.aspect.runFailed("max_steps", prep.usedTools)
+    this.emitRunDone("failed", prep.providerMetrics)
+    return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools: prep.usedTools, state }
+  }
+
+  private async prepareRun(
+    prompt: string,
+    mode: AgentMode,
+    input: { images?: ImagePart[]; signal?: AbortSignal }
+  ) {
     const ledger = this.context.state.ledger
     const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
     let resolvedMode = mode
@@ -169,9 +224,7 @@ export class AgentRunner {
     const effectiveMode = this.effectiveMode(prompt, resolvedMode)
     const agent = createAgent(effectiveMode)
     const usedTools: string[] = []
-    let latestAssistantText = ""
-    let reasoningTranscript = ""
-    let state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
+    const state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
     const providerMetrics = createProviderMetrics(this.provider.name, this.provider.model)
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
@@ -179,39 +232,175 @@ export class AgentRunner {
     this.recordRunIntent(prompt)
     await this.maybeRecallProjectMemory(prompt)
     await this.refreshRepoMap(input.signal, prompt)
-    if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
+    
+    if (input.signal?.aborted) {
+      return { aborted: true, effectiveMode, agent, usedTools, providerMetrics, state, tools: [], instructions: "", skills: [], selectedSkills: [] }
+    }
+    
     const tools = this.registry.list(effectiveMode)
     const instructions = await this.instructions.system()
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
     this.recordActiveSkills(selectedSkills)
-    for (let step = 0; step < this.maxSteps; step += 1) {
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-      this.aspect.step(step + 1, this.maxSteps)
-      try {
-        await this.compactContext(providerMetrics)
-      } catch (error) {
-        if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-        throw error
-      }
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
 
-      let activeHypothesisMsgs = this.activeHypothesisMessages()
-      const latestLedger = this.context.state.ledger
-      const activePlanIdRec = latestLedger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
-      if (activePlanIdRec) {
-        const planId = activePlanIdRec.value
+    return {
+      aborted: false,
+      effectiveMode,
+      agent,
+      usedTools,
+      providerMetrics,
+      state,
+      tools,
+      instructions,
+      skills,
+      selectedSkills
+    }
+  }
+
+  private async executeToolCall(
+    toolCall: ToolCall,
+    effectiveMode: AgentMode,
+    signal: AbortSignal | undefined,
+    usedTools: string[],
+    prompt: string,
+    selectedSkills: SkillArtifact[],
+    reasoningTranscript: string,
+    providerMetrics: ProviderMetricsAccumulator,
+  ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel" } | { action: "continue"; state: any }> {
+    let state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
+    const result = await runToolCall({
+      registry: this.registry,
+      sandbox: this.sandbox,
+      permission: this.permission,
+      permissionFor: (mode) => this.permissionFor(mode),
+      skills: this.skills,
+      context: this.context,
+      onEvent: this.onEvent,
+      toolProgressIntervalMs: this.toolProgressIntervalMs,
+    }, toolCall, effectiveMode, signal)
+    
+    if (toolCall.name === "skill" && result.metadata.status === "succeeded") {
+      this.markSkillLoaded(toolCall.input)
+      this.recordActiveSkills(selectedSkills)
+    }
+    
+    this.recordToolOutcome(toolCall, result, prompt)
+    this.context.add(toolResultMessage({
+      callID: toolCall.id,
+      toolName: toolCall.name,
+      status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed",
+      output: result.output,
+      metadata: result.metadata,
+    }))
+    
+    this.noteExternalEvidence()
+    emitToolResultEvent({ onEvent: this.onEvent }, toolCall, result)
+    
+    if (toolCall.name === "skill" && result.metadata.status === "succeeded") {
+      await this.autoInspectSkillArtifacts(result, effectiveMode, signal, prompt, usedTools)
+    }
+    
+    if (signal?.aborted || result.metadata.cancelled === true) {
+      return { action: "cancel" }
+    }
+    
+    if (toolCall.name === "plan_step_fail") {
+      const failedStepId = result.metadata.failedStepId as string
+      const failReason = result.metadata.reason as string
+      const latestLedger2 = this.context.state.ledger
+      const planIdRec = latestLedger2?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+      if (planIdRec) {
+        const planId = planIdRec.value
         const sessionId = this.sessionId || "default"
         const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
-        const stepId = currentPlanState?.checkpoint.currentStepId
-        if (currentPlanState && stepId) {
-          const s = currentPlanState.plan.steps.find(stepItem => stepItem.id === stepId)
-          if (s) {
-            activeHypothesisMsgs = [
-              ...activeHypothesisMsgs,
-              {
-                role: "system" as const,
-                content: `[Active Plan Step Reminder]
+        if (currentPlanState) {
+          const stepStatuses = { ...currentPlanState.checkpoint.stepStatuses, [failedStepId]: "failed" as const }
+          const newPlan = await Replanner.replan(
+            prompt,
+            currentPlanState.plan,
+            stepStatuses,
+            failedStepId,
+            failReason,
+            this.provider
+          )
+          await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
+            stepStatuses,
+            currentStepId: currentPlanState.checkpoint.currentStepId,
+            status: "running",
+            lastReplanReason: "tool_failure",
+          })
+        }
+      }
+    }
+    
+    if (toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
+      const output = result.output
+      try {
+        const planMarkdown = protocol.stripPlanTags(result.output)
+        const planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
+        const sessionId = this.sessionId || "default"
+        await PlanTracker.activatePlan(this.context, this.root, sessionId, planJson, { status: "draft" })
+      } catch {
+        /* keep markdown-only plan output when structured parsing fails */
+      }
+
+      const displayText = protocol.stripPlanTags(result.output)
+      emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
+      this.hasProposedPlan = true
+      this.context.add(assistantMessage(reasoningTranscript, output))
+      state = this.aspect.transition("completed", { usedTools })
+      this.emitRunDone("completed", providerMetrics)
+      return {
+        action: "exit",
+        result: { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+      }
+    }
+    
+    return { action: "continue", state }
+  }
+
+  private async runStep(
+    step: number,
+    prompt: string,
+    effectiveMode: AgentMode,
+    agent: Agent,
+    tools: ToolDef[],
+    instructions: string,
+    skills: SkillArtifact[],
+    selectedSkills: SkillArtifact[],
+    usedTools: string[],
+    reasoningTranscript: string,
+    latestAssistantText: string,
+    state: any,
+    providerMetrics: ProviderMetricsAccumulator,
+    input: { images?: ImagePart[]; signal?: AbortSignal },
+  ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel"; output?: string; reasoningTranscript?: string } | { action: "continue"; reasoningTranscript: string; latestAssistantText: string; state: any }> {
+    if (input.signal?.aborted) return { action: "cancel", reasoningTranscript }
+    this.aspect.step(step + 1, this.maxSteps)
+    try {
+      await this.compactContext(providerMetrics)
+    } catch (error) {
+      if (input.signal?.aborted) return { action: "cancel", reasoningTranscript }
+      throw error
+    }
+    if (input.signal?.aborted) return { action: "cancel", reasoningTranscript }
+
+    let activeHypothesisMsgs = this.activeHypothesisMessages()
+    const latestLedger = this.context.state.ledger
+    const activePlanIdRec = latestLedger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+    if (activePlanIdRec) {
+      const planId = activePlanIdRec.value
+      const sessionId = this.sessionId || "default"
+      const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
+      const stepId = currentPlanState?.checkpoint.currentStepId
+      if (currentPlanState && stepId) {
+        const s = currentPlanState.plan.steps.find(stepItem => stepItem.id === stepId)
+        if (s) {
+          activeHypothesisMsgs = [
+            ...activeHypothesisMsgs,
+            {
+              role: "system" as const,
+              content: `[Active Plan Step Reminder]
 Active Plan: ${currentPlanState.plan.title || planId}
 Current Step: ${s.id} (kind: ${s.kind})
 Goal: ${s.goal}
@@ -222,142 +411,107 @@ Fallback: ${s.fallback || "none"}
 Focus ONLY on achieving the goal of this step. Do not deviate.
 When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' to proceed.
 If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear explanation.`
-              }
-            ]
-          }
-        }
-      }
-
-      const preparedTurn = prepareProviderTurnRequest({
-        context: this.context,
-        step,
-        maxSteps: this.maxSteps,
-        agent,
-        instructions,
-        skills,
-        selectedSkills,
-        pendingSkillLoads: this.pendingSelectedSkills(selectedSkills),
-        tools,
-        usedTools,
-        activeHypothesisMessages: activeHypothesisMsgs,
-      })
-      state = this.aspect.transition("streaming", { step: step + 1 })
-      const turn = await this.runValidatedProviderTurn({
-        agent,
-        prompt,
-        messages: this.context.state.messages,
-        providerMessages: preparedTurn.providerMessages,
-        tools: preparedTurn.availableTools,
-        signal: input.signal,
-        providerMetrics,
-      })
-      const currentReasoningTranscript = () => appendOutput(reasoningTranscript, turn.reasoningText)
-      if (turn.cancelledOutput) return this.cancelledResult(currentReasoningTranscript(), usedTools, turn.cancelledOutput, providerMetrics)
-      reasoningTranscript = currentReasoningTranscript()
-      if (input.signal?.aborted) return this.cancelledResult(reasoningTranscript, usedTools, appendOutput(turn.text, "Run cancelled by user."), providerMetrics)
-      if (turn.failureText) {
-        const output = appendOutput(turn.text, turn.failureText)
-        this.context.add(assistantMessage(reasoningTranscript, output))
-        state = this.aspect.runFailed("provider_error", usedTools)
-        this.emitRunDone("failed", providerMetrics)
-        return { status: "failed", failureReason: "provider_error", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
-      }
-      if (turn.text) latestAssistantText = turn.text
-      if (turn.toolCalls.length === 0) {
-        const output = turn.text
-        if (protocol.hasProposedPlanText(output)) this.hasProposedPlan = true
-        this.context.add(assistantMessage(reasoningTranscript, output))
-        state = this.aspect.transition("completed", { usedTools })
-        this.emitRunDone("completed", providerMetrics)
-        return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
-      }
-      state = this.aspect.transition("tool_pending", { tools: turn.toolCalls.map((call) => call.name), callIDs: turn.toolCalls.map((call) => call.id) })
-      this.context.add(toolCallMessage(turn.toolCalls))
-      for (const toolCall of turn.toolCalls) {
-        usedTools.push(toolCall.name)
-        state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
-        const result = await runToolCall({
-          registry: this.registry,
-          sandbox: this.sandbox,
-          permission: this.permission,
-          permissionFor: (mode) => this.permissionFor(mode),
-          skills: this.skills,
-          context: this.context,
-          onEvent: this.onEvent,
-          toolProgressIntervalMs: this.toolProgressIntervalMs,
-        }, toolCall, effectiveMode, input.signal)
-        if (toolCall.name === "skill" && result.metadata.status === "succeeded") {
-          this.markSkillLoaded(toolCall.input)
-          this.recordActiveSkills(selectedSkills)
-        }
-        this.recordToolOutcome(toolCall, result, prompt)
-        this.context.add(toolResultMessage({ callID: toolCall.id, toolName: toolCall.name, status: result.metadata.status === "succeeded" ? "succeeded" : result.metadata.status === "denied" ? "denied" : "failed", output: result.output, metadata: result.metadata }))
-        this.noteExternalEvidence()
-        emitToolResultEvent({ onEvent: this.onEvent }, toolCall, result)
-        if (toolCall.name === "skill" && result.metadata.status === "succeeded") {
-          await this.autoInspectSkillArtifacts(result, effectiveMode, input.signal, prompt, usedTools)
-        }
-        if (input.signal?.aborted || result.metadata.cancelled === true) return this.cancelledResult(reasoningTranscript, usedTools, undefined, providerMetrics)
-        
-        if (toolCall.name === "plan_step_fail") {
-          const failedStepId = result.metadata.failedStepId as string
-          const failReason = result.metadata.reason as string
-          const latestLedger2 = this.context.state.ledger
-          const planIdRec = latestLedger2?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
-          if (planIdRec) {
-            const planId = planIdRec.value
-            const sessionId = this.sessionId || "default"
-            const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
-            if (currentPlanState) {
-              const stepStatuses = { ...currentPlanState.checkpoint.stepStatuses, [failedStepId]: "failed" as const }
-              const newPlan = await Replanner.replan(
-                prompt,
-                currentPlanState.plan,
-                stepStatuses,
-                failedStepId,
-                failReason,
-                this.provider
-              )
-              await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
-                stepStatuses,
-                currentStepId: currentPlanState.checkpoint.currentStepId,
-                status: "running",
-                lastReplanReason: "tool_failure",
-              })
             }
-          }
-        }
-        
-        if (toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
-          const output = result.output
-          try {
-            const planMarkdown = protocol.stripPlanTags(result.output)
-            const planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
-            const sessionId = this.sessionId || "default"
-            await PlanTracker.activatePlan(this.context, this.root, sessionId, planJson, { status: "draft" })
-          } catch {
-            /* keep markdown-only plan output when structured parsing fails */
-          }
-
-          const displayText = protocol.stripPlanTags(result.output)
-          emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
-          this.hasProposedPlan = true
-          this.context.add(assistantMessage(reasoningTranscript, output))
-          state = this.aspect.transition("completed", { usedTools })
-          this.emitRunDone("completed", providerMetrics)
-          return { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+          ]
         }
       }
-      state = this.aspect.transition("streaming", { nextStep: step + 2 })
     }
-    const maxStepsText = runFailureText(`Stopped after maxSteps (${this.maxSteps}).`, "max_steps")
-    const text = appendOutput(latestAssistantText, maxStepsText)
-    this.onEvent?.({ type: "failure", text: maxStepsText })
-    this.onTextDelta?.(maxStepsText)
-    this.context.add(assistantMessage(reasoningTranscript, text))
-    state = this.aspect.runFailed("max_steps", usedTools)
-    this.emitRunDone("failed", providerMetrics)
-    return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+
+    const preparedTurn = prepareProviderTurnRequest({
+      context: this.context,
+      step,
+      maxSteps: this.maxSteps,
+      agent,
+      instructions,
+      skills,
+      selectedSkills,
+      pendingSkillLoads: this.pendingSelectedSkills(selectedSkills),
+      tools,
+      usedTools,
+      activeHypothesisMessages: activeHypothesisMsgs,
+    })
+
+    let currentState = this.aspect.transition("streaming", { step: step + 1 })
+    const turn = await this.runValidatedProviderTurn({
+      agent,
+      prompt,
+      messages: this.context.state.messages,
+      providerMessages: preparedTurn.providerMessages,
+      tools: preparedTurn.availableTools,
+      signal: input.signal,
+      providerMetrics,
+    })
+
+    const currentReasoningTranscript = appendOutput(reasoningTranscript, turn.reasoningText)
+    if (turn.cancelledOutput) {
+      return { action: "cancel", output: turn.cancelledOutput, reasoningTranscript: currentReasoningTranscript }
+    }
+
+    const nextReasoningTranscript = currentReasoningTranscript
+    if (input.signal?.aborted) {
+      return { action: "cancel", output: appendOutput(turn.text, "Run cancelled by user."), reasoningTranscript: nextReasoningTranscript }
+    }
+
+    if (turn.failureText) {
+      const output = appendOutput(turn.text, turn.failureText)
+      this.context.add(assistantMessage(nextReasoningTranscript, output))
+      currentState = this.aspect.runFailed("provider_error", usedTools)
+      this.emitRunDone("failed", providerMetrics)
+      return {
+        action: "exit",
+        result: { status: "failed", failureReason: "provider_error", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
+      }
+    }
+
+    let nextLatestAssistantText = latestAssistantText
+    if (turn.text) nextLatestAssistantText = turn.text
+
+    if (turn.toolCalls.length === 0) {
+      const output = turn.text
+      if (protocol.hasProposedPlanText(output)) this.hasProposedPlan = true
+      this.context.add(assistantMessage(nextReasoningTranscript, output))
+      currentState = this.aspect.transition("completed", { usedTools })
+      this.emitRunDone("completed", providerMetrics)
+      return {
+        action: "exit",
+        result: { status: "completed", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
+      }
+    }
+
+    currentState = this.aspect.transition("tool_pending", { tools: turn.toolCalls.map((call) => call.name), callIDs: turn.toolCalls.map((call) => call.id) })
+    this.context.add(toolCallMessage(turn.toolCalls))
+
+    for (const toolCall of turn.toolCalls) {
+      const toolCallResult = await this.executeToolCall(
+        toolCall,
+        effectiveMode,
+        input.signal,
+        usedTools,
+        prompt,
+        selectedSkills,
+        nextReasoningTranscript,
+        providerMetrics
+      )
+
+      if (toolCallResult.action === "cancel") {
+        return { action: "cancel", reasoningTranscript: nextReasoningTranscript }
+      }
+
+      if (toolCallResult.action === "exit") {
+        return { action: "exit", result: toolCallResult.result }
+      }
+
+      currentState = toolCallResult.state
+    }
+
+    currentState = this.aspect.transition("streaming", { nextStep: step + 2 })
+
+    return {
+      action: "continue",
+      reasoningTranscript: nextReasoningTranscript,
+      latestAssistantText: nextLatestAssistantText,
+      state: currentState
+    }
   }
 
   private async runProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
