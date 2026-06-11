@@ -924,6 +924,7 @@ describe("agent integration", () => {
 
     expect(result.status).toBe("completed")
     expect(result.text).toContain("step_1")
+    expect(result.text).toContain("<proposed_plan>")
     expect(seenPrompts).not.toContain("Replan request.")
     expect(runner.context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_plan_step", value: "step_1" }))
     await rm(root, { recursive: true, force: true })

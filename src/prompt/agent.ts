@@ -62,6 +62,7 @@ const unifiedRunProtocol = [
   "- For symbol-affecting code changes, include the symbol-aware edit plan details and edit boundaries.",
   "- Verification commands or checks.",
   "- Risks, rollback notes, or open questions when relevant.",
+  "- A complete JSON representation of the plan in a ```json code block, so the system can parse it directly without a second LLM call.",
   "",
   "Do not call plan_exit for trivial work that can be completed safely in one direct execution pass.",
   "</system-reminder>",

@@ -295,3 +295,34 @@ export function isPlanApprovalPrompt(prompt: string) {
 export function isPlanRevisionPrompt(prompt: string) {
   return /\b(revise|replan|change scope|change the plan|update the plan|different approach|switch approach)\b|修改计划|重新规划|重写计划|调整计划|改变范围|换方案/i.test(prompt)
 }
+
+export function renderPlanToMarkdown(plan: ExecutionPlan): string {
+  const lines: string[] = []
+  lines.push("<proposed_plan>")
+  lines.push(`# ${plan.title || "Implementation Plan"}`)
+  lines.push("")
+  for (const step of plan.steps) {
+    lines.push(`## Step: ${step.id}`)
+    lines.push(`- **Goal**: ${step.goal}`)
+    lines.push(`- **Kind**: ${step.kind}`)
+    if (step.targetFiles && step.targetFiles.length > 0) {
+      lines.push(`- **Target Files**: ${step.targetFiles.join(", ")}`)
+    }
+    if (step.dependsOn && step.dependsOn.length > 0) {
+      lines.push(`- **Depends On**: ${step.dependsOn.join(", ")}`)
+    }
+    if (step.doneWhen) {
+      lines.push(`- **Done When**: ${step.doneWhen}`)
+    }
+    if (step.fallback) {
+      lines.push(`- **Fallback**: ${step.fallback}`)
+    }
+    lines.push("")
+  }
+  lines.push("```json")
+  lines.push(JSON.stringify(plan, null, 2))
+  lines.push("```")
+  lines.push("</proposed_plan>")
+  return lines.join("\n")
+}
+

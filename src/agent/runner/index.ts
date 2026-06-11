@@ -30,8 +30,8 @@ import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
 import { runFailureText } from "./failure-policy"
 import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
-import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState } from "../../plans"
-import { Planner, Replanner, PlanTracker } from "../planner"
+import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState, renderPlanToMarkdown, type ExecutionPlan } from "../../plans"
+import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../planner"
 
 const defaultToolProgressIntervalMs = 10_000
 const defaultProviderProgressIntervalMs = 10_000
@@ -131,10 +131,14 @@ export class AgentRunner {
     if (prep.aborted) {
       return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
     }
+    if (prep.earlyExitResult) {
+      return prep.earlyExitResult
+    }
 
     let reasoningTranscript = ""
     let latestAssistantText = ""
     let state = prep.state
+    let runResult: AgentRunResult | undefined = undefined
 
     for (let step = 0; step < this.maxSteps; step += 1) {
       const stepResult = await this.runStep(
@@ -155,11 +159,13 @@ export class AgentRunner {
       )
 
       if (stepResult.action === "cancel") {
-        return this.cancelledResult(stepResult.reasoningTranscript ?? reasoningTranscript, prep.usedTools, stepResult.output, prep.providerMetrics)
+        runResult = this.cancelledResult(stepResult.reasoningTranscript ?? reasoningTranscript, prep.usedTools, stepResult.output, prep.providerMetrics)
+        break
       }
 
       if (stepResult.action === "exit") {
-        return stepResult.result
+        runResult = stepResult.result
+        break
       }
 
       reasoningTranscript = stepResult.reasoningTranscript
@@ -167,25 +173,77 @@ export class AgentRunner {
       state = stepResult.state
     }
 
-    const maxStepsText = runFailureText(`Stopped after maxSteps (${this.maxSteps}).`, "max_steps")
-    const text = appendOutput(latestAssistantText, maxStepsText)
-    this.onEvent?.({ type: "failure", text: maxStepsText })
-    this.onTextDelta?.(maxStepsText)
-    this.context.add(assistantMessage(reasoningTranscript, text))
-    state = this.aspect.runFailed("max_steps", prep.usedTools)
-    this.emitRunDone("failed", prep.providerMetrics)
-    return { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools: prep.usedTools, state }
+    if (!runResult) {
+      const maxStepsText = runFailureText(`Stopped after maxSteps (${this.maxSteps}).`, "max_steps")
+      const text = appendOutput(latestAssistantText, maxStepsText)
+      this.onEvent?.({ type: "failure", text: maxStepsText })
+      this.onTextDelta?.(maxStepsText)
+      this.context.add(assistantMessage(reasoningTranscript, text))
+      state = this.aspect.runFailed("max_steps", prep.usedTools)
+      this.emitRunDone("failed", prep.providerMetrics)
+      runResult = { status: "failed", failureReason: "max_steps", text, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools: prep.usedTools, state }
+    }
+
+    if (runResult.status === "completed") {
+      const latestLedger = this.context.state.ledger
+      const planIdRecord = latestLedger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
+      if (planIdRecord) {
+        const planId = planIdRecord.value
+        const sessionId = this.sessionId || "default"
+        const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
+        if (currentPlanState && (currentPlanState.checkpoint.status === "draft" || currentPlanState.checkpoint.status === "blocked")) {
+          if (!protocol.hasProposedPlanText(runResult.text)) {
+            const planMarkdown = renderPlanToMarkdown(currentPlanState.plan)
+            const updatedText = appendOutput(runResult.text, planMarkdown)
+            
+            const displayText = protocol.stripPlanTags(planMarkdown)
+            emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
+
+            const lastMsg = this.context.state.messages.at(-1)
+            if (lastMsg && lastMsg.role === "assistant") {
+              const textPart = lastMsg.parts.find(p => p.type === "text")
+              if (textPart) {
+                textPart.text = updatedText
+              }
+            }
+
+            runResult = {
+              ...runResult,
+              text: updatedText,
+            }
+          }
+        }
+      }
+    }
+
+    return runResult
   }
 
   private async prepareRun(
     prompt: string,
     mode: AgentMode,
     input: { images?: ImagePart[]; signal?: AbortSignal }
-  ) {
+  ): Promise<{
+    aborted: boolean
+    earlyExitResult?: AgentRunResult
+    effectiveMode: AgentMode
+    agent: Agent
+    usedTools: string[]
+    providerMetrics: ProviderMetricsAccumulator
+    state: any
+    tools: ToolDef[]
+    instructions: InstructionInfo[]
+    skills: SkillInfo[]
+    selectedSkills: SkillInfo[]
+  }> {
     const ledger = this.context.state.ledger
     const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
     let resolvedMode = mode
     let activePlanState = undefined
+    let earlyExitResult: AgentRunResult | undefined = undefined
+
+    const providerMetrics = createProviderMetrics(this.provider.name, this.provider.model)
+    const usedTools: string[] = []
     
     if (planIdRecord) {
       resolvedMode = "build"
@@ -193,7 +251,15 @@ export class AgentRunner {
       const sessionId = this.sessionId || "default"
       activePlanState = await loadStructuredPlanState(this.root, sessionId, planId)
       if (activePlanState) {
-        if (isPlanRevisionPrompt(prompt)) {
+        if (activePlanState.checkpoint.status === "draft" || activePlanState.checkpoint.status === "blocked") {
+          resolvedMode = "plan"
+        }
+
+        const isApproval = isPlanApprovalPrompt(prompt)
+        const isDraft = activePlanState.checkpoint.status === "draft"
+        const isRevision = isPlanRevisionPrompt(prompt)
+
+        if (isRevision) {
           try {
             const newPlan = await Replanner.replan(
               prompt,
@@ -206,9 +272,26 @@ export class AgentRunner {
             activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
               stepStatuses: activePlanState.checkpoint.stepStatuses,
               currentStepId: activePlanState.checkpoint.currentStepId,
-              status: "running",
+              status: "draft",
               lastReplanReason: "scope_change",
             })
+
+            const planMarkdown = renderPlanToMarkdown(newPlan)
+            const displayText = protocol.stripPlanTags(planMarkdown)
+            emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
+            this.hasProposedPlan = true
+            this.context.add(assistantMessage("", planMarkdown))
+            const state = this.aspect.transition("completed", { usedTools: [] })
+            this.emitRunDone("completed", providerMetrics)
+
+            earlyExitResult = {
+              status: "completed",
+              text: planMarkdown,
+              reasoning: "",
+              messages: this.context.state.messages,
+              usedTools: [],
+              state
+            }
           } catch (replanError) {
             activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, activePlanState.plan, {
               ...activePlanState.checkpoint,
@@ -221,14 +304,15 @@ export class AgentRunner {
               text: `Failed to revise plan: ${replanError instanceof Error ? replanError.message : String(replanError)}`
             })
           }
-        } else if (isPlanApprovalPrompt(prompt) && activePlanState.checkpoint.currentStepId) {
+        } else if (isApproval && activePlanState.checkpoint.currentStepId) {
           const currentStatus = activePlanState.checkpoint.stepStatuses[activePlanState.checkpoint.currentStepId] ?? "pending"
-          if (currentStatus === "pending") {
+          if (currentStatus === "pending" || isDraft) {
             activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, activePlanState.plan, {
               ...activePlanState.checkpoint,
               stepStatuses: { ...activePlanState.checkpoint.stepStatuses, [activePlanState.checkpoint.currentStepId]: "running" },
               status: "running",
             })
+            resolvedMode = "build"
           }
         }
       }
@@ -236,9 +320,7 @@ export class AgentRunner {
 
     const effectiveMode = this.effectiveMode(prompt, resolvedMode)
     const agent = createAgent(effectiveMode)
-    const usedTools: string[] = []
     const state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
-    const providerMetrics = createProviderMetrics(this.provider.name, this.provider.model)
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
     this.noteExternalEvidence()
@@ -247,7 +329,7 @@ export class AgentRunner {
     await this.refreshRepoMap(input.signal, prompt)
     
     if (input.signal?.aborted) {
-      return { aborted: true, effectiveMode, agent, usedTools, providerMetrics, state, tools: [], instructions: [], skills: [], selectedSkills: [] }
+      return { aborted: true, earlyExitResult, effectiveMode, agent, usedTools, providerMetrics, state, tools: [], instructions: [], skills: [], selectedSkills: [] }
     }
     
     const tools = this.registry.list(effectiveMode)
@@ -258,6 +340,7 @@ export class AgentRunner {
 
     return {
       aborted: false,
+      earlyExitResult,
       effectiveMode,
       agent,
       usedTools,
@@ -365,7 +448,15 @@ export class AgentRunner {
       const output = result.output
       try {
         const planMarkdown = protocol.stripPlanTags(result.output)
-        const planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
+        // Try direct JSON extraction first (avoids a second LLM call).
+        // The system prompt instructs the LLM to include a JSON code block.
+        let planJson: ExecutionPlan
+        try {
+          planJson = parseExecutionPlanFromResponse(planMarkdown)
+        } catch {
+          // Fall back to LLM-based markdown-to-JSON parsing when no JSON block is found
+          planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
+        }
         const sessionId = this.sessionId || "default"
         await PlanTracker.activatePlan(this.context, this.root, sessionId, planJson, { status: "draft" })
       } catch {
@@ -420,7 +511,7 @@ export class AgentRunner {
       const planId = activePlanIdRec.value
       const sessionId = this.sessionId || "default"
       const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
-      const stepId = currentPlanState?.checkpoint.currentStepId
+      const stepId = currentPlanState?.checkpoint.status === "running" ? currentPlanState?.checkpoint.currentStepId : undefined
       if (currentPlanState && stepId) {
         const s = currentPlanState.plan.steps.find(stepItem => stepItem.id === stepId)
         if (s) {

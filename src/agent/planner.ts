@@ -109,7 +109,24 @@ Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`
 
     const userPrompt = `Replan request.`
     const rawResponse = await askProvider(provider, userPrompt, systemPrompt)
-    return parseExecutionPlanFromResponse(rawResponse)
+    const newPlan = parseExecutionPlanFromResponse(rawResponse)
+
+    // Validate completed steps were not modified by the replan
+    for (const step of currentPlan.steps) {
+      if (stepStatuses[step.id] === "completed") {
+        const newStep = newPlan.steps.find(s => s.id === step.id)
+        if (!newStep) {
+          throw new InvalidExecutionPlanError(`Replan removed completed step '${step.id}'. Completed steps must be preserved.`)
+        }
+        if (newStep.goal !== step.goal || newStep.kind !== step.kind) {
+          throw new InvalidExecutionPlanError(
+            `Replan modified completed step '${step.id}': goal or kind changed. Completed steps must remain unchanged.`
+          )
+        }
+      }
+    }
+
+    return newPlan
   }
 }
 

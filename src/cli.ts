@@ -339,12 +339,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           continue
         }
         if (choice === "e" || choice.startsWith("edit")) {
-          if (planId) {
-            await PlanTracker.clearActivePlan(activeRunner.context, args.root, planId)
-          }
-          await saveSession(activeRunner.context)
           const editDesc = await reader.question("What would you like changed? ")
           if (editDesc) queuedPrompts.push(`Revise the plan: ${editDesc}`)
+          await saveSession(activeRunner.context)
           continue
         }
         if (choice === "n" || choice.startsWith("new")) {
