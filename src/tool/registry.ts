@@ -144,5 +144,5 @@ function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContex
       },
     }
   }
-  return { permission: tool.permission, patterns, always: patterns, metadata: { tool: tool.name } }
+  return { permission: tool.permission, patterns, always: patterns, metadata: { tool: tool.name, rememberOnApprove: true, rememberPatterns: patterns } }
 }
