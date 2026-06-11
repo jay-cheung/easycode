@@ -1,5 +1,20 @@
 # Progress Log
 
+## Step 36: Unified Run Mode And Planning UX Convergence
+
+- Scope: remove the public `build` vs `plan` split, make direct prompts the default single-run entrypoint without requiring `--once`, and keep the new planning layer operating behind one unified runtime contract.
+- Implementation:
+  - Updated `src/cli.ts`, `src/prompt/agent.ts`, `src/agent/runner/index.ts`, `src/agent/protocol.ts`, `src/provider/fake.ts`, and `src/tool/builtins/retrieval-tools.ts` so EasyCode now exposes one user-facing run mode, accepts prompt-first single runs, allows `plan_exit` during normal runs, and keeps plan approval plus step execution in the same session flow.
+  - Updated TUI/timeline rendering to show a unified `RUN` state instead of separate `BUILD` / `PLAN` badges while preserving the same execution engine underneath.
+  - Updated README, acceptance criteria, data-structure/state-machine specs, and TUI/LSP planning docs to describe plan-as-a-stage rather than plan-as-a-separate-mode.
+- Verification:
+  - `bun test test/unit/agent.test.ts test/unit/cli.test.ts test/unit/permission.test.ts test/unit/tool.test.ts test/unit/sandbox.test.ts test/unit/tui.test.ts test/integration/agent.test.ts`
+  - `bun test test/unit/prompt.test.ts test/unit/timeline.test.ts`
+  - `bun run eval --provider fake`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: legacy `easycode build ...`, `easycode plan ...`, and `--once` parsing remain tolerated as compatibility aliases for now, but they are no longer the documented primary interface.
+
 ## Step 35: Planning Layer Safety And Checkpoint Hardening
 
 - Scope: fix the first structured-planning rollout regressions by restoring the build-vs-plan CLI contract, making structured-plan activation fail closed, and persisting active-plan state as a real checkpoint instead of reconstructing it from scattered ledger fields.

@@ -79,7 +79,7 @@ describe("sandbox", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("blocks side-effectful bash in plan mode", async () => {
+  test("legacy readonly sandbox mode still blocks side-effectful bash", async () => {
     const root = await tmpdir()
     const sandbox = new Sandbox(root)
     await expect(sandbox.execute({ command: "touch x" }, "plan")).rejects.toThrow(SandboxCommandError)

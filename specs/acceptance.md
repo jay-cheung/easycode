@@ -8,18 +8,19 @@
 - `bun run gate` includes `build` and a real-provider readiness pass in the same reportable run.
 - Provider gates skip explicitly when required credentials are missing instead of reporting fabricated real-provider results.
 - Real-provider checks inside `bun run gate` target configured real providers by default and can be narrowed with `--provider` / `--providers`.
-- `easycode` without an explicit mode defaults to `build`; `easycode plan ...` remains the explicit planning entrypoint.
-- `easycode plan --once "..."` does not modify files and returns `<proposed_plan>`.
-- `easycode plan --once "..."` never auto-executes the approved plan in the same invocation.
-- `easycode plan --once "..."` includes symbol-aware edit planning details for symbol-affecting code changes: target symbols, owning definitions, affected references/callers, excluded same-name matches, and edit boundaries.
+- `easycode` without a prompt starts the interactive unified run session.
+- `easycode "..."` runs a single task and exits; `--once` is no longer required.
+- Multi-step, risky, or symbol-affecting unified runs can return `<proposed_plan>` before any edit occurs.
+- A returned `<proposed_plan>` does not auto-execute in the same turn; execution continues only after explicit approval.
+- Unified-mode plans include symbol-aware edit planning details for symbol-affecting code changes: target symbols, owning definitions, affected references/callers, excluded same-name matches, and edit boundaries.
 - Structured plan extraction from a markdown plan fails closed: invalid JSON or invalid step shape does not activate an executable plan.
-- `easycode build --once "..." --provider fake` can complete read -> edit -> bash.
-- `easycode build --once "..." --provider fake` uses symbol-aware edit planning before symbol-affecting edits and can explain when such planning is unnecessary.
-- `easycode build --provider fake` creates `default` when the project has no saved sessions.
-- `easycode build --provider fake` prompts for an existing or new session when saved sessions exist.
-- `easycode build --session demo --provider fake` starts the named interactive session.
-- `easycode build --provider fake --tui` provides the same interactive capabilities as the plain CLI: session selection, slash commands, queued input, cancellation, permission prompts, plan approval, timeline events, settings changes, image attachment, skills, and saved sessions.
-- `easycode build --once "..." --provider fake --tui` renders the TUI shell and the normal run timeline without changing runner behavior.
+- `easycode "..." --provider fake` can complete read -> edit -> bash.
+- `easycode "..." --provider fake` uses symbol-aware edit planning before symbol-affecting edits and can explain when such planning is unnecessary.
+- `easycode --provider fake` creates `default` when the project has no saved sessions.
+- `easycode --provider fake` prompts for an existing or new session when saved sessions exist.
+- `easycode --session demo --provider fake` starts the named interactive session.
+- `easycode --provider fake --tui` provides the same interactive capabilities as the plain CLI: session selection, slash commands, queued input, cancellation, permission prompts, plan approval, timeline events, settings changes, image attachment, skills, and saved sessions.
+- `easycode "..." --provider fake --tui` renders the TUI shell and the normal run timeline without changing runner behavior.
 - First interactive startup without `EASYCODE_LANG` prompts for a UI language choice and saves it for later sessions.
 - `/sessions` lists saved sessions and marks the active one in interactive mode.
 - `/lang <code>` updates the fixed CLI/TUI language for the current session and persists the default in `~/.easycode/.env`.
@@ -47,7 +48,7 @@
 
 ## Safety
 - Writes outside the project root fail.
-- Plan-mode edit/write attempts fail.
+- EasyCode never edits files before a proposed plan is explicitly approved.
 - Dangerous bash commands fail.
 - Safe readonly bash scopes can auto-approve without a manual prompt, but unsafe or side-effectful bash commands still require review or fail.
 - Native write-sandbox bypass and explicit outside-path bypass require a risk prompt and user approval.

@@ -100,9 +100,9 @@ describe("permission", () => {
     expect(evaluatePermission("sandbox_bypass", "git log", defaultPermissionRules("plan"))).toBe("ask")
   })
 
-  test("plan_exit is allowed only for plan mode", () => {
+  test("plan_exit is allowed in unified run mode and the legacy plan alias", () => {
     expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("plan"))).toBe("allow")
-    expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("build"))).toBe("deny")
+    expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("build"))).toBe("allow")
   })
 
   test("retrieval permissions separate local MCP from web search", () => {

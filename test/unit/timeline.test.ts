@@ -9,7 +9,7 @@ describe("timeline renderer", () => {
     renderer.event({ type: "run_start", mode: "build", provider: "deepseek", model: "deepseek-chat" })
     renderer.event({ type: "provider_progress", provider: "deepseek", model: "deepseek-chat", elapsedMs: 10_200 })
 
-    expect(output).toContain("● Model deepseek deepseek-chat (build)")
+    expect(output).toContain("● Model deepseek deepseek-chat (run)")
     expect(output).toContain("waiting for deepseek deepseek-chat after 10s")
   })
 

@@ -1,7 +1,7 @@
 # Data Structures
 
 ```ts
-type AgentMode = "build" | "plan"
+type AgentMode = "build" | "plan" // "plan" is a legacy internal alias; CLI uses one unified run flow.
 type PermissionAction = "deny" | "ask" | "allow"
 type MessageRole = "system" | "user" | "assistant" | "tool"
 type ToolCallStatus = "pending" | "running" | "succeeded" | "failed" | "denied"
@@ -10,6 +10,35 @@ type Agent = {
   name: string
   mode: AgentMode
   systemPrompt: string
+}
+
+type PlanStep = {
+  id: string
+  goal: string
+  kind: "inspect" | "edit" | "verify" | "document" | "gate"
+  targetFiles?: string[]
+  dependsOn?: string[]
+  doneWhen?: string
+  fallback?: string
+}
+
+type ExecutionPlan = {
+  id: string
+  title?: string
+  steps: PlanStep[]
+}
+
+type PlanRunState = "draft" | "running" | "blocked" | "completed" | "abandoned"
+
+type ReplanReason = "tool_failure" | "verification_failure" | "scope_change" | "new_evidence"
+
+type PlanCheckpoint = {
+  currentStepId?: string
+  stepStatuses: Record<string, "pending" | "running" | "completed" | "failed" | "blocked">
+  status: PlanRunState
+  blocker?: string
+  verificationTarget?: string
+  lastReplanReason?: ReplanReason
 }
 
 type PermissionRule = {
@@ -109,6 +138,7 @@ type CodeIndexResult = {
 - Tool metadata includes status and safety metadata where relevant.
 - Zod validates model-produced tool arguments before execution.
 - Session settings persist model/language/thinking/effort/skill choices; pending images do not persist.
+- Structured execution plans persist a machine-readable step list plus a checkpoint (`currentStepId`, step-status map, lifecycle status, blocker metadata) so execution can resume without replaying raw message history.
 - Repo map and code index caches are derived artifacts under the EasyCode project cache directory (`~/.easycode/projects/<hash>/cache/` in normal runtime, project-local `.easycode/cache/` in tests); deleting them must not affect correctness.
 - Code-navigation tools preserve the public protocol while switching internals from CLI search to index-first lookup.
 - `code-index/index.json` is tool-private cache data. It must never be returned wholesale to the model; model-visible navigation outputs are limited to repo-map skeletons, bounded search previews, and `read_lines` slices.

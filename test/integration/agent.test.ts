@@ -633,7 +633,7 @@ describe("agent integration", () => {
   test("streams assistant text deltas", async () => {
     const root = await fixture()
     const chunks: string[] = []
-    const result = await createRunner({ root, provider: "fake", mode: "plan", onTextDelta: (text) => chunks.push(text) }).run("Plan how to fix the failing test", "plan")
+    const result = await createRunner({ root, provider: "fake", mode: "build", onTextDelta: (text) => chunks.push(text) }).run("Fix the failing test", "build")
     expect(result.status).toBe("completed")
     expect(chunks.join("")).toBe(result.text)
     expect(chunks.length).toBeGreaterThan(0)
@@ -821,20 +821,10 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("plan-mode-readonly", async () => {
-    const root = await fixture()
-    const before = await Bun.file(path.join(root, "src", "add.ts")).text()
-    const result = await createRunner({ root, provider: "fake", mode: "plan" }).run("readonly-violation", "plan")
-    expect(result.status).toBe("completed")
-    expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toBe(before)
-    expect(toolResults(result.messages).some((part) => part.status === "denied")).toBe(true)
-    await rm(root, { recursive: true, force: true })
-  })
-
-  test("plan-exit-completes-run", async () => {
+  test("plan-exit-completes-run in unified mode", async () => {
     const root = await fixture()
     const chunks: string[] = []
-    const result = await createRunner({ root, provider: "fake", mode: "plan", onTextDelta: (text) => chunks.push(text) }).run("plan-exit", "plan")
+    const result = await createRunner({ root, provider: "fake", mode: "build", onTextDelta: (text) => chunks.push(text) }).run("plan-exit", "build")
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["plan_exit"])
     expect(result.text).toContain("<proposed_plan>")
@@ -844,19 +834,19 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("direct-agent-runner-uses-plan-permissions-for-plan-exit", async () => {
+  test("direct-agent-runner-allows-plan-exit-in-unified-mode", async () => {
     const root = await fixture()
-    const result = await new AgentRunner({ root, provider: new FakeProvider() }).run("plan-exit", "plan")
+    const result = await new AgentRunner({ root, provider: new FakeProvider() }).run("plan-exit", "build")
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["plan_exit"])
     expect(result.text).toContain("<proposed_plan>")
     await rm(root, { recursive: true, force: true })
   })
 
-  test("accepted-plan-runs-build-even-if-requested-mode-stays-plan", async () => {
+  test("legacy plan alias can still request a plan before continuing execution", async () => {
     const root = await fixture()
     const runner = createRunner({ root, provider: "fake", mode: "plan" })
-    const plan = await runner.run("Plan how to fix the failing test", "plan")
+    const plan = await runner.run("plan-exit", "plan")
     expect(plan.status).toBe("completed")
     expect(plan.text).toContain("<proposed_plan>")
     const result = await runner.run("执行吧", "plan")
@@ -880,7 +870,7 @@ describe("agent integration", () => {
     }
 
     const runner = new AgentRunner({ root, provider, sessionId: "invalid-plan" })
-    const result = await runner.run("invalid-structured-plan", "plan")
+    const result = await runner.run("invalid-structured-plan", "build")
 
     expect(result.status).toBe("completed")
     expect(result.text).toContain("<proposed_plan>")
@@ -925,8 +915,8 @@ describe("agent integration", () => {
     }
 
     const runner = new AgentRunner({ root, provider, sessionId: "status-query" })
-    await runner.run("创建计划", "plan")
-    const result = await runner.run("现在到哪一步了？", "plan")
+    await runner.run("创建计划", "build")
+    const result = await runner.run("现在到哪一步了？", "build")
 
     expect(result.status).toBe("completed")
     expect(result.text).toContain("step_1")
@@ -984,8 +974,8 @@ describe("agent integration", () => {
     }
 
     const runner = new AgentRunner({ root, provider, sessionId: "revise-plan" })
-    await runner.run("创建可重规划计划", "plan")
-    const result = await runner.run("请重新规划，先补测试再改代码", "plan")
+    await runner.run("创建可重规划计划", "build")
+    const result = await runner.run("请重新规划，先补测试再改代码", "build")
     const state = await loadStructuredPlanState(root, "revise-plan", "plan_revise")
 
     expect(result.status).toBe("completed")

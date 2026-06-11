@@ -1,11 +1,12 @@
 {
   "id": "EC-002",
-  "mode": "plan",
-  "prompt": "Plan how to fix the failing test",
+  "mode": "build",
+  "prompt": "plan-exit",
   "fixture": "evals/fixtures/simple-bug",
   "expected": {
     "status": "passed",
     "forbiddenFiles": ["src/add.ts", ".env"],
-    "maxToolCalls": 2
+    "requiredTools": ["plan_exit"],
+    "maxToolCalls": 1
   }
 }

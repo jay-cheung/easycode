@@ -30,14 +30,12 @@ export function markSkillLoadedInSettings(settings: SessionSettings, input: unkn
   settings.pendingSkillLoads = (settings.pendingSkillLoads ?? []).filter((skill) => skill !== name)
 }
 
-export function effectiveModeForPrompt(prompt: string, mode: AgentMode, hasProposedPlan: boolean): AgentMode {
-  if (mode !== "plan") return mode
-  if (!isPlanApproval(prompt)) return mode
-  return hasProposedPlan ? "build" : mode
+export function effectiveModeForPrompt(_prompt: string, mode: AgentMode, _hasProposedPlan: boolean): AgentMode {
+  return mode === "plan" ? "build" : mode
 }
 
 export function permissionServiceForMode(permission: PermissionService, mode: AgentMode) {
-  const rules = defaultPermissionRules(mode)
+  const rules = defaultPermissionRules(mode === "plan" ? "build" : mode)
   if (samePermissionRules(permission.rules, rules)) return permission
   return permission.withRules(rules)
 }
@@ -48,10 +46,4 @@ function samePermissionRules(left: PermissionRule[], right: PermissionRule[]) {
     const other = right[index]
     return Boolean(other) && rule.permission === other.permission && rule.pattern === other.pattern && rule.action === other.action
   })
-}
-
-function isPlanApproval(prompt: string) {
-  const text = prompt.trim().toLowerCase()
-  const cleaned = text.replace(/[.!?，。！？、\s]+$/g, "").trim()
-  return /^(执行吧|执行|确认|接受|同意|继续|开始|approve|accepted|approved|execute|go ahead|yes|yeah|yep|y|ok|okay|do it|let's go|sure|proceed)$/i.test(cleaned)
 }

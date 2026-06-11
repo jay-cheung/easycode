@@ -36,12 +36,12 @@ describe("tool", () => {
     expect(() => registry.register(read)).toThrow("Tool already registered")
   })
 
-  test("filters tools by mode", () => {
+  test("keeps the legacy plan registry readonly while exposing plan_exit in unified runs", () => {
     const registry = createBuiltinRegistry()
     expect(registry.list("plan").some((tool) => tool.name === "edit")).toBe(false)
     expect(registry.list("build").some((tool) => tool.name === "edit")).toBe(true)
     expect(registry.list("plan").some((tool) => tool.name === "plan_exit")).toBe(true)
-    expect(registry.list("build").some((tool) => tool.name === "plan_exit")).toBe(false)
+    expect(registry.list("build").some((tool) => tool.name === "plan_exit")).toBe(true)
   })
 
   test("ledger tool pulls structured context only when called", async () => {

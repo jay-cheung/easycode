@@ -122,13 +122,13 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
+    if (prompt.includes("plan-exit") && !planExitAlreadyRan) {
+      yield { type: "tool_call", call: call("plan_exit", { markdown: "# Plan\n- Fix the failing test." }) }
+      yield { type: "done" }
+      return
+    }
     if (input.mode === "plan") {
-      const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
-      if (prompt.includes("plan-exit") && !planExitAlreadyRan) {
-        yield { type: "tool_call", call: call("plan_exit", { markdown: "# Plan\n- Fix the failing test." }) }
-        yield { type: "done" }
-        return
-      }
       const editAlreadyAttempted = hasToolResult(input.messages, "edit")
       if (prompt.includes("readonly-violation") && !editAlreadyAttempted) {
         yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "-", newString: "+" }) }

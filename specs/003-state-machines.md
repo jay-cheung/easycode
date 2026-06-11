@@ -21,13 +21,16 @@ once + repeat-safe metadata -> session approval cache
 normal -> near_limit -> compacting -> compacted -> normal
 ```
 
-## Plan Mode
+## Planning Layer
 ```text
-readonly -> proposed_plan -> completed
+idle -> drafting -> awaiting_approval -> executing_step -> completed
+                                      \-> replanning --------^
+                                      \-> blocked
 ```
 
 ## Rules
 - A denied tool call never reaches sandbox execution.
 - Invalid tool input returns structured feedback to the model.
-- Plan mode cannot transition into write/edit side effects.
-- Context compaction preserves the most recent two turns.
+- Returning `<proposed_plan>` never performs writes before approval.
+- Step execution advances only through explicit step completion or replanning.
+- Context compaction preserves the most recent three turns by default.

@@ -5,6 +5,11 @@ import type { TuiContext } from "./tui-types"
 
 const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 
+function displayRunModeBadge(mode: string) {
+  if (mode === "build" || mode === "plan") return "\x1b[46m\x1b[30m\x1b[1m RUN \x1b[0m"
+  return `\x1b[46m\x1b[30m\x1b[1m ${mode.toUpperCase()} \x1b[0m`
+}
+
 export function spinnerFrames() {
   return SPINNER_FRAMES
 }
@@ -30,9 +35,7 @@ export function generateStatusPanelLines(input: {
   lines.push(drawBorderLine(title, width, { left: chars.tl, right: chars.tr, h: chars.h }, color, reset))
 
   const spinner = SPINNER_FRAMES[input.spinnerFrame]
-  const modeBadge = input.context.mode === "build"
-    ? "\x1b[45m\x1b[37m\x1b[1m BUILD \x1b[0m"
-    : "\x1b[44m\x1b[37m\x1b[1m PLAN \x1b[0m"
+  const modeBadge = displayRunModeBadge(input.context.mode)
   const providerStr = `\x1b[1m🤖 ${input.context.provider}\x1b[0m`
   const modelStr = input.context.model ? `\x1b[90m(${input.context.model})\x1b[0m` : ""
   const sessionStr = `\x1b[93msession:${input.context.session ?? "default"}\x1b[0m`

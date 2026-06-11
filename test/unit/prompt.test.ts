@@ -2,17 +2,18 @@ import { describe, expect, test } from "bun:test"
 import { agentSystemPrompt, buildCompactPrompt, extractCompactSummary } from "../../src/prompt"
 
 describe("compact prompt", () => {
-  test("puts skill-reuse rules in build and plan prompts but not summary prompts", () => {
+  test("puts skill-reuse rules in unified run prompts but not summary prompts", () => {
     const buildPrompt = agentSystemPrompt("build")
     const planPrompt = agentSystemPrompt("plan")
     const summaryPrompt = agentSystemPrompt("summary")
 
-    expect(buildPrompt).toContain("If a selected or first-use skill is present, load it before task-specific action.")
-    expect(buildPrompt).toContain("inspect and prefer those artifacts before creating new code, commands, or workflows.")
+    expect(buildPrompt).toContain("If a selected or first-use skill is present, load it before task-specific planning.")
+    expect(buildPrompt).toContain("inspect and prefer those artifacts before inventing a new workflow.")
     expect(planPrompt).toContain("If a selected or first-use skill is present, load it before task-specific planning.")
     expect(planPrompt).toContain("Only bypass a loaded skill's referenced artifacts when inspection shows they are missing or inapplicable")
+    expect(planPrompt).toBe(buildPrompt)
     expect(summaryPrompt).not.toContain("selected or first-use skill")
-    expect(summaryPrompt).not.toContain("creating new code, commands, or workflows")
+    expect(summaryPrompt).not.toContain("inventing a new workflow")
     expect(buildPrompt).toContain("Use grep only as a last-resort plain-text fallback.")
     expect(buildPrompt).toContain("Use bash only when dedicated tools cannot express the needed inspection or action.")
     expect(buildPrompt).toContain("These semantic tools outrank rg_search, grep, and bash whenever the question is about symbols.")

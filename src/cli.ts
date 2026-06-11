@@ -40,9 +40,8 @@ export {
 } from "./cli/startup"
 
 function parseArgs(argv: string[]) {
-  const normalizedArgv = normalizeModeArgv(argv)
-  const mode = normalizedArgv[0]
-  if (mode !== "build" && mode !== "plan") throw new Error(usage())
+  const normalizedArgv = normalizeLegacyModeArgv(argv)
+  const mode: AgentMode = "build"
 
   const providerIndex = normalizedArgv.indexOf("--provider")
   const rootIndex = normalizedArgv.indexOf("--root")
@@ -50,7 +49,6 @@ function parseArgs(argv: string[]) {
   const modelIndex = normalizedArgv.indexOf("--model")
   const maxTokensIndex = normalizedArgv.indexOf("--max-tokens")
   const maxStepsIndex = normalizedArgv.indexOf("--max-steps")
-  const once = normalizedArgv.includes("--once")
   const logger = normalizedArgv.includes("--logger")
   if (logger) {
     process.env.EASYCODE_LOGGER = "true"
@@ -71,22 +69,27 @@ function parseArgs(argv: string[]) {
   if (modelIndex !== -1 && (!model || model.startsWith("--"))) throw new Error("--model requires an id")
   const maxTokens = numericFlag(normalizedArgv, maxTokensIndex, "--max-tokens")
   const maxSteps = numericFlag(normalizedArgv, maxStepsIndex, "--max-steps")
-  const prompt = normalizedArgv.slice(1).filter((arg, index, items) => {
-    const realIndex = index + 1
-    return !arg.startsWith("--") && arg !== "-k" && realIndex !== providerIndex + 1 && realIndex !== rootIndex + 1 && realIndex !== sessionIndex + 1 && realIndex !== modelIndex + 1 && realIndex !== maxTokensIndex + 1 && realIndex !== maxStepsIndex + 1 && items[realIndex - 1] !== "--provider" && items[realIndex - 1] !== "--root" && items[realIndex - 1] !== "--session" && items[realIndex - 1] !== "--model" && items[realIndex - 1] !== "--max-tokens" && items[realIndex - 1] !== "--max-steps"
+  const prompt = normalizedArgv.filter((arg, index) => {
+    if (arg.startsWith("--") || arg === "-k") return false
+    if (providerIndex !== -1 && index === providerIndex + 1) return false
+    if (rootIndex !== -1 && index === rootIndex + 1) return false
+    if (sessionIndex !== -1 && index === sessionIndex + 1) return false
+    if (modelIndex !== -1 && index === modelIndex + 1) return false
+    if (maxTokensIndex !== -1 && index === maxTokensIndex + 1) return false
+    if (maxStepsIndex !== -1 && index === maxStepsIndex + 1) return false
+    return true
   }).join(" ")
-  if (!once && prompt) throw new Error("Session mode is interactive; use --once for startup prompts")
-  return { mode: mode as AgentMode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once, tui, insecure }
+  return { mode, prompt, provider, providerExplicit, model, maxTokens, maxSteps, root, logger, session: explicitSession, once: prompt.length > 0, tui, insecure }
 }
 
-function normalizeModeArgv(argv: string[]) {
-  const mode = argv[0]
-  if (mode === "build" || mode === "plan") return argv
-  return ["build", ...argv]
+function normalizeLegacyModeArgv(argv: string[]) {
+  const first = argv[0]
+  if (first === "build" || first === "plan") return argv.slice(1)
+  return argv
 }
 
 function usage() {
-  return `Usage: easycode [build|plan] [--once prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id] [--insecure|-k]`
+  return `Usage: easycode [prompt] [--provider ${listProviders().join("|")}] [--model id] [--max-tokens n] [--max-steps n] [--root path] [--logger] [--no-tui] [--session id] [--insecure|-k]`
 }
 
 function numericFlag(argv: string[], index: number, name: string) {
@@ -129,7 +132,7 @@ function formatCliError(error: unknown) {
 async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   if (!args.prompt) throw new Error("Prompt is required")
   const logger = args.logger ? createLogger({ root: args.root, session: args.session ?? "once" }) : undefined
-  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session: args.session, once: args.once } })
+  emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session: args.session, promptMode: "single-run" } })
   emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
   const reader = new LineReader()
   const settings = normalizeSessionSettings({ provider: args.provider, model: args.model, maxTokens: args.maxTokens, maxSteps: args.maxSteps }, args.provider)
@@ -170,7 +173,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let session: string = selectedSession
     tui?.startSession(session)
     let logger = args.logger ? createLogger({ root: args.root, session }) : undefined
-    emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, once: args.once } })
+    emitLog(logger, { type: "data", name: "cli.args -> runner", detail: { mode: args.mode, provider: args.provider, root: args.root, session, promptMode: "interactive" } })
     emitLog(logger, { type: "data", name: ".env -> process.env", detail: { loadedEnvVars } })
     emitLog(logger, { type: "data", name: "session.selected", detail: { session } })
 
@@ -202,13 +205,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
-    let activeMode = args.mode
-    const initialHasActivePlan = context.state.ledger?.current.some(r => r.subject === "current_plan_id" && r.status === "current")
-    if (initialHasActivePlan) {
-      activeMode = "build"
-    } else if (args.mode !== "build") {
-      activeMode = "plan"
-    }
+    let activeMode: AgentMode = "build"
     let runner: ReturnType<typeof createRunner> | undefined
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
     const timeline = tui ?? new TimelineRenderer(output, activeSettings.language)
@@ -227,12 +224,6 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       return saveChain
     }
     const getRunner = () => {
-      const hasActivePlan = context.state.ledger?.current.some(r => r.subject === "current_plan_id" && r.status === "current")
-      if (hasActivePlan) {
-        activeMode = "build"
-      } else if (args.mode !== "build") {
-        activeMode = "plan"
-      }
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
       runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session })
       return runner
@@ -327,7 +318,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runMetrics.current = undefined
       await saveSession(activeRunner.context)
       if (exitRequested) return "completed"
-      if (activeMode === "plan" && result.status === "completed" && hasProposedPlanText(result.text)) {
+      if (result.status === "completed" && hasProposedPlanText(result.text)) {
         savePlan(args.root, session, result.text).catch((err) => {
           emitLog(logger, { type: "error", name: "plan.save_failed", detail: { error: String(err) } })
           console.error("Failed to save plan file:", err)
@@ -364,8 +355,6 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           continue
         }
         
-        activeMode = "build"
-        tui?.configure({ mode: activeMode }, "approved")
         runner = undefined
         queuedPrompts.push(planId ? "Proceed with the approved plan." : command.text)
       }

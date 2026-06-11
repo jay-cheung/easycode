@@ -12,6 +12,5 @@ export function stripPlanTags(text: string): string {
 
 export function createAgent(kind: AgentKind): Agent {
   if (kind === "summary") return { kind, name: "summary", mode: "plan", tools: "none", systemPrompt: agentSystemPrompt(kind) }
-  if (kind === "plan") return { kind, name: "plan", mode: kind, tools: "enabled", systemPrompt: agentSystemPrompt(kind) }
-  return { kind, name: "build", mode: kind, tools: "enabled", systemPrompt: agentSystemPrompt(kind) }
+  return { kind, name: "run", mode: "build", tools: "enabled", systemPrompt: agentSystemPrompt(kind) }
 }

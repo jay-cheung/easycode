@@ -111,11 +111,11 @@ export function registerRetrievalTools(registry: ToolRegistry) {
 
   registry.register({
     name: "plan_exit",
-    description: "Finish plan mode with the final recommended markdown plan after read-only investigation. Use this instead of ending with ordinary prose when the plan is ready for user approval.",
+    description: "Finish the current turn with a final recommended markdown plan when the task should pause for user approval before implementation continues.",
     inputSchema: PlanExitInput,
     jsonSchema: objectSchema({ markdown: { type: "string" } }),
     permission: "plan_exit",
-    modes: ["plan"],
+    modes: ["build", "plan"],
     patterns: () => ["*"],
     execute: async (input) => {
       const params = PlanExitInput.parse(input)
@@ -125,7 +125,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
 
   registry.register({
     name: "plan_step_complete",
-    description: "Mark the current plan step as completed and advance to the next step. Only use in build mode with an active plan.",
+    description: "Mark the current active plan step as completed and advance to the next step.",
     inputSchema: PlanStepCompleteInput,
     jsonSchema: objectSchema({ message: { type: "string" } }, []),
     permission: "plan_step_complete",
@@ -181,7 +181,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
 
   registry.register({
     name: "plan_step_fail",
-    description: "Mark the current plan step as failed and request a replan. Only use in build mode with an active plan when a step cannot be completed.",
+    description: "Mark the current active plan step as failed and request a replan when the step cannot be completed safely.",
     inputSchema: PlanStepFailInput,
     jsonSchema: objectSchema({ reason: { type: "string" } }, ["reason"]),
     permission: "plan_step_fail",

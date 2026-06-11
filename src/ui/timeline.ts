@@ -56,6 +56,10 @@ const bold = "\x1b[1m"
 const dim = "\x1b[2m"
 const inlineCode = "\x1b[90m"
 
+function displayRunMode(mode: string) {
+  return mode === "build" || mode === "plan" ? "run" : mode
+}
+
 export class TimelineRenderer {
   private phase: "idle" | "thought" | "answer" = "idle"
   private thoughtStartedAt = 0
@@ -80,7 +84,7 @@ export class TimelineRenderer {
       this.closeThought()
       this.closeAnswer()
       const model = event.model ? ` ${event.model}` : ""
-      this.output.write(`\n${this.title("thought", copy.timelineModel)} ${event.provider}${model} (${event.mode})\n`)
+      this.output.write(`\n${this.title("thought", copy.timelineModel)} ${event.provider}${model} (${displayRunMode(event.mode)})\n`)
       return
     }
     if (event.type === "provider_progress") {

@@ -21,7 +21,7 @@
 
 ## Initial Tasks
 - `EC-001`: Fix a simple test failure.
-- `EC-002`: Plan mode returns a plan and does not modify files.
+- `EC-002`: Unified run returns a proposed plan when needed and does not modify files before approval.
 - `EC-003`: Permission deny is returned as tool feedback.
 - `EC-004`: `.env` read goes through permission.
 - `EC-005`: Long context triggers compaction.

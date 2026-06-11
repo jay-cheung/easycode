@@ -2,25 +2,25 @@ import { describe, expect, test } from "bun:test"
 import { createAgent } from "../../src/agent"
 
 describe("agent protocol", () => {
-  test("build mode carries symbol-aware edit planning guidance", () => {
+  test("run mode carries unified planning and symbol-aware edit guidance", () => {
     const prompt = createAgent("build").systemPrompt
 
-    expect(prompt).toContain("# Build Mode - System Reminder")
+    expect(prompt).toContain("# Unified Run Mode - System Reminder")
+    expect(prompt).toContain("EasyCode runs in one unified mode")
+    expect(prompt).toContain("plan_exit")
     expect(prompt).toContain("symbol-aware edit plan")
     expect(prompt).toContain("target symbols")
     expect(prompt).toContain("excluded same-name matches")
-    expect(prompt).toContain("stop immediately")
   })
 
-  test("plan mode carries a strict planning workflow", () => {
+  test("legacy plan agent reuses the unified run protocol", () => {
     const prompt = createAgent("plan").systemPrompt
 
-    expect(prompt).toContain("# Plan Mode - System Reminder")
-    expect(prompt).toContain("read-only planning phase")
-    expect(prompt).toContain("End the turn by calling the plan_exit tool")
+    expect(prompt).toContain("# Unified Run Mode - System Reminder")
     expect(prompt).toContain("Files likely to change")
     expect(prompt).toContain("target symbols")
-    expect(prompt).toContain("excluded same-name matches")
+    expect(prompt).not.toContain("read-only planning phase")
+    expect(createAgent("plan").mode).toBe("build")
   })
 
   test("stable protocol forbids uncertainty-driven rollback language", () => {

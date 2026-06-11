@@ -175,16 +175,16 @@ describe("cli startup model selection", () => {
 })
 
 describe("cli args", () => {
-  test("session mode is the default and does not accept startup prompts", () => {
+  test("interactive mode is the default when no prompt is provided", () => {
     expect(parseArgs([])).toMatchObject({ mode: "build", once: false, session: undefined, prompt: "" })
     expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: undefined, prompt: "" })
     expect(parseArgs(["--provider", "fake"])).toMatchObject({ mode: "build", once: false, provider: "fake", prompt: "" })
-    expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
+    expect(parseArgs(["hello", "--session", "demo"])).toMatchObject({ once: true, session: "demo", prompt: "hello" })
   })
 
   test("tui is enabled by default, --no-tui disables it", () => {
     expect(parseArgs(["build", "--provider", "fake", "--session", "demo"])).toMatchObject({ tui: true, once: false, session: "demo", prompt: "" })
-    expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ tui: true, once: true, prompt: "hello" })
+    expect(parseArgs(["hello", "--provider", "fake"])).toMatchObject({ tui: true, once: true, prompt: "hello" })
     expect(parseArgs(["build", "--no-tui", "--provider", "fake", "--session", "demo"])).toMatchObject({ tui: false, once: false, session: "demo", prompt: "" })
   })
 
@@ -192,12 +192,13 @@ describe("cli args", () => {
     expect(parseArgs(["build", "--provider", "fake", "--session", "demo"])).toMatchObject({ once: false, session: "demo", prompt: "" })
   })
 
-  test("once mode accepts startup prompts", () => {
+  test("startup prompts enter single-run mode, and --once remains a legacy alias", () => {
+    expect(parseArgs(["hello", "--provider", "fake"])).toMatchObject({ once: true, session: undefined, prompt: "hello" })
     expect(parseArgs(["build", "--once", "hello", "--provider", "fake"])).toMatchObject({ once: true, session: undefined, prompt: "hello" })
   })
 
   test("context and step budgets can be set at startup", () => {
-    expect(parseArgs(["build", "--once", "hello", "--provider", "fake", "--max-tokens", "64000", "--max-steps", "24"])).toMatchObject({ maxTokens: 64_000, maxSteps: 24, prompt: "hello" })
+    expect(parseArgs(["hello", "--provider", "fake", "--max-tokens", "64000", "--max-steps", "24"])).toMatchObject({ maxTokens: 64_000, maxSteps: 24, prompt: "hello" })
     expect(() => parseArgs(["build", "--max-steps", "nope"])).toThrow("--max-steps requires a positive number")
   })
 
@@ -205,12 +206,12 @@ describe("cli args", () => {
     const originalValue = process.env.NODE_TLS_REJECT_UNAUTHORIZED
     try {
       delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
-      const args = parseArgs(["build", "--once", "hello", "--provider", "fake", "--insecure"])
+      const args = parseArgs(["hello", "--provider", "fake", "--insecure"])
       expect(args.insecure).toBe(true)
       expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED as any).toBe("0")
 
       delete process.env.NODE_TLS_REJECT_UNAUTHORIZED
-      const argsShort = parseArgs(["build", "--once", "hello", "--provider", "fake", "-k"])
+      const argsShort = parseArgs(["hello", "--provider", "fake", "-k"])
       expect(argsShort.insecure).toBe(true)
       expect(process.env.NODE_TLS_REJECT_UNAUTHORIZED as any).toBe("0")
       expect(argsShort.prompt).toBe("hello")
@@ -846,9 +847,9 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("tui once mode renders the same run timeline", async () => {
+  test("tui single-run mode renders the same run timeline", async () => {
     const root = await tmpdir()
-    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plan", "--once", "plan a harmless change", "--provider", "fake", "--tui", "--root", root], {
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "进行 20 轮短问答", "--provider", "fake", "--tui", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "ignore",
       stdout: "pipe",
@@ -863,9 +864,9 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("tui plan mode keeps the approval prompt on the existing plan workflow", async () => {
+  test("tui unified mode keeps the approval prompt on the planning workflow", async () => {
     const root = await tmpdir()
-    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plan", "--provider", "fake", "--tui", "--root", root], {
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--tui", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "pipe",
       stdout: "pipe",
@@ -879,7 +880,7 @@ describe("cli args", () => {
     const stderrDone = readPipe(child.stderr, (text) => {
       stderr = text
     })
-    child.stdin.write("plan a harmless change\n")
+    child.stdin.write("plan-exit\n")
     await waitForOutput(() => stdout, "[Plan] [A]pprove & execute", 5_000)
     child.stdin.write("r\n:exit\n")
     child.stdin.end()
@@ -894,9 +895,9 @@ describe("cli args", () => {
     await rm(root, { recursive: true, force: true })
   }, { timeout: 12_000 })
 
-  test("tui once mode remains compatible with session logs", async () => {
+  test("tui single-run mode remains compatible with session logs", async () => {
     const root = await tmpdir()
-    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "plan", "--once", "plan a harmless change", "--provider", "fake", "--tui", "--logger", "--root", root], {
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "进行 20 轮短问答", "--provider", "fake", "--tui", "--logger", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "ignore",
       stdout: "pipe",

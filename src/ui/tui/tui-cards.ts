@@ -3,10 +3,14 @@ import type { ProviderRunMetrics } from "../timeline"
 import { compactPath, drawCard, formatDuration } from "./tui-ansi"
 import type { TuiContext } from "./tui-types"
 
+function displayRunMode(mode: string) {
+  return mode === "build" || mode === "plan" ? "run" : mode
+}
+
 export function buildConfiguredCard(context: TuiContext, status: string, columns: number) {
   const copy = uiText(context.language ?? "en")
   const model = context.model ?? "(provider default)"
-  const line = copy.tuiConfiguredLine(context.provider, model, context.mode, status, languageDisplay(context.language ?? "en"))
+  const line = copy.tuiConfiguredLine(context.provider, model, displayRunMode(context.mode), status, languageDisplay(context.language ?? "en"))
   return drawCard(`⚙️  ${copy.tuiConfiguredTitle}`, [line], columns, {
     color: "\x1b[90m",
     borderStyle: "round",
@@ -43,14 +47,14 @@ export function buildWelcomeDashboardCard(context: TuiContext, status: string, c
   const width = Math.max(72, Math.min(columns, 100))
   const root = compactPath(context.root, width - 20)
   const lines = [
-    `\x1b[90m${copy.welcomeOverview(context.mode, context.provider, model)}\x1b[0m`,
+    `\x1b[90m${copy.welcomeOverview(displayRunMode(context.mode), context.provider, model)}\x1b[0m`,
     `\x1b[90m${copy.welcomeSession(session, logger, status, languageDisplay(language))}\x1b[0m`,
     `\x1b[90m${copy.welcomeRoot(root)}\x1b[0m`,
     `\x1b[90m${copy.welcomeCommands}\x1b[0m`,
     `\x1b[90m─\x1b[0m`.repeat(width - 4),
     `\x1b[1m📂 ${copy.welcomeProjectRoot}\x1b[0m  \x1b[36m${root}\x1b[0m`,
     `\x1b[1m🤖 ${copy.welcomeAgent}\x1b[0m     \x1b[35m${context.provider}\x1b[0m · model: \x1b[32m${model}\x1b[0m`,
-    `\x1b[1m🔧 ${copy.welcomeRunMode}\x1b[0m     ${context.mode === "build" ? "\x1b[45m\x1b[37m\x1b[1m BUILD \x1b[0m" : "\x1b[44m\x1b[37m\x1b[1m PLAN \x1b[0m"}`,
+    `\x1b[1m🔧 ${copy.welcomeRunMode}\x1b[0m     \x1b[46m\x1b[30m\x1b[1m RUN \x1b[0m`,
     `\x1b[1m📝 ${copy.welcomeSessionId}\x1b[0m   \x1b[93m${session}\x1b[0m · logger: \x1b[90m${logger}\x1b[0m`,
     `\x1b[90m─\x1b[0m`.repeat(width - 4),
     `\x1b[1m💡 ${copy.welcomeSlashCommands}\x1b[0m`,

@@ -265,7 +265,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       if (turn.text) latestAssistantText = turn.text
       if (turn.toolCalls.length === 0) {
         const output = turn.text
-        if (mode === "plan" && protocol.hasProposedPlanText(output)) this.hasProposedPlan = true
+        if (protocol.hasProposedPlanText(output)) this.hasProposedPlan = true
         this.context.add(assistantMessage(reasoningTranscript, output))
         state = this.aspect.transition("completed", { usedTools })
         this.emitRunDone("completed", providerMetrics)
@@ -328,7 +328,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           }
         }
         
-        if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
+        if (toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
           const output = result.output
           try {
             const planMarkdown = protocol.stripPlanTags(result.output)
