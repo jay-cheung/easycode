@@ -2,9 +2,8 @@ import { McpSourceService, WebSearchService, formatMcpResource, formatMcpResourc
 import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, PlanStepCompleteInput, PlanStepFailInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
-import { loadStructuredPlan, type PlanStepStatus } from "../../plans"
+import { loadStructuredPlanState, nextIncompletePlanStep } from "../../plans"
 import { PlanTracker } from "../../agent/planner"
-import { ledgerRecord } from "../../agent/ledger"
 
 function formatSkillArtifact(artifact: SkillArtifact) {
   const detail = artifact.kind === "missing" ? "missing" : artifact.kind
@@ -146,36 +145,29 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const sessionIdRecord = ledger?.current.find(r => r.subject === "current_session_id" && r.status === "current")
       const sessionId = sessionIdRecord?.value ?? "default"
       
-      const plan = await loadStructuredPlan(ctx.sandbox.root, sessionId, planId)
-      if (!plan) return { title: "Error", output: `Could not load structured plan ${planId}.`, metadata: { status: "failed" } }
-      
-      const stepStatuses: Record<string, PlanStepStatus> = {}
-      for (const step of plan.steps) {
-        const stepStatusRecord = ledger?.current.find(r => r.subject === `plan_step_status_${step.id}` && r.status === "current")
-        stepStatuses[step.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
-      }
-      stepStatuses[currentStepId] = (ledger?.current.find(r => r.subject === "plan_step_status" && r.status === "current")?.value as PlanStepStatus) || "pending"
-      
-      const currentIndex = plan.steps.findIndex(s => s.id === currentStepId)
-      const nextStep = plan.steps[currentIndex + 1]
+      const state = await loadStructuredPlanState(ctx.sandbox.root, sessionId, planId)
+      if (!state) return { title: "Error", output: `Could not load structured plan ${planId}.`, metadata: { status: "failed" } }
+      const { plan, checkpoint } = state
+      const stepStatuses = { ...checkpoint.stepStatuses, [currentStepId]: "completed" as const }
+      const nextStep = nextIncompletePlanStep(plan, stepStatuses)
       
       if (nextStep) {
-        await PlanTracker.updateStepStatus(ctx.context, ctx.sandbox.root, sessionId, plan, stepStatuses, currentStepId, "completed")
-        await PlanTracker.updateStepStatus(ctx.context, ctx.sandbox.root, sessionId, plan, stepStatuses, nextStep.id, "running")
-        
-        ctx.context.updateLedger({
-          current: [
-            ledgerRecord("checkpoint", `plan_step_status_${currentStepId}`, "completed", "current", ctx.context.state.messages.length)
-          ]
+        await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {
+          currentStepId: nextStep.id,
+          stepStatuses: { ...stepStatuses, [nextStep.id]: "running" },
+          status: "running",
         })
-        
         return {
           title: "Plan Step Completed",
           output: `Step ${currentStepId} completed successfully. Proceeding to Step ${nextStep.id}: ${nextStep.goal}`,
           metadata: { status: "succeeded", nextStepId: nextStep.id }
         }
       } else {
-        await PlanTracker.updateStepStatus(ctx.context, ctx.sandbox.root, sessionId, plan, stepStatuses, currentStepId, "completed")
+        await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {
+          currentStepId: undefined,
+          stepStatuses,
+          status: "completed",
+        })
         await PlanTracker.clearActivePlan(ctx.context, ctx.sandbox.root, planId)
         
         return {

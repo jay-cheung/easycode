@@ -176,9 +176,9 @@ describe("cli startup model selection", () => {
 
 describe("cli args", () => {
   test("session mode is the default and does not accept startup prompts", () => {
-    expect(parseArgs([])).toMatchObject({ mode: "plan", once: false, session: undefined, prompt: "" })
+    expect(parseArgs([])).toMatchObject({ mode: "build", once: false, session: undefined, prompt: "" })
     expect(parseArgs(["build", "--provider", "fake"])).toMatchObject({ once: false, session: undefined, prompt: "" })
-    expect(parseArgs(["--provider", "fake"])).toMatchObject({ mode: "plan", once: false, provider: "fake", prompt: "" })
+    expect(parseArgs(["--provider", "fake"])).toMatchObject({ mode: "build", once: false, provider: "fake", prompt: "" })
     expect(() => parseArgs(["build", "hello", "--session", "demo"])).toThrow("Session mode is interactive")
   })
 
@@ -570,6 +570,79 @@ describe("cli args", () => {
     expect(status).toBe(0)
     expect(stdout).toContain("Active task checkpoints:")
     expect(stdout).toContain("Refactor auth module")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session startup injects active task checkpoints into provider context", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "memory.json"), JSON.stringify({
+      records: [{
+        id: "mem_task_1",
+        kind: "task_state",
+        text: "Fix the login bug",
+        tags: ["task", "checkpoint"],
+        scope: { topics: ["task_checkpoint"] },
+        createdAt: Date.now(),
+      }],
+    }))
+
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("active task checkpoint eval\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+
+    expect(status).toBe(0)
+    expect(stdout).toContain("Active task checkpoints:")
+    expect(stdout).toContain("Task checkpoint context used.")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("session switch keeps active task checkpoints in provider context", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
+    await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({
+      id: "alpha",
+      messages: [],
+      settings: { provider: "fake", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
+      updatedAt: 100,
+    }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "sessions", "beta.json"), JSON.stringify({
+      id: "beta",
+      messages: [],
+      settings: { provider: "fake", language: "en", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
+      updatedAt: 200,
+    }, null, 2))
+    await Bun.write(path.join(root, ".easycode", "memory.json"), JSON.stringify({
+      records: [{
+        id: "mem_task_1",
+        kind: "task_state",
+        text: "Fix the login bug",
+        tags: ["task", "checkpoint"],
+        scope: { topics: ["task_checkpoint"] },
+        createdAt: Date.now(),
+      }],
+    }))
+
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("1\n/session switch alpha\nactive task checkpoint eval\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+
+    expect(status).toBe(0)
+    expect(stdout).toContain("Task checkpoint context used.")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })

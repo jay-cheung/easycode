@@ -1,5 +1,18 @@
 # Progress Log
 
+## Step 35: Planning Layer Safety And Checkpoint Hardening
+
+- Scope: fix the first structured-planning rollout regressions by restoring the build-vs-plan CLI contract, making structured-plan activation fail closed, and persisting active-plan state as a real checkpoint instead of reconstructing it from scattered ledger fields.
+- Implementation:
+  - Updated `src/cli.ts` so the default CLI mode is back to `build`, `easycode plan --once ...` stays read-only, and interactive plan approval only auto-queues execution after an explicit approval step.
+  - Updated `src/plans.ts`, `src/agent/planner.ts`, `src/agent/runner/index.ts`, and `src/tool/builtins/retrieval-tools.ts` so structured plans now validate strictly, persist a typed checkpoint (`currentStepId`, step-status map, lifecycle status, blocker/replan metadata), and only trigger replanning for explicit revision prompts rather than for every non-approval follow-up.
+  - Updated planning-layer, CLI, and integration coverage to lock the fail-closed parser behavior, active-plan checkpoint persistence, default build-mode CLI contract, status-question non-replanning, and explicit replanning path.
+- Verification:
+  - `bunx tsc --noEmit`
+  - `bun test test/unit/planning-layer.test.ts test/unit/cli.test.ts test/integration/agent.test.ts`
+  - `bun run gate`
+- Notes: markdown plan output remains the compatibility baseline; the structured execution layer is now best-effort and safe to skip when parsing fails instead of silently downgrading into an unconstrained edit step.
+
 ## Step 34: Compaction Tail Retention And 64k Default Window
 
 - Scope: reduce summary-mode continuity loss by keeping a materially larger raw conversation tail after compaction and raising the default context budget to a 64k window.
@@ -1190,3 +1203,15 @@
   - Correctness: the default fake eval suite now proves that project-memory recall reaches provider-visible context and that durable lesson promotion writes the expected structured memory artifact.
   - Maintainability: memory evals reuse the existing lightweight fake-provider harness instead of introducing a separate bespoke test runner.
   - Verification: reran focused memory/eval/agent coverage, `bun run typecheck`, and the unified gate because this slice changes both provider-visible fake behavior and the default eval corpus.
+
+## Step 52: Task Checkpoint Runtime Recall And Roadmap Closure
+
+- Scope: close the remaining project-memory roadmap gaps by proving `task_state` checkpoints enter provider-visible runtime context at session startup and session switch, then synchronize the roadmap and acceptance contract to the implemented state.
+- Implementation:
+  - Extended `src/provider/fake.ts` with a deterministic `active task checkpoint eval` branch that succeeds only when `<active_task_checkpoints>` and the checkpoint text are present in provider input.
+  - Added CLI coverage in `test/unit/cli.test.ts` to assert active task checkpoints are injected into provider context both at interactive startup and after `/session switch`.
+  - Updated `specs/acceptance.md` and `specs/015-memory-module-roadmap.md` so task checkpoint commands, startup/switch runtime injection, and retrieval-refinement behavior are part of the formal contract rather than undocumented partial behavior.
+- Code Complete review result:
+  - Correctness: active unfinished work is now proven to reach the model at the two session lifecycle boundaries called out by the roadmap, not only rendered as CLI text.
+  - Maintainability: roadmap status now matches the implemented runtime surface, reducing drift between spec and the current project-memory behavior.
+  - Verification: reran focused CLI/memory coverage plus the unified gate because this slice changes provider-visible fake behavior and closes the remaining roadmap evidence gap.

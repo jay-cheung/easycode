@@ -141,20 +141,23 @@ Embeddings or vector retrieval are explicitly out of scope until structured loca
 - Add guardrails so only concise structured records are promoted.
 - Add prompt/tool guidance for when promotion is appropriate.
 - Add fake-provider eval coverage for continuation recall and durable promotion.
-- Status: implemented in runtime through `memory_promote`; automatic reflection-driven promotion still remains future work.
+- Status: implemented in runtime through `memory_promote`. Automatic reflection-driven promotion remains intentionally out of scope for the local deterministic roadmap and is not required for completion.
 
 ### Phase 3: Session And Task Checkpoint Memory
 
 - Add explicit cross-session task checkpointing.
 - Support session-start/session-switch recall for active unfinished work.
 - Distinguish durable task state from transient session summaries.
+- Status: implemented through `task_state` records, `/task` checkpoint commands, planner checkpoint persistence, and startup/switch injection of `<active_task_checkpoints>`.
 
 ### Phase 4: Memory Evals
 
 - Add eval fixtures for continuation, repeated failure recovery, preference retention, and noise rejection.
 - Verify that recalled memory improves trajectory without causing irrelevant prompt pollution.
+- Status: implemented through `EC-010` to `EC-014` in the default fake-provider eval suite.
 
 ### Phase 5: Retrieval Refinement
 
 - Improve ranking, deduplication, and scope-aware filtering.
 - Only consider embeddings or vector retrieval if structured local retrieval becomes the clear bottleneck.
+- Status: implemented locally with trigger-word filtering, active-file scope boosts, deduplication, and bounded recall. Embeddings remain intentionally deferred unless the local path becomes the bottleneck.

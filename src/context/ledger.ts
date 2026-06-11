@@ -20,6 +20,8 @@ const currentAlwaysSubjects = new Set([
   "plan_blocker",
   "plan_verification_target",
   "plan_last_replan_reason",
+  "plan_step_status_map",
+  "plan_lifecycle_status",
   "current_session_id",
 ])
 // History is selected only when the latest request asks for prior context; match

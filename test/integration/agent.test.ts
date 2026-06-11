@@ -10,6 +10,7 @@ import { FakeProvider } from "../../src/provider"
 import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
 import type { LogEvent } from "../../src/logger"
 import { ProjectMemoryStore } from "../../src/memory"
+import { loadStructuredPlanState } from "../../src/plans"
 import { SessionStore } from "../../src/session"
 import { defaultSessionSettings } from "../../src/settings"
 import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
@@ -862,6 +863,136 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["read", "edit", "bash"])
     expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a + b")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("invalid structured plan output does not activate an executable plan", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Markdown Plan:")) {
+          yield { type: "text_delta", text: "not-json" }
+          return
+        }
+        yield { type: "tool_call", call: { id: "call_plan", name: "plan_exit", input: { markdown: "# Plan\n- Inspect the code.\n- Fix the issue." } } }
+      },
+    }
+
+    const runner = new AgentRunner({ root, provider, sessionId: "invalid-plan" })
+    const result = await runner.run("invalid-structured-plan", "plan")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("<proposed_plan>")
+    expect(runner.context.state.ledger?.current.some((record) => record.subject === "current_plan_id")).toBe(false)
+    expect(await loadStructuredPlanState(root, "invalid-plan", "plan_12345")).toBeUndefined()
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("active plan status questions do not trigger a replan", async () => {
+    const root = await fixture()
+    const seenPrompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        seenPrompts.push(input.prompt)
+        if (input.prompt.includes("Markdown Plan:")) {
+          yield {
+            type: "text_delta",
+            text: `\`\`\`json
+{
+  "id": "plan_status",
+  "title": "Status Plan",
+  "steps": [
+    { "id": "step_1", "goal": "Inspect the code", "kind": "inspect", "doneWhen": "Inspection completed" },
+    { "id": "step_2", "goal": "Edit the code", "kind": "edit", "doneWhen": "Edit completed" }
+  ]
+}
+\`\`\``,
+          }
+          return
+        }
+        if (input.prompt === "创建计划") {
+          yield { type: "tool_call", call: { id: "call_plan", name: "plan_exit", input: { markdown: "# Plan\n- Inspect the code.\n- Edit the code." } } }
+          return
+        }
+        if (input.prompt === "现在到哪一步了？") {
+          yield { type: "text_delta", text: "当前还在 step_1：Inspect the code。" }
+          return
+        }
+        yield { type: "text_delta", text: "Done." }
+      },
+    }
+
+    const runner = new AgentRunner({ root, provider, sessionId: "status-query" })
+    await runner.run("创建计划", "plan")
+    const result = await runner.run("现在到哪一步了？", "plan")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("step_1")
+    expect(seenPrompts).not.toContain("Replan request.")
+    expect(runner.context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_plan_step", value: "step_1" }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("explicit plan revision prompts trigger replanning", async () => {
+    const root = await fixture()
+    const seenPrompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        seenPrompts.push(input.prompt)
+        if (input.prompt.includes("Markdown Plan:")) {
+          yield {
+            type: "text_delta",
+            text: `\`\`\`json
+{
+  "id": "plan_revise",
+  "title": "Original Plan",
+  "steps": [
+    { "id": "step_1", "goal": "Inspect the code", "kind": "inspect", "doneWhen": "Inspection completed" },
+    { "id": "step_2", "goal": "Edit the code", "kind": "edit", "doneWhen": "Edit completed" }
+  ]
+}
+\`\`\``,
+          }
+          return
+        }
+        if (input.prompt === "创建可重规划计划") {
+          yield { type: "tool_call", call: { id: "call_plan", name: "plan_exit", input: { markdown: "# Plan\n- Inspect the code.\n- Edit the code." } } }
+          return
+        }
+        if (input.prompt === "Replan request.") {
+          yield {
+            type: "text_delta",
+            text: `\`\`\`json
+{
+  "id": "plan_revise",
+  "title": "Revised Plan",
+  "steps": [
+    { "id": "step_1", "goal": "Inspect the code", "kind": "inspect", "doneWhen": "Inspection completed" },
+    { "id": "step_2", "goal": "Add tests first", "kind": "verify", "doneWhen": "Tests added" },
+    { "id": "step_3", "goal": "Edit the code", "kind": "edit", "doneWhen": "Edit completed" }
+  ]
+}
+\`\`\``,
+          }
+          return
+        }
+        yield { type: "text_delta", text: "Replanned." }
+      },
+    }
+
+    const runner = new AgentRunner({ root, provider, sessionId: "revise-plan" })
+    await runner.run("创建可重规划计划", "plan")
+    const result = await runner.run("请重新规划，先补测试再改代码", "plan")
+    const state = await loadStructuredPlanState(root, "revise-plan", "plan_revise")
+
+    expect(result.status).toBe("completed")
+    expect(seenPrompts).toContain("Replan request.")
+    expect(state?.plan.title).toBe("Revised Plan")
+    expect(state?.plan.steps[1]?.goal).toBe("Add tests first")
+    expect(state?.checkpoint.lastReplanReason).toBe("scope_change")
     await rm(root, { recursive: true, force: true })
   })
 

@@ -1,13 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { AgentRunner } from "../../src/agent"
-import { createBuiltinRegistry } from "../../src/tool"
-import { PermissionService, defaultPermissionRules } from "../../src/permission"
 import { ContextManager } from "../../src/context"
-import { saveStructuredPlan, loadStructuredPlan, isComplexPlan } from "../../src/plans"
-import { Planner, Replanner, PlanTracker } from "../../src/agent/planner"
+import { InvalidExecutionPlanError, loadStructuredPlan, loadStructuredPlanState, isComplexPlan } from "../../src/plans"
+import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../../src/agent/planner"
 import type { Provider, ProviderEvent } from "../../src/provider/types"
 
 async function tmpdir() {
@@ -26,7 +23,7 @@ const mockProvider: Provider = {
     supportsMaxOutputTokens: false,
     promptCacheMode: "none" as const,
   },
-  async *stream(input: any): AsyncGenerator<ProviderEvent, void, unknown> {
+  async *stream(input): AsyncGenerator<ProviderEvent, void, unknown> {
     if (input.prompt.includes("Markdown Plan:")) {
       yield {
         type: "text_delta" as const,
@@ -126,6 +123,10 @@ describe("Planning Layer & Executable Plans", () => {
     expect(plan.steps[1].goal).toBe("Edit code revised")
   })
 
+  test("Planner fails closed when structured response is invalid", () => {
+    expect(() => parseExecutionPlanFromResponse("not-json")).toThrow(InvalidExecutionPlanError)
+  })
+
   test("PlanTracker updates step statuses in ledger and checkpoints to memory", async () => {
     const root = await tmpdir()
     try {
@@ -150,6 +151,10 @@ describe("Planning Layer & Executable Plans", () => {
       const loaded = await loadStructuredPlan(root, "test-session", "plan_tracker_test")
       expect(loaded).toBeDefined()
       expect(loaded?.id).toBe("plan_tracker_test")
+      const state = await loadStructuredPlanState(root, "test-session", "plan_tracker_test")
+      expect(state?.checkpoint.currentStepId).toBe("step_1")
+      expect(state?.checkpoint.stepStatuses.step_1).toBe("running")
+      expect(state?.checkpoint.status).toBe("running")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

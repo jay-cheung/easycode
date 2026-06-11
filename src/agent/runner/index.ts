@@ -30,7 +30,7 @@ import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
 import { runFailureText } from "./failure-policy"
 import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
-import { loadStructuredPlan, saveStructuredPlan, type PlanStepStatus } from "../../plans"
+import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState } from "../../plans"
 import { Planner, Replanner, PlanTracker } from "../planner"
 
 const defaultToolProgressIntervalMs = 10_000
@@ -130,61 +130,37 @@ export class AgentRunner {
     const ledger = this.context.state.ledger
     const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
     let resolvedMode = mode
-    let plan: any = undefined
+    let activePlanState = undefined
     
     if (planIdRecord) {
       resolvedMode = "build"
       const planId = planIdRecord.value
       const sessionId = this.sessionId || "default"
-      plan = await loadStructuredPlan(this.root, sessionId, planId)
-      if (plan) {
-        const isProceed = prompt.trim() === "Proceed with the approved plan." ||
-                          prompt.trim() === "Proceed." ||
-                          prompt.trim() === "确认" ||
-                          prompt.trim() === "执行" ||
-                          /^(y|yes|ok|approve|approved)$/i.test(prompt.trim())
-        if (!isProceed) {
-          const currentStepRecord = ledger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
-          const currentStepId = currentStepRecord?.value || ""
-          const stepStatuses: Record<string, PlanStepStatus> = {}
-          for (const step of plan.steps) {
-            const stepStatusRecord = ledger?.current.find(r => r.subject === `plan_step_status_${step.id}` && r.status === "current")
-            stepStatuses[step.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
-          }
-          if (currentStepId) {
-            stepStatuses[currentStepId] = (ledger?.current.find(r => r.subject === "plan_step_status" && r.status === "current")?.value as PlanStepStatus) || "pending"
-          }
-          
+      activePlanState = await loadStructuredPlanState(this.root, sessionId, planId)
+      if (activePlanState) {
+        if (isPlanRevisionPrompt(prompt)) {
           const newPlan = await Replanner.replan(
             prompt,
-            plan,
-            stepStatuses,
-            currentStepId,
+            activePlanState.plan,
+            activePlanState.checkpoint.stepStatuses,
+            activePlanState.checkpoint.currentStepId ?? "",
             "User changed scope/objective",
             this.provider
           )
-          await saveStructuredPlan(this.root, sessionId, newPlan.id, newPlan)
-          
-          const nextStep = newPlan.steps.find(s => stepStatuses[s.id] !== "completed") || newPlan.steps[0]
-          if (nextStep) {
-            await PlanTracker.updateStepStatus(this.context, this.root, sessionId, newPlan, stepStatuses, nextStep.id, "running", {
-              replanReason: "scope_change"
+          activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
+            stepStatuses: activePlanState.checkpoint.stepStatuses,
+            currentStepId: activePlanState.checkpoint.currentStepId,
+            status: "running",
+            lastReplanReason: "scope_change",
+          })
+        } else if (isPlanApprovalPrompt(prompt) && activePlanState.checkpoint.currentStepId) {
+          const currentStatus = activePlanState.checkpoint.stepStatuses[activePlanState.checkpoint.currentStepId] ?? "pending"
+          if (currentStatus === "pending") {
+            activePlanState = await PlanTracker.activatePlan(this.context, this.root, sessionId, activePlanState.plan, {
+              ...activePlanState.checkpoint,
+              stepStatuses: { ...activePlanState.checkpoint.stepStatuses, [activePlanState.checkpoint.currentStepId]: "running" },
+              status: "running",
             })
-            plan = newPlan
-          }
-        } else {
-          const currentStepRecord = ledger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
-          if (currentStepRecord) {
-            const currentStepId = currentStepRecord.value
-            const currentStatusRecord = ledger?.current.find(r => r.subject === "plan_step_status" && r.status === "current")
-            if (!currentStatusRecord || currentStatusRecord.value === "pending") {
-              const stepStatuses: Record<string, PlanStepStatus> = {}
-              for (const step of plan.steps) {
-                const stepStatusRecord = ledger?.current.find(r => r.subject === `plan_step_status_${step.id}` && r.status === "current")
-                stepStatuses[step.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
-              }
-              await PlanTracker.updateStepStatus(this.context, this.root, sessionId, plan, stepStatuses, currentStepId, "running")
-            }
           }
         }
       }
@@ -226,18 +202,17 @@ export class AgentRunner {
       if (activePlanIdRec) {
         const planId = activePlanIdRec.value
         const sessionId = this.sessionId || "default"
-        const currentPlan = await loadStructuredPlan(this.root, sessionId, planId)
-        const currentStepRec = latestLedger?.current.find(r => r.subject === "current_plan_step" && r.status === "current")
-        if (currentPlan && currentStepRec) {
-          const stepId = currentStepRec.value
-          const s = currentPlan.steps.find(stepItem => stepItem.id === stepId)
+        const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
+        const stepId = currentPlanState?.checkpoint.currentStepId
+        if (currentPlanState && stepId) {
+          const s = currentPlanState.plan.steps.find(stepItem => stepItem.id === stepId)
           if (s) {
             activeHypothesisMsgs = [
               ...activeHypothesisMsgs,
               {
                 role: "system" as const,
                 content: `[Active Plan Step Reminder]
-Active Plan: ${currentPlan.title || planId}
+Active Plan: ${currentPlanState.plan.title || planId}
 Current Step: ${s.id} (kind: ${s.kind})
 Goal: ${s.goal}
 Target Files: ${s.targetFiles?.join(", ") || "none"}
@@ -332,58 +307,37 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           if (planIdRec) {
             const planId = planIdRec.value
             const sessionId = this.sessionId || "default"
-            const currentPlan = await loadStructuredPlan(this.root, sessionId, planId)
-            if (currentPlan) {
-              const stepStatuses: Record<string, PlanStepStatus> = {}
-              for (const s of currentPlan.steps) {
-                const stepStatusRecord = latestLedger2?.current.find(r => r.subject === `plan_step_status_${s.id}` && r.status === "current")
-                stepStatuses[s.id] = (stepStatusRecord?.value as PlanStepStatus) || "pending"
-              }
-              stepStatuses[failedStepId] = "failed"
-              
+            const currentPlanState = await loadStructuredPlanState(this.root, sessionId, planId)
+            if (currentPlanState) {
+              const stepStatuses = { ...currentPlanState.checkpoint.stepStatuses, [failedStepId]: "failed" as const }
               const newPlan = await Replanner.replan(
                 prompt,
-                currentPlan,
+                currentPlanState.plan,
                 stepStatuses,
                 failedStepId,
                 failReason,
                 this.provider
               )
-              await saveStructuredPlan(this.root, sessionId, newPlan.id, newPlan)
-              
-              const nextStep = newPlan.steps.find(s => stepStatuses[s.id] !== "completed") || newPlan.steps[0]
-              if (nextStep) {
-                await PlanTracker.updateStepStatus(this.context, this.root, sessionId, newPlan, stepStatuses, nextStep.id, "running", {
-                  replanReason: "tool_failure"
-                })
-              }
+              await PlanTracker.activatePlan(this.context, this.root, sessionId, newPlan, {
+                stepStatuses,
+                currentStepId: currentPlanState.checkpoint.currentStepId,
+                status: "running",
+                lastReplanReason: "tool_failure",
+              })
             }
           }
         }
         
         if (effectiveMode === "plan" && toolCall.name === "plan_exit" && result.metadata.status === "succeeded") {
           const output = result.output
-          const planMarkdown = protocol.stripPlanTags(result.output)
-          const planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
-          
-          const planId = planJson.id || `plan_${Date.now()}`
-          planJson.id = planId
-          const sessionId = this.sessionId || "default"
-          await saveStructuredPlan(this.root, sessionId, planId, planJson)
-          
-          const turn = this.context.state.messages.length
-          this.context.updateLedger({
-            current: [
-              ledgerRecord("checkpoint", "current_plan_id", planId, "current", turn),
-              ledgerRecord("checkpoint", "current_plan_step", planJson.steps[0]?.id || "none", "current", turn),
-              ledgerRecord("checkpoint", "plan_step_status", "pending", "current", turn),
-            ]
-          })
-          
-          const stepStatuses: Record<string, PlanStepStatus> = {}
-          for (const stepItem of planJson.steps) stepStatuses[stepItem.id] = "pending"
-          if (planJson.steps[0]) stepStatuses[planJson.steps[0].id] = "pending"
-          await PlanTracker.writeMemoryCheckpoint(this.root, planJson, stepStatuses, planJson.steps[0]?.id || "none")
+          try {
+            const planMarkdown = protocol.stripPlanTags(result.output)
+            const planJson = await Planner.generateStructuredPlan(prompt, planMarkdown, this.provider)
+            const sessionId = this.sessionId || "default"
+            await PlanTracker.activatePlan(this.context, this.root, sessionId, planJson, { status: "draft" })
+          } catch {
+            /* keep markdown-only plan output when structured parsing fails */
+          }
 
           const displayText = protocol.stripPlanTags(result.output)
           emitPlanExitText(this.onEvent, this.onTextDelta, displayText)

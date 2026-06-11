@@ -3,8 +3,8 @@ import type { ProviderInputMessage } from "../message"
 import type { ContextManagerLike } from "../context/types"
 import { ledgerRecord } from "./ledger"
 import { ProjectMemoryStore } from "../memory"
-import type { ExecutionPlan, PlanStepStatus } from "../plans"
-import { saveStructuredPlan } from "../plans"
+import type { ExecutionPlan, PlanCheckpoint, PlanStepStatus, ReplanReason, StoredExecutionPlan } from "../plans"
+import { createPlanCheckpoint, InvalidExecutionPlanError, nextIncompletePlanStep, normalizeExecutionPlan, saveStructuredPlan } from "../plans"
 
 export async function askProvider(provider: Provider, prompt: string, systemPrompt?: string): Promise<string> {
   const providerMessages: ProviderInputMessage[] = []
@@ -32,39 +32,10 @@ export function parseExecutionPlanFromResponse(response: string): ExecutionPlan 
   const jsonMatch = response.match(/```json\s*([\s\S]*?)\s*```/)
   const jsonText = jsonMatch ? jsonMatch[1] : response
   try {
-    const parsed = JSON.parse(jsonText.trim())
-    if (!parsed.id) parsed.id = `plan_${Date.now()}`
-    if (!parsed.title) parsed.title = "Implementation Plan"
-    if (!Array.isArray(parsed.steps)) parsed.steps = []
-    
-    parsed.steps = parsed.steps.map((step: any, index: number) => {
-      const id = step.id || `step_${index + 1}`
-      const goal = step.goal || "Goal not specified"
-      const kind = ["inspect", "edit", "verify", "document", "gate"].includes(step.kind) ? step.kind : "inspect"
-      return {
-        id,
-        goal,
-        kind,
-        targetFiles: Array.isArray(step.targetFiles) ? step.targetFiles : [],
-        dependsOn: Array.isArray(step.dependsOn) ? step.dependsOn : [],
-        doneWhen: step.doneWhen || "",
-        fallback: step.fallback || ""
-      }
-    })
-    return parsed as ExecutionPlan
+    return normalizeExecutionPlan(JSON.parse(jsonText.trim()) as unknown)
   } catch (error) {
-    return {
-      id: `plan_${Date.now()}`,
-      title: "Generated Plan (Fallback)",
-      steps: [
-        {
-          id: "step_1",
-          goal: "Execute the approved plan.",
-          kind: "edit",
-          doneWhen: "All modifications completed and verified."
-        }
-      ]
-    }
+    if (error instanceof InvalidExecutionPlanError) throw error
+    throw new InvalidExecutionPlanError("Structured plan response was not valid JSON.")
   }
 }
 
@@ -143,6 +114,18 @@ Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`
 }
 
 export class PlanTracker {
+  static async activatePlan(
+    context: ContextManagerLike,
+    root: string,
+    sessionId: string,
+    plan: ExecutionPlan,
+    checkpointInput: Partial<PlanCheckpoint> = {},
+  ): Promise<StoredExecutionPlan> {
+    const checkpoint = createPlanCheckpoint(plan, checkpointInput)
+    await this.syncPlanState(context, root, sessionId, plan, checkpoint)
+    return { version: 1, plan, checkpoint }
+  }
+
   static async updateStepStatus(
     context: ContextManagerLike,
     root: string,
@@ -151,44 +134,25 @@ export class PlanTracker {
     stepStatuses: Record<string, PlanStepStatus>,
     activeStepId: string,
     status: PlanStepStatus,
-    details?: { blocker?: string; verificationTarget?: string; replanReason?: string }
+    details?: { blocker?: string; verificationTarget?: string; replanReason?: ReplanReason }
   ): Promise<void> {
-    const turn = context.state.messages.length
-    stepStatuses[activeStepId] = status
-    
-    const records = [
-      ledgerRecord("checkpoint", "current_plan_id", plan.id, "current", turn),
-      ledgerRecord("checkpoint", "current_plan_step", activeStepId, "current", turn),
-      ledgerRecord("checkpoint", "plan_step_status", status, "current", turn),
-    ]
-    
-    if (details?.blocker) {
-      records.push(ledgerRecord("checkpoint", "plan_blocker", details.blocker, "current", turn))
-    } else {
-      records.push(ledgerRecord("checkpoint", "plan_blocker", "none", "current", turn))
-    }
-    if (details?.verificationTarget) {
-      records.push(ledgerRecord("checkpoint", "plan_verification_target", details.verificationTarget, "current", turn))
-    }
-    if (details?.replanReason) {
-      records.push(ledgerRecord("checkpoint", "plan_last_replan_reason", details.replanReason, "current", turn))
-    }
-    
-    context.updateLedger({ current: records })
-    
-    // Save updated structured plan to disk (along with step statuses)
-    await saveStructuredPlan(root, sessionId, plan.id, plan)
-    
-    // Update checkpoint in memory
-    await this.writeMemoryCheckpoint(root, plan, stepStatuses, activeStepId, details?.blocker)
+    const nextStatuses = { ...stepStatuses, [activeStepId]: status }
+    const nextStep = nextIncompletePlanStep(plan, nextStatuses)
+    const checkpoint = createPlanCheckpoint(plan, {
+      currentStepId: status === "completed" ? nextStep?.id : activeStepId,
+      stepStatuses: nextStatuses,
+      blocker: details?.blocker,
+      verificationTarget: details?.verificationTarget,
+      lastReplanReason: details?.replanReason,
+      status: checkpointStatusFor(status, nextStep?.id),
+    })
+    await this.syncPlanState(context, root, sessionId, plan, checkpoint)
   }
 
   static async writeMemoryCheckpoint(
     root: string,
     plan: ExecutionPlan,
-    stepStatuses: Record<string, PlanStepStatus>,
-    activeStepId: string,
-    blocker?: string
+    checkpoint: PlanCheckpoint,
   ): Promise<void> {
     const store = new ProjectMemoryStore(root)
     const allRecords = await store.list()
@@ -200,14 +164,16 @@ export class PlanTracker {
     }
     
     const completedPhases = plan.steps
-      .filter(step => stepStatuses[step.id] === "completed")
-      .map(step => step.id)
+      .filter((step) => checkpoint.stepStatuses[step.id] === "completed")
+      .map((step) => step.id)
       .join(", ") || "none"
       
-    const activeStep = plan.steps.find(step => step.id === activeStepId)
+    const activeStep = checkpoint.currentStepId
+      ? plan.steps.find((step) => step.id === checkpoint.currentStepId)
+      : undefined
     const nextStepGoal = activeStep ? activeStep.goal : "none"
     
-    const checkpointText = `Task: ${plan.title || "Implementation"}. Completed phases: ${completedPhases}. Current blocker: ${blocker || "none"}. Next step: ${nextStepGoal}.`
+    const checkpointText = `Task: ${plan.title || "Implementation"}. Completed phases: ${completedPhases}. Current blocker: ${checkpoint.blocker || "none"}. Next step: ${nextStepGoal}.`
     
     await store.add({
       text: checkpointText,
@@ -223,15 +189,25 @@ export class PlanTracker {
     planId: string
   ): Promise<void> {
     const turn = context.state.messages.length
+    const activeSubjects = [
+      "current_plan_id",
+      "current_plan_step",
+      "plan_step_status",
+      "plan_blocker",
+      "plan_verification_target",
+      "plan_last_replan_reason",
+      "plan_step_status_map",
+      "plan_lifecycle_status",
+    ]
     
     // Transition all active plan records to resolved/archived
     const currentRecords = context.state.ledger?.current || []
     const nextCurrent = currentRecords.filter(r => 
-      !["current_plan_id", "current_plan_step", "plan_step_status", "plan_blocker", "plan_verification_target", "plan_last_replan_reason"].includes(r.subject)
+      !activeSubjects.includes(r.subject)
     )
     const nextHistory = (context.state.ledger?.history || []).concat(
       currentRecords
-        .filter(r => ["current_plan_id", "current_plan_step", "plan_step_status", "plan_blocker", "plan_verification_target", "plan_last_replan_reason"].includes(r.subject))
+        .filter(r => activeSubjects.includes(r.subject))
         .map(r => ({ ...r, status: "resolved" as const, updatedAtTurn: turn }))
     )
     context.setLedger({ current: nextCurrent, history: nextHistory })
@@ -246,4 +222,42 @@ export class PlanTracker {
       }
     }
   }
+
+  private static async syncPlanState(
+    context: ContextManagerLike,
+    root: string,
+    sessionId: string,
+    plan: ExecutionPlan,
+    checkpoint: PlanCheckpoint,
+  ) {
+    const turn = context.state.messages.length
+    const currentStepStatus = checkpoint.currentStepId ? checkpoint.stepStatuses[checkpoint.currentStepId] ?? "pending" : "completed"
+    const records = [
+      ledgerRecord("checkpoint", "current_plan_id", plan.id, "current", turn),
+      ledgerRecord("checkpoint", "current_plan_step", checkpoint.currentStepId ?? "none", "current", turn),
+      ledgerRecord("checkpoint", "plan_step_status", currentStepStatus, "current", turn),
+      ledgerRecord("checkpoint", "plan_blocker", checkpoint.blocker ?? "none", "current", turn),
+      ledgerRecord("checkpoint", "plan_step_status_map", summarizeStepStatuses(checkpoint.stepStatuses), "current", turn),
+      ledgerRecord("checkpoint", "plan_lifecycle_status", checkpoint.status, "current", turn),
+    ]
+    if (checkpoint.verificationTarget) {
+      records.push(ledgerRecord("checkpoint", "plan_verification_target", checkpoint.verificationTarget, "current", turn))
+    }
+    if (checkpoint.lastReplanReason) {
+      records.push(ledgerRecord("checkpoint", "plan_last_replan_reason", checkpoint.lastReplanReason, "current", turn))
+    }
+    context.updateLedger({ current: records })
+    await saveStructuredPlan(root, sessionId, plan.id, plan, checkpoint)
+    await this.writeMemoryCheckpoint(root, plan, checkpoint)
+  }
+}
+
+function summarizeStepStatuses(stepStatuses: Record<string, PlanStepStatus>) {
+  return Object.entries(stepStatuses).map(([stepID, status]) => `${stepID}:${status}`).join(", ") || "none"
+}
+
+function checkpointStatusFor(status: PlanStepStatus, nextStepId: string | undefined): PlanCheckpoint["status"] {
+  if (status === "failed" || status === "blocked") return "blocked"
+  if (status === "completed" && !nextStepId) return "completed"
+  return "running"
 }

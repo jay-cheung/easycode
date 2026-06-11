@@ -89,6 +89,13 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (prompt.includes("active task checkpoint eval")) {
+      const providerText = input.providerMessages.map((message) => message.content).join("\n")
+      const recalled = providerText.includes("<active_task_checkpoints>") && providerText.includes("Fix the login bug")
+      yield { type: "text_delta", text: recalled ? "Task checkpoint context used." : "Task checkpoint context missing." }
+      yield { type: "done" }
+      return
+    }
     if (prompt.includes("memory recall eval")) {
       const providerText = input.providerMessages.map((message) => message.content).join("\n")
       const recalled = providerText.includes("<project_memory_recall>") && providerText.includes("stale retry flag")
