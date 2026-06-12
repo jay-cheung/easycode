@@ -11,6 +11,9 @@ export function stripPlanTags(text: string): string {
 }
 
 export function createAgent(kind: AgentKind): Agent {
-  if (kind === "summary") return { kind, name: "summary", mode: "plan", tools: "none", systemPrompt: agentSystemPrompt(kind) }
-  return { kind, name: "run", mode: "build", tools: "enabled", systemPrompt: agentSystemPrompt(kind) }
+  if (kind === "summary") return { kind, name: "summary", role: "summary", depth: 1, mode: "plan", tools: "none", systemPrompt: agentSystemPrompt(kind) }
+  if (kind === "explorer" || kind === "reviewer" || kind === "debugger" || kind === "tester" || kind === "docs_researcher") {
+    return { kind, name: kind, role: kind, depth: 1, mode: "build", tools: "enabled", systemPrompt: agentSystemPrompt(kind) }
+  }
+  return { kind, name: "run", depth: 0, mode: "build", tools: "enabled", systemPrompt: agentSystemPrompt(kind) }
 }

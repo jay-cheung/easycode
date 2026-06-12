@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { displayWidth, drawCard } from "../../src/ui/tui/tui-ansi"
-import { buildPanelCard } from "../../src/ui/tui/tui-cards"
+import { buildFailureSummaryCard, buildPanelCard } from "../../src/ui/tui/tui-cards"
 import { generateStatusPanelLines } from "../../src/ui/tui/tui-status-panel"
 import { TuiRenderer } from "../../src/ui/tui"
 import { TuiState } from "../../src/ui/tui/tui-state"
@@ -30,7 +30,82 @@ describe("tui renderer", () => {
     expect(output).toContain("● Model")
     expect(output).toContain("● Answer")
     expect(output).toContain("Done.")
-    expect(output).toContain("[status] completed")
+    expect(output).toContain("Execution Completed")
+    expect(output).not.toContain("[status] completed")
+    expect(output.indexOf("Done.")).toBeLessThan(output.indexOf("Execution Completed"))
+  })
+
+  test("shows subagent scheduling in the TUI timeline without taking over the status panel", () => {
+    let output = ""
+    const renderer = new TuiRenderer({ write: (text) => { output += text }, isTTY: false, columns: 88 }, {
+      root: "/tmp/project",
+      mode: "build",
+      provider: "fake",
+      session: "demo",
+    })
+
+    renderer.event({ type: "run_start", mode: "build", provider: "fake" })
+    renderer.event({
+      type: "subagent",
+      status: "scheduled",
+      info: {
+        id: 1,
+        role: "summary",
+        provider: "fake",
+        model: "fake-main",
+        thinking: true,
+        effort: "low",
+        maxProviderCalls: 1,
+        maxOutputTokens: 900,
+      },
+    })
+    renderer.event({
+      type: "subagent",
+      status: "completed",
+      info: {
+        id: 1,
+        role: "summary",
+        provider: "fake",
+        model: "fake-main",
+        thinking: true,
+        effort: "low",
+        maxProviderCalls: 1,
+        maxOutputTokens: 900,
+      },
+      elapsedMs: 900,
+      metrics: {
+        provider: "fake",
+        model: "fake-main",
+        source: "subagent",
+        subagentRole: "summary",
+        thinking: true,
+        effort: "low",
+        maxOutputTokens: 900,
+        maxProviderCalls: 1,
+        calls: 1,
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheHitTokens: 0,
+        cacheMissTokens: 120,
+        totalTokens: 160,
+        reasoningTokens: 10,
+        hitRate: 0,
+        providerElapsedMs: 900,
+        firstResponseMs: 200,
+        outputTokensPerSecond: 44.4,
+        effectiveCost: 0,
+        rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 },
+      },
+    })
+    renderer.event({ type: "run_done", status: "completed" })
+    renderer.finish()
+
+    expect(output).toContain("Subagent scheduled role=summary")
+    expect(output).toContain("Subagent summary completed")
+    expect(output).toContain("Round Subagent Calls: 1")
+    expect(output).toContain("Round Subagent Tokens: 160")
+    expect(output).toContain("Execution Completed")
+    expect(output).not.toContain("[status] completed")
   })
 
   test("formats permission and plan approval prompts without bypassing caller input handling", () => {
@@ -77,6 +152,23 @@ describe("tui renderer", () => {
 
   test("keeps permission card borders aligned with emoji titles and truncated body", () => {
     const card = buildPanelCard("🛡️ 权限确认", "Allow bash for curl -s \"http://money.finance.sina.com.cn/quotes_service/api/json_v2.php/CN_StocksService.getKLineData\"", 88)
+    const visibleWidths = card.split("\n").map((line) => displayWidth(line))
+    expect(new Set(visibleWidths).size).toBe(1)
+  })
+
+  test("wraps failure reasons instead of truncating follow-up guidance", () => {
+    const card = buildFailureSummaryCard(
+      "en",
+      1,
+      { provider: "fake", model: "fake", calls: 66, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, totalTokens: 0, reasoningTokens: 0, hitRate: 0, providerElapsedMs: 1, firstResponseMs: 1, outputTokensPerSecond: 0, effectiveCost: 0, rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 } },
+      { inputTokens: 0, outputTokens: 0, calls: 0 },
+      { inputTokens: 0, outputTokens: 0, calls: 0, subagentInputTokens: 0, subagentOutputTokens: 0, subagentCalls: 0 },
+      "Stopped after maxSteps (66).\nContinue with another message to keep going.",
+      72,
+    )
+
+    expect(card).toContain("Continue with another message to keep going.")
+    expect(card).not.toContain("Continue with another me...")
     const visibleWidths = card.split("\n").map((line) => displayWidth(line))
     expect(new Set(visibleWidths).size).toBe(1)
   })

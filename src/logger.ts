@@ -48,7 +48,8 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 export function formatLogEvent(event: LogEvent) {
   const line = `[easycode] ${JSON.stringify(event)}`
   if (event.type === "provider" && event.name === "provider.input_tokens") return `\x1b[1;32m${line}\x1b[0m`
-  if (event.type === "provider" && (event.name === "provider.summary_request" || event.name === "provider.summary_output")) return `\x1b[1;35m${line}\x1b[0m`
+  if (event.type === "provider" && (event.name === "provider.summary_request" || event.name === "provider.summary_output" || event.name === "provider.subagent_route")) return `\x1b[1;35m${line}\x1b[0m`
+  if (event.type === "state" && event.name.startsWith("subagent.")) return `\x1b[1;35m${line}\x1b[0m`
   if (event.type === "provider" && (event.name === "provider.response" || event.name === "provider.response.raw")) return `\x1b[1;33m${line}\x1b[0m`
   if (event.type === "state") return `\x1b[1;36m${line}\x1b[0m`
   return line
@@ -62,8 +63,21 @@ function safeLogSegment(value: string) {
 
 function formatTranscriptTurn(turn: number, event: LogEvent, previousInput = "") {
   const detail = event.detail ?? {}
+  const subagentRequestId = stringDetail(detail.subagentRequestId)
+  const subagentRole = stringDetail(detail.subagentRole)
+  const subagentTask = stringDetail(detail.subagentTask)
+  const provider = stringDetail(detail.provider)
+  const model = stringDetail(detail.model)
+  const header = subagentRequestId
+    ? [
+        `Subagent ${subagentRequestId}`,
+        subagentRole ? `role=${subagentRole}` : "",
+        provider ? `provider=${provider}${model ? ` ${model}` : ""}` : "",
+        subagentTask ? `task=${subagentTask}` : "",
+      ].filter(Boolean).join("\n")
+    : `Turn ${turn}`
   return [
-    `Turn ${turn}`,
+    header,
     "",
     "Input",
     "",

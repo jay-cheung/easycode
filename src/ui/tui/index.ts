@@ -1,5 +1,5 @@
 import type { PermissionRequest } from "../../permission"
-import type { SessionTokenUsage } from "../../session"
+import { normalizeSessionTokenUsage, type SessionTokenUsage } from "../../session"
 import { uiText, type UiLanguage } from "../../i18n"
 import { TimelineRenderer, type RunUiEvent } from "../timeline"
 import { ensureTrailingNewline, formatDuration } from "./tui-ansi"
@@ -34,7 +34,8 @@ export class TuiRenderer {
   private readonly state = new TuiState()
   private spinnerTimer: NodeJS.Timeout | undefined = undefined
   private lastPanelSnapshot = ""
-  private sessionTokenUsage: SessionTokenUsage = { inputTokens: 0, outputTokens: 0, calls: 0 }
+  private sessionTokenUsage: SessionTokenUsage = normalizeSessionTokenUsage(undefined)
+  private pendingFailureText: string | undefined = undefined
   private providerCallCount = 0
   private currentProviderPhaseKey = ""
 
@@ -50,7 +51,7 @@ export class TuiRenderer {
   }
 
   setSessionTokenUsage(usage: SessionTokenUsage) {
-    this.sessionTokenUsage = { ...usage }
+    this.sessionTokenUsage = normalizeSessionTokenUsage(usage)
   }
 
   constructor(
@@ -101,6 +102,7 @@ export class TuiRenderer {
     if (event.type === "run_start") {
       this.state.beginRun(copy.statusInitializing)
       this.context = { ...this.context, mode: event.mode, provider: event.provider, model: event.model }
+      this.pendingFailureText = undefined
       this.providerCallCount = 0
       this.currentProviderPhaseKey = ""
       this.startSpinnerTimer()
@@ -144,44 +146,49 @@ export class TuiRenderer {
       this.state.setStatus(copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs)), `tool:${event.callID}:progress`)
     } else if (event.type === "tool_result") {
       this.state.setStatus(copy.statusToolCompleted(event.toolName), `tool:${event.callID}:result`)
-    } else if (event.type === "context_compaction") {
-      if (event.status === "started") {
-        this.state.setStatus(copy.statusCompacting, "context_compaction:started")
-      } else {
-        this.state.setStatus(copy.statusCompactionDone(event.status), `context_compaction:${event.status}`)
-      }
     } else if (event.type === "repo_map") {
       this.state.setStatus(copy.statusRepoMap(event.status), `repo_map:${event.status}`)
     } else if (event.type === "provider_metrics") {
-      this.state.metrics = event.metrics
-      if (!event.interim) {
-        this.state.setStatus(copy.statusProviderMetrics, "provider_metrics:final")
+      if (event.metrics.source !== "subagent") {
+        this.state.metrics = event.metrics
       }
-    } else if (event.type === "failure") {
-      this.state.finishRun()
-      this.stopSpinnerTimer()
-      this.eraseStatusPanel()
-      this.renderFailureSummary(event.text)
+      if (!event.interim) {
+        if (event.metrics.source !== "subagent") {
+          this.state.setStatus(copy.statusProviderMetrics, "provider_metrics:final")
+        }
+      }
+    } else if (event.type === "subagent" && event.status === "completed" && event.metrics) {
+      this.state.subagentUsage = {
+        inputTokens: this.state.subagentUsage.inputTokens + event.metrics.inputTokens,
+        outputTokens: this.state.subagentUsage.outputTokens + event.metrics.outputTokens,
+        calls: this.state.subagentUsage.calls + event.metrics.calls,
+      }
     } else if (event.type === "run_done") {
       this.state.finishRun()
       this.stopSpinnerTimer()
       this.eraseStatusPanel()
-      this.renderSuccessSummary()
+      this.timeline.finish()
+      this.state.lastStatus = event.status
+      if (event.status === "completed") {
+        this.renderSuccessSummary()
+      } else {
+        this.renderFailureSummary(this.pendingFailureText ?? event.status)
+      }
+      this.pendingFailureText = undefined
+    } else if (event.type === "failure") {
+      this.pendingFailureText = event.text
     }
     
     if (event.type === "run_start") {
       this.configure({ mode: event.mode, provider: event.provider, model: event.model }, copy.statusRunning)
-    } else if (event.type === "failure") {
-      this.status(copy.statusFailed)
-    } else if (event.type === "run_done") {
-      this.status(event.status)
     }
 
     // Forward to timeline (excluding progress and metrics events which are already displayed in the TUI status panel / cards)
     if (
       event.type !== "provider_progress" &&
       event.type !== "tool_progress" &&
-      event.type !== "provider_metrics"
+      event.type !== "provider_metrics" &&
+      event.type !== "run_done"
     ) {
       this.timeline.event(event)
     }
@@ -339,10 +346,10 @@ export class TuiRenderer {
   }
 
   private renderSuccessSummary() {
-    renderSuccessSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.sessionTokenUsage, this.getColumns())
+    renderSuccessSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.state.subagentUsage, this.sessionTokenUsage, this.getColumns())
   }
 
   private renderFailureSummary(reason: string) {
-    renderFailureSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.sessionTokenUsage, reason, this.getColumns())
+    renderFailureSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.state.subagentUsage, this.sessionTokenUsage, reason, this.getColumns())
   }
 }

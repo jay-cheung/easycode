@@ -2,6 +2,64 @@
 
 Status: Draft
 
+## Step 40: Live Subagent Runtime, Hidden Delegation Metadata, And Isolated Logs
+
+- Scope: ship the first live multi-role subagent runtime where the coordinator can explicitly delegate bounded tasks, the runner intercepts and executes them internally, plan-mode executor hints stay hidden from user-facing plans, and subagent logs/transcripts are isolated from the main agent.
+- Implementation:
+  - Added `delegate_subagent` as a coordinator-only internal action plus `src/agent/subagent-runtime.ts`, expanded `src/agent/subagent-routing.ts`, and updated `src/agent/runner/index.ts` / `src/agent/runner/summary-subagent.ts` so six roles now resolve deterministic routes, enforce hard invocation/turn caps, block nested delegation and coordinator-only actions inside subagents, and run with derived provider instances including the DeepSeek `deepseek-v4-flash` override for all subagents.
+  - Updated `src/agent/protocol.ts`, `src/agent/types.ts`, `src/prompt/agent.ts`, `src/plans.ts`, and `src/agent/planner.ts` so internal subagent roles exist as distinct agent metadata, structured plans can carry hidden `executorHint` / `subagentRole` fields, and rendered user-visible plan markdown strips those internal delegation details.
+  - Updated logging, metrics, session/TUI/timeline surfaces, and failure rendering across `src/logger.ts`, `src/agent/metrics.ts`, `src/instrumentation/index.ts`, `src/session/index.ts`, `src/cli.ts`, `src/ui/timeline.ts`, `src/ui/tui/*`, and related provider wrappers so subagent lifecycle events, routed model/thinking/effort, separate transcript files, and subagent token usage are visible without mixing provider turns into the main transcript; the closeout failure card now wraps full follow-up guidance instead of truncating it.
+  - Added regression coverage across `test/integration/agent.test.ts`, `test/integration/cli.test.ts`, `test/unit/subagent-routing.test.ts`, `test/unit/agent.test.ts`, `test/unit/timeline.test.ts`, `test/unit/tui.test.ts`, `test/unit/context.test.ts`, and `test/unit/session.test.ts` for route resolution, runner interception, nesting blocks, separate log files, hidden plan metadata, TUI visibility, and max-step continuation output.
+- Verification:
+  - `bun run typecheck`
+  - `bun test test/unit/subagent-routing.test.ts test/unit/agent.test.ts test/unit/logger.test.ts test/integration/agent.test.ts`
+  - `bun test test/unit/context.test.ts test/unit/session.test.ts test/unit/timeline.test.ts test/unit/tui.test.ts`
+  - `bun test test/integration/cli.test.ts -t "session continues after max steps"`
+  - `bun test`
+  - `bun run cache:bench -- --provider simulated --suite real --quiet`
+  - `bun run gate`
+- Notes: v1 keeps subagent spawning explicit for non-summary roles, allows only one background `summary` task at a time, and still keeps the coordinator on the user-selected main-session model.
+
+## Step 39: TUI Closeout Ordering And No-Op Compaction Guard
+
+- Scope: stop final answer text from being rendered underneath the TUI summary card, remove the redundant closeout `status: completed` line, and prevent context compaction from immediately re-summarizing the exact same preserved tail.
+- Implementation:
+  - Updated `src/ui/tui/index.ts` so `run_done` / `failure` now flush the timeline before drawing the closeout card, keep the final status only in renderer state, and avoid printing an extra `[status] completed` line after the summary.
+  - Updated `src/context/manager.ts` so `compactionSnapshot()` now skips background summary work when a prior summary already exists, no older messages remain to compact, and the preserved provider-safe tail would be byte-for-byte identical after another pass.
+  - Added regression coverage in `test/unit/tui.test.ts` and `test/unit/context.test.ts` to lock the answer-before-summary ordering, the removed redundant status line, and the no-op compaction guard.
+- Verification:
+  - `bun test test/unit/tui.test.ts test/unit/context.test.ts test/unit/session.test.ts test/unit/timeline.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run cache:bench -- --provider simulated --suite real --quiet`
+  - `bun run gate`
+- Notes: this slice does not change the normal first-pass compaction behavior; it only blocks repeated summaries when the live tail would not shrink any further.
+
+## Step 38: Separate Subagent Token Accounting
+
+- Scope: make subagent cost visible and durable without folding it into the coordinator's main-round token summary, so token blowups can be diagnosed quickly from the TUI and persisted session state.
+- Implementation:
+  - Updated `src/session/index.ts` and `src/cli.ts` so session token usage now persists separate cumulative `subagentInputTokens`, `subagentOutputTokens`, and `subagentCalls`, while keeping the main-agent counters unchanged.
+  - Updated `src/ui/tui/index.ts`, `src/ui/tui/tui-state.ts`, `src/ui/tui/tui-render-loop.ts`, `src/ui/tui/tui-cards.ts`, and `src/i18n.ts` so completed runs now show both round-level and session-level subagent usage in the TUI closeout summary.
+  - Added regression coverage in `test/unit/session.test.ts` and `test/unit/tui.test.ts` to lock the new session persistence shape and the visible subagent usage lines in the TUI output.
+- Verification:
+  - `bun test test/unit/session.test.ts test/unit/tui.test.ts test/unit/timeline.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this slice is accounting-only; it does not change when subagents spawn or how the main-agent provider metrics are computed.
+
+## Step 37: Deterministic Subagent Routing, Budgeting, And TUI Visibility
+
+- Scope: add a deterministic internal routing policy for subagents, keep v1 on the same provider/model family, and make background subagent scheduling visible without letting it silently explode token usage.
+- Implementation:
+  - Added `src/agent/subagent-routing.ts` as the internal routing layer with role-based reasoning presets, provider-capability clamping, and explicit execution budgets including `maxProviderCalls` plus optional `maxOutputTokens`.
+  - Updated `src/agent/runner/index.ts`, `src/agent/runner/summary-subagent.ts`, `src/agent/runner/provider-turn.ts`, and provider/runtime wrappers so the summary subagent now resolves a route, derives a provider instance when supported, runs with a bounded one-call budget, and avoids hijacking the main run's provider progress loop.
+  - Updated instrumentation, logging, timeline/TUI rendering, and tests so routed subagent provider/model/thinking/effort/output-cap are visible in logs and the TUI timeline, while the main-session `/thinking` and `/effort` semantics remain unchanged.
+- Verification:
+  - `bun test test/unit/subagent-routing.test.ts test/unit/agent.test.ts test/unit/timeline.test.ts test/unit/tui.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: v1 still avoids automatic model-name tiering; the live consumer is summary compaction only, but the route/role metadata is now ready for future explorer/reviewer/debugger-style subagents.
+
 ## Step 36: Unified Run Mode And Planning UX Convergence
 
 - Scope: remove the public `build` vs `plan` split, make direct prompts the default single-run entrypoint without requiring `--once`, and keep the new planning layer operating behind one unified runtime contract.

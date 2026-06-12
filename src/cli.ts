@@ -10,7 +10,7 @@ import { textMessage } from "./message"
 import { savePlan } from "./plans"
 import { PlanTracker } from "./agent/planner"
 import { hasProvider, listProviders } from "./provider"
-import { SessionStore, type SessionTokenUsage } from "./session"
+import { normalizeSessionTokenUsage, SessionStore, type SessionTokenUsage } from "./session"
 import { normalizeSessionSettings } from "./settings"
 import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
@@ -194,7 +194,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       return {
         context: nextContext,
         settings,
-        tokenUsage: sessionData?.tokenUsage ?? { inputTokens: 0, outputTokens: 0, calls: 0 },
+        tokenUsage: normalizeSessionTokenUsage(sessionData?.tokenUsage),
       }
     }
 
@@ -210,10 +210,23 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
     const timeline = tui ?? new TimelineRenderer(output, activeSettings.language)
 
-    const runMetrics: { current?: ProviderRunMetrics } = {}
+    const runMetrics: {
+      current?: ProviderRunMetrics
+      subagent: SessionTokenUsage
+    } = {
+      subagent: normalizeSessionTokenUsage(undefined),
+    }
     const onEvent = (event: RunUiEvent) => {
-      if (event.type === "provider_metrics") {
+      if (event.type === "provider_metrics" && event.metrics.source !== "subagent") {
         runMetrics.current = event.metrics
+      }
+      if (event.type === "subagent" && event.status === "completed" && event.metrics) {
+        runMetrics.subagent = {
+          ...runMetrics.subagent,
+          subagentInputTokens: runMetrics.subagent.subagentInputTokens + event.metrics.inputTokens,
+          subagentOutputTokens: runMetrics.subagent.subagentOutputTokens + event.metrics.outputTokens,
+          subagentCalls: runMetrics.subagent.subagentCalls + event.metrics.calls,
+        }
       }
       timeline.event(event)
     }
@@ -239,6 +252,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       sessionTokenUsage = nextState.tokenUsage
       pendingImages = []
       runMetrics.current = undefined
+      runMetrics.subagent = normalizeSessionTokenUsage(undefined)
       runner = undefined
       queuedPrompts.length = 0
       tui?.setSessionTokenUsage(sessionTokenUsage)
@@ -307,15 +321,28 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       activeAbort = undefined
       timeline.finish()
       const metrics = runMetrics.current
+      const subagentUsage = runMetrics.subagent
       if (metrics) {
         sessionTokenUsage = {
           inputTokens: sessionTokenUsage.inputTokens + metrics.inputTokens,
           outputTokens: sessionTokenUsage.outputTokens + metrics.outputTokens,
           calls: sessionTokenUsage.calls + metrics.calls,
+          subagentInputTokens: sessionTokenUsage.subagentInputTokens + subagentUsage.subagentInputTokens,
+          subagentOutputTokens: sessionTokenUsage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
+          subagentCalls: sessionTokenUsage.subagentCalls + subagentUsage.subagentCalls,
+        }
+        tui?.setSessionTokenUsage(sessionTokenUsage)
+      } else if (subagentUsage.subagentCalls > 0) {
+        sessionTokenUsage = {
+          ...sessionTokenUsage,
+          subagentInputTokens: sessionTokenUsage.subagentInputTokens + subagentUsage.subagentInputTokens,
+          subagentOutputTokens: sessionTokenUsage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
+          subagentCalls: sessionTokenUsage.subagentCalls + subagentUsage.subagentCalls,
         }
         tui?.setSessionTokenUsage(sessionTokenUsage)
       }
       runMetrics.current = undefined
+      runMetrics.subagent = normalizeSessionTokenUsage(undefined)
       await saveSession(activeRunner.context)
       if (exitRequested) return "completed"
       if (result.status === "completed" && hasProposedPlanText(result.text)) {

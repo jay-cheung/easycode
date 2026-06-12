@@ -8,7 +8,7 @@ import { textMessage, toolResults } from "../../src/message"
 import { defaultPermissionRules, PermissionService } from "../../src/permission"
 import { FakeProvider } from "../../src/provider"
 import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
-import type { LogEvent } from "../../src/logger"
+import { createLogger, type LogEvent } from "../../src/logger"
 import { ProjectMemoryStore } from "../../src/memory"
 import { loadStructuredPlanState } from "../../src/plans"
 import { SessionStore } from "../../src/session"
@@ -291,6 +291,22 @@ describe("agent integration", () => {
     })
     expect(metrics?.providerElapsedMs).toBeGreaterThanOrEqual(0)
     expect(metrics?.firstResponseMs).toBeGreaterThanOrEqual(0)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("does not emit subagent events when no compaction is needed", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    const result = await new AgentRunner({
+      root,
+      provider: new FakeProvider(),
+      context: new ContextManager({ maxTokens: 64_000, compactAt: 0.9 }),
+      onEvent: (event) => events.push(event),
+    }).run("Fix the failing test", "build")
+
+    expect(result.status).toBe("completed")
+    expect(events.some((event) => event.type === "subagent")).toBe(false)
+    expect(events.some((event) => event.type === "context_compaction")).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
 
@@ -1132,6 +1148,41 @@ describe("agent integration", () => {
     expect(summaryMode).toBe("plan")
     expect(summaryToolCount).toBe(0)
     expect(context.state.summary).toBe("Model generated summary.")
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "subagent",
+      status: "scheduled",
+      info: expect.objectContaining({
+        role: "summary",
+        provider: "test-provider",
+        thinking: false,
+        effort: undefined,
+        maxProviderCalls: 2,
+      }),
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "subagent",
+      status: "completed",
+      info: expect.objectContaining({
+        role: "summary",
+        provider: "test-provider",
+        thinking: false,
+        effort: undefined,
+        maxProviderCalls: 2,
+      }),
+      metrics: expect.objectContaining({
+        source: "subagent",
+        subagentRole: "summary",
+        calls: 1,
+      }),
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "provider_metrics",
+      metrics: expect.objectContaining({
+        source: "subagent",
+        subagentRole: "summary",
+        calls: 1,
+      }),
+    }))
     expect(events).toContainEqual(expect.objectContaining({ type: "context_compaction", status: "started" }))
     expect(events).toContainEqual(expect.objectContaining({
       type: "context_compaction",
@@ -1209,6 +1260,187 @@ describe("agent integration", () => {
     expect(summaryCalls).toBe(1)
     expect(summaryPrompt).toContain("Conversation to summarize:")
     expect(context.state.summary).toBe("Current-window summary.")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("summary compaction uses a derived subagent route for registered providers", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    context.configureStrategy({ dynamicSummaryTokenBudget: 900 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
+    const events: RunUiEvent[] = []
+    const logs: LogEvent[] = []
+    const provider = new FakeProvider({ model: "fake-main", thinking: true, effort: "max", maxOutputTokens: 8_192 })
+
+    const runner = new AgentRunner({
+      root,
+      provider,
+      context,
+      logger: (event) => logs.push(event),
+      onEvent: (event) => events.push(event),
+    })
+    const result = await runner.run("Fix the failing test", "build")
+    await runner.waitForSummarySubagent()
+
+    expect(result.status).toBe("completed")
+    expect(context.state.summary).toBe("Fake compact summary.")
+    expect(logs).toContainEqual(expect.objectContaining({
+      type: "provider",
+      name: "provider.subagent_route",
+      detail: expect.objectContaining({
+        role: "summary",
+        provider: "fake",
+        model: "fake-main",
+        thinking: true,
+        effort: "low",
+        maxProviderCalls: 2,
+        maxOutputTokens: 900,
+      }),
+    }))
+    expect(logs).toContainEqual(expect.objectContaining({
+      type: "provider",
+      name: "provider.input",
+      detail: expect.objectContaining({
+        provider: "fake",
+        model: "fake-main",
+        thinking: true,
+        effort: "low",
+        maxOutputTokens: 900,
+        prompt: "Summarize conversation for context compaction",
+      }),
+    }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "subagent",
+      status: "completed",
+      metrics: expect.objectContaining({
+        source: "subagent",
+        subagentRole: "summary",
+        thinking: true,
+        effort: "low",
+        maxOutputTokens: 900,
+        maxProviderCalls: 2,
+      }),
+    }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("delegate_subagent is intercepted by the runner and nested subagent calls are blocked", async () => {
+    const root = await fixture()
+    const logs: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        if (input.prompt === "Use an explorer subagent") {
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts", success_criteria: "Identify the exported function and file path." } } }
+            return
+          }
+          yield { type: "text_delta", text: "Coordinator consumed the subagent result." }
+          return
+        }
+        if (input.prompt === "Inspect src/add.ts") {
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_nested", name: "delegate_subagent", input: { role: "reviewer", task: "nested" } } }
+            return
+          }
+          yield { type: "text_delta", text: "Found export function add in src/add.ts." }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger: (event) => logs.push(event) }).run("Use an explorer subagent", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toContain("delegate_subagent")
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Found export function add"))).toBe(true)
+    expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "subagent.nesting_blocked", detail: expect.objectContaining({ role: "explorer" }) }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("subagent logs and transcripts are written to separate files", async () => {
+    const root = await fixture()
+    const logger = createLogger({ root, session: "alpha" })
+    const provider: Provider = {
+      name: "test-provider",
+      model: "main-model",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        if (input.prompt === "Split the logs") {
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "docs_researcher", task: "Summarize src/add.ts", success_criteria: "Mention the exported function name." } } }
+            return
+          }
+          yield { type: "text_delta", text: "Main run completed." }
+          return
+        }
+        if (input.prompt === "Summarize src/add.ts") {
+          yield { type: "text_delta", text: "The file exports add." }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger, sessionId: "alpha" }).run("Split the logs", "build")
+
+    expect(result.status).toBe("completed")
+    const mainTranscript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "alpha.txt")).text()
+    const subagentTranscript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "alpha.subagents.txt")).text()
+    expect(mainTranscript).toContain("Turn 1")
+    expect(mainTranscript).not.toContain("Subagent 1")
+    expect(subagentTranscript).toContain("Subagent 1")
+    expect(subagentTranscript).toContain("role=docs_researcher")
+    expect(subagentTranscript).toContain("task=Summarize src/add.ts")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("plan_exit sanitizes hidden subagent executor metadata from user-visible plans", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield {
+          type: "tool_call",
+          call: {
+            id: "call_plan",
+            name: "plan_exit",
+            input: {
+              markdown: [
+                "# Hidden executor plan",
+                "",
+                "```json",
+                JSON.stringify({
+                  id: "plan_hidden",
+                  title: "Hidden executor plan",
+                  steps: [
+                    {
+                      id: "step_1",
+                      goal: "Inspect the code",
+                      kind: "inspect",
+                      executorHint: "subagent",
+                      subagentRole: "explorer",
+                    },
+                  ],
+                }, null, 2),
+                "```",
+              ].join("\n"),
+            },
+          },
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Plan this task", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).not.toContain("executorHint")
+    expect(result.text).not.toContain("subagentRole")
+    const stored = await loadStructuredPlanState(root, "default", "plan_hidden")
+    expect(stored?.plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
     await rm(root, { recursive: true, force: true })
   })
 

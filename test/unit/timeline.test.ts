@@ -51,6 +51,67 @@ describe("timeline renderer", () => {
     expect(output).toContain("✓ Context compacted (2s), summary_chars=128, summary_tokens=32")
   })
 
+  test("renders subagent scheduling and completion", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({
+      type: "subagent",
+      status: "scheduled",
+      info: {
+        id: 1,
+        role: "summary",
+        provider: "openai",
+        model: "gpt-5-mini",
+        thinking: true,
+        effort: "low",
+        maxProviderCalls: 1,
+        maxOutputTokens: 900,
+      },
+    })
+    renderer.event({
+      type: "subagent",
+      status: "completed",
+      info: {
+        id: 1,
+        role: "summary",
+        provider: "openai",
+        model: "gpt-5-mini",
+        thinking: true,
+        effort: "low",
+        maxProviderCalls: 1,
+        maxOutputTokens: 900,
+      },
+      elapsedMs: 1_500,
+      metrics: {
+        provider: "openai",
+        model: "gpt-5-mini",
+        source: "subagent",
+        subagentRole: "summary",
+        thinking: true,
+        effort: "low",
+        maxOutputTokens: 900,
+        maxProviderCalls: 1,
+        calls: 1,
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheHitTokens: 0,
+        cacheMissTokens: 120,
+        totalTokens: 160,
+        reasoningTokens: 10,
+        hitRate: 0,
+        providerElapsedMs: 1_500,
+        firstResponseMs: 300,
+        outputTokensPerSecond: 26.6,
+        effectiveCost: 0,
+        rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 },
+      },
+    })
+
+    expect(output).toContain("● Subagent scheduled role=summary, provider=openai gpt-5-mini, thinking=on, effort=low, max_calls=1, max_output_tokens=900")
+    expect(output).toContain("✓ Subagent summary completed (1.5s), calls=1, input_tokens=120, output_tokens=40")
+  })
+
   test("renders provider metrics with APIx usage and latency labels", () => {
     let output = ""
     const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })

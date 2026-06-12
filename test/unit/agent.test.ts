@@ -39,9 +39,22 @@ describe("agent protocol", () => {
 
     expect(agent.kind).toBe("summary")
     expect(agent.name).toBe("summary")
+    expect(agent.role).toBe("summary")
     expect(agent.mode).toBe("plan")
     expect(agent.tools).toBe("none")
     expect(agent.systemPrompt).toContain("# Summary Agent - System Reminder")
     expect(agent.systemPrompt).toContain("Return the summary in <summary> tags")
+  })
+
+  test("explorer subagent is internal, tool-enabled, and non-recursive", () => {
+    const agent = createAgent("explorer")
+
+    expect(agent.kind).toBe("explorer")
+    expect(agent.role).toBe("explorer")
+    expect(agent.depth).toBe(1)
+    expect(agent.mode).toBe("build")
+    expect(agent.tools).toBe("enabled")
+    expect(agent.systemPrompt).toContain("internal explorer subagent")
+    expect(agent.systemPrompt).toContain("do not create or delegate any subagent")
   })
 })

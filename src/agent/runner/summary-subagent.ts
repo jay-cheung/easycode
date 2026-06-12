@@ -1,7 +1,9 @@
 import { estimateTextTokens, type ContextCompactionSnapshot, type ContextManagerLike } from "../../context"
 import { extractCompactSummary } from "../../context/prompt"
+import type { Provider } from "../../provider"
 import type { RunUiEvent } from "../../ui/timeline"
-import type { ProviderMetricsAccumulator } from "../metrics"
+import { finalizeProviderMetrics, type ProviderMetricsAccumulator } from "../metrics"
+import type { SubagentRoute } from "../subagent-routing"
 import type { Agent } from "../types"
 
 export type BackgroundAgentTask = {
@@ -9,6 +11,8 @@ export type BackgroundAgentTask = {
   id: number
   startedAt: number
   agent: Agent
+  route: SubagentRoute
+  provider: Provider
   snapshot: ContextCompactionSnapshot
   promise: Promise<void>
 }
@@ -34,18 +38,28 @@ type SummarySubagentDeps = {
     messages: []
     providerMessages: Array<{ role: "system" | "user"; content: string }>
     tools: []
+    provider: Provider
     providerMetrics?: ProviderMetricsAccumulator
     emitDeltas?: boolean
+    emitProgressEvents?: boolean
     observeContextUsage?: boolean
   }) => Promise<{ text: string; failureText?: string }>
 }
 
-export function createSummaryTask(id: number, agent: Agent, snapshot: ContextCompactionSnapshot): BackgroundAgentTask {
+export function createSummaryTask(
+  id: number,
+  agent: Agent,
+  route: SubagentRoute,
+  provider: Provider,
+  snapshot: ContextCompactionSnapshot,
+): BackgroundAgentTask {
   return {
     kind: "summary",
     id,
     startedAt: Date.now(),
     agent,
+    route,
+    provider,
     snapshot,
     promise: Promise.resolve(),
   }
@@ -56,6 +70,7 @@ export async function runSummarySubagentTask(
   task: BackgroundAgentTask,
   providerMetrics?: ProviderMetricsAccumulator,
 ) {
+  const finalizedMetrics = () => providerMetrics && providerMetrics.calls > 0 ? finalizeProviderMetrics(providerMetrics) : undefined
   const providerMessages = [
     { role: "system" as const, content: `${task.agent.systemPrompt}\n\nMode: ${task.agent.mode}\nTools: none` },
     {
@@ -71,19 +86,43 @@ export async function runSummarySubagentTask(
     },
   ]
   try {
+    if (task.route.maxProviderCalls < 1) throw new Error(`Subagent ${task.route.role} has invalid maxProviderCalls=${task.route.maxProviderCalls}`)
     const turn = await deps.runProviderTurn({
       agent: task.agent,
       prompt: "Summarize conversation for context compaction",
       messages: [],
       providerMessages,
       tools: [],
+      provider: task.provider,
       providerMetrics,
       emitDeltas: false,
+      emitProgressEvents: false,
       observeContextUsage: false,
     })
+    if (providerMetrics && providerMetrics.calls > task.route.maxProviderCalls) {
+      throw new Error(`Subagent ${task.route.role} exceeded provider call budget: ${providerMetrics.calls}/${task.route.maxProviderCalls}`)
+    }
     if (turn.failureText) throw new Error(turn.failureText)
     const extracted = extractCompactSummary(turn.text)
     const compacted = deps.context.compactSnapshot(extracted, task.snapshot)
+    const metrics = finalizedMetrics()
+    if (metrics) deps.onEvent?.({ type: "provider_metrics", metrics })
+    deps.onEvent?.({
+      type: "subagent",
+      status: "completed",
+      info: {
+        id: task.id,
+        role: task.route.role,
+        provider: task.route.provider,
+        model: task.route.model,
+        thinking: task.route.thinking,
+        effort: task.route.effort,
+        maxProviderCalls: task.route.maxProviderCalls,
+        maxOutputTokens: task.route.maxOutputTokens,
+      },
+      elapsedMs: Date.now() - task.startedAt,
+      metrics,
+    })
     if (compacted) {
       const storedSummary = deps.context.state.summary ?? extracted
       await deps.onBackgroundContextUpdate?.()
@@ -96,6 +135,25 @@ export async function runSummarySubagentTask(
       })
     }
   } catch (error) {
+    const metrics = finalizedMetrics()
+    if (metrics) deps.onEvent?.({ type: "provider_metrics", metrics })
+    deps.onEvent?.({
+      type: "subagent",
+      status: "failed",
+      info: {
+        id: task.id,
+        role: task.route.role,
+        provider: task.route.provider,
+        model: task.route.model,
+        thinking: task.route.thinking,
+        effort: task.route.effort,
+        maxProviderCalls: task.route.maxProviderCalls,
+        maxOutputTokens: task.route.maxOutputTokens,
+      },
+      elapsedMs: Date.now() - task.startedAt,
+      error: error instanceof Error ? error.message : String(error),
+      metrics,
+    })
     deps.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: error instanceof Error ? error.message : String(error) })
   }
 }

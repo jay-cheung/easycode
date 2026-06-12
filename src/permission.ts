@@ -288,6 +288,7 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "skill", pattern: "*", action: "ask" },
     { permission: "mcp", pattern: "*", action: "allow" },
     { permission: "web_search", pattern: "*", action: "allow" },
+    { permission: "delegate_subagent", pattern: "*", action: mode === "build" ? "allow" : "deny" },
     { permission: "plan_exit", pattern: "*", action: "allow" },
     { permission: "plan_step_complete", pattern: "*", action: mode === "build" ? "allow" : "deny" },
     { permission: "plan_step_fail", pattern: "*", action: mode === "build" ? "allow" : "deny" },

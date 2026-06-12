@@ -17,9 +17,9 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
   readonly name: string
   readonly model: string
   readonly capabilities: ProviderCapabilities
+  readonly runtime: ProviderOptions
   private readonly apiKeyEnv: string
   private readonly url: string
-  protected readonly runtime: ProviderOptions
   private readonly missingApiKeyMessage: string
   private readonly errorPrefix: string
 

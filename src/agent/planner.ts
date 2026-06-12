@@ -57,6 +57,8 @@ The JSON format MUST be exactly:
       "id": "step_1",
       "goal": "Descriptive goal for this step",
       "kind": "inspect" | "edit" | "verify" | "document" | "gate",
+      "executorHint": "main" | "subagent",
+      "subagentRole": "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher",
       "targetFiles": ["file1.ts", "file2.ts"],
       "dependsOn": [],
       "doneWhen": "Conditions under which this step is considered done",
@@ -64,6 +66,8 @@ The JSON format MUST be exactly:
     }
   ]
 }
+
+Use executorHint/subagentRole only for hidden internal execution metadata. The user-visible markdown plan must not mention them directly.
 
 Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`\`\`. Do not output any other text or explanation.`
 
@@ -104,6 +108,8 @@ The JSON format must strictly match:
     ...
   ]
 }
+
+You may keep or revise hidden internal executor metadata (\`executorHint\`, \`subagentRole\`) when it helps execution, but user-visible markdown will not show those fields.
 
 Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`\`\`. Do not output any other text or explanation.`
 

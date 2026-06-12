@@ -72,11 +72,12 @@ export class LoggingRunAspect implements RunAspect {
 
   instrumentProvider(provider: Provider): Provider {
     const logger = this.logger
-    return {
-      name: provider.name,
-      model: provider.model,
-      capabilities: provider.capabilities,
-      async *stream(input) {
+      return {
+        name: provider.name,
+        model: provider.model,
+        capabilities: provider.capabilities,
+        runtime: provider.runtime,
+        async *stream(input) {
         let totalLength = 0
         let reasoningContent = ""
         let output = ""
@@ -89,10 +90,13 @@ export class LoggingRunAspect implements RunAspect {
           type: "provider",
           name: "provider.input",
           detail: {
-            provider: provider.name,
-            model: provider.model,
-            mode: input.mode,
-            prompt: input.prompt,
+              provider: provider.name,
+              model: provider.model,
+              thinking: provider.runtime?.thinking,
+              effort: provider.runtime?.effort,
+              maxOutputTokens: provider.runtime?.maxOutputTokens,
+              mode: input.mode,
+              prompt: input.prompt,
             tools: input.tools.map((tool) => tool.name),
             input: inputText,
             messages: input.providerMessages.map((message) => ({ role: message.role, content: message.content })),

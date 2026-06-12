@@ -18,6 +18,7 @@ const parameterPattern = /<(?:[|｜]{2}DSML[|｜]{2})?parameter\s+name\s*=\s*["'
 export class TextToolProtocolProvider implements Provider {
   readonly name: string
   readonly model?: string
+  readonly runtime?: Provider["runtime"]
   readonly capabilities: ProviderCapabilities
   private readonly inner: Provider
 
@@ -25,6 +26,7 @@ export class TextToolProtocolProvider implements Provider {
     this.inner = inner
     this.name = options.name ?? `${inner.name}-text-tools`
     this.model = options.model ?? inner.model
+    this.runtime = inner.runtime
     this.capabilities = {
       ...defaultProviderCapabilities,
       ...inner.capabilities,

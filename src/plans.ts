@@ -61,11 +61,14 @@ export async function savePlan(root: string, sessionId: string, planMarkdown: st
 }
 
 export type PlanStepKind = "inspect" | "edit" | "verify" | "document" | "gate"
+export type PlanStepExecutorHint = "main" | "subagent"
 
 export interface PlanStep {
   id: string
   goal: string
   kind: PlanStepKind
+  executorHint?: PlanStepExecutorHint
+  subagentRole?: "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher"
   targetFiles?: string[]
   dependsOn?: string[]
   doneWhen?: string
@@ -163,10 +166,14 @@ function normalizePlanStep(input: unknown, index: number): PlanStep {
   const dependsOn = normalizeStringArray(raw.dependsOn)
   const doneWhen = typeof raw.doneWhen === "string" ? raw.doneWhen.trim() : ""
   const fallback = typeof raw.fallback === "string" ? raw.fallback.trim() : ""
+  const executorHint = normalizeExecutorHint(raw.executorHint)
+  const subagentRole = normalizeSubagentRole(raw.subagentRole)
   return {
     id,
     goal,
     kind,
+    ...(executorHint ? { executorHint } : {}),
+    ...(subagentRole ? { subagentRole } : {}),
     ...(targetFiles.length > 0 ? { targetFiles } : {}),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(doneWhen ? { doneWhen } : {}),
@@ -178,6 +185,16 @@ function normalizePlanStepKind(value: unknown): PlanStepKind {
   return value === "inspect" || value === "edit" || value === "verify" || value === "document" || value === "gate"
     ? value
     : "inspect"
+}
+
+function normalizeExecutorHint(value: unknown): PlanStepExecutorHint | undefined {
+  return value === "main" || value === "subagent" ? value : undefined
+}
+
+function normalizeSubagentRole(value: unknown): PlanStep["subagentRole"] | undefined {
+  return value === "summary" || value === "explorer" || value === "reviewer" || value === "debugger" || value === "tester" || value === "docs_researcher"
+    ? value
+    : undefined
 }
 
 function normalizeStringArray(value: unknown) {
@@ -314,11 +331,12 @@ export function isPlanRevisionPrompt(prompt: string) {
 }
 
 export function renderPlanToMarkdown(plan: ExecutionPlan): string {
+  const sanitized = sanitizePlanForDisplay(plan)
   const lines: string[] = []
   lines.push("<proposed_plan>")
-  lines.push(`# ${plan.title || "Implementation Plan"}`)
+  lines.push(`# ${sanitized.title || "Implementation Plan"}`)
   lines.push("")
-  for (const step of plan.steps) {
+  for (const step of sanitized.steps) {
     lines.push(`## Step: ${step.id}`)
     lines.push(`- **Goal**: ${step.goal}`)
     lines.push(`- **Kind**: ${step.kind}`)
@@ -337,9 +355,15 @@ export function renderPlanToMarkdown(plan: ExecutionPlan): string {
     lines.push("")
   }
   lines.push("```json")
-  lines.push(JSON.stringify(plan, null, 2))
+  lines.push(JSON.stringify(sanitized, null, 2))
   lines.push("```")
   lines.push("</proposed_plan>")
   return lines.join("\n")
 }
 
+export function sanitizePlanForDisplay(plan: ExecutionPlan): ExecutionPlan {
+  return {
+    ...plan,
+    steps: plan.steps.map(({ executorHint: _executorHint, subagentRole: _subagentRole, ...step }) => step),
+  }
+}

@@ -61,6 +61,7 @@ export interface Provider {
   readonly name: string
   readonly model?: string
   readonly capabilities?: ProviderCapabilities
+  readonly runtime?: Readonly<ProviderOptions>
   stream(input: ProviderInput): AsyncIterable<ProviderEvent>
 }
 

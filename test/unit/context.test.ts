@@ -528,6 +528,17 @@ describe("context", () => {
     expect(afterCompact.budgetStats.compactionBasis).toBeLessThan(8_888)
   })
 
+  test("compactionSnapshot skips repeated summary passes when the preserved tail would not change", () => {
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5, preserveRecentUserTurns: 3, compactPreserveTokens: 200 })
+    context.add(textMessage("user", `Current-only request ${"long ".repeat(100)}`))
+
+    const firstSnapshot = context.compactionSnapshot()
+    expect(firstSnapshot).toBeDefined()
+    expect(context.compactSnapshot("snapshot summary", firstSnapshot!)).toBe(true)
+    expect(context.state.summary).toBe("snapshot summary")
+    expect(context.compactionSnapshot()).toBeUndefined()
+  })
+
   test("large historical tool outputs are truncated for token estimates and provider input", () => {
     const context = new ContextManager({ maxTokens: 20_000 })
     context.add(textMessage("user", "show logs"))

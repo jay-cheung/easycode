@@ -1,6 +1,6 @@
 import { languageDisplay, uiText, type UiLanguage } from "../../i18n"
 import type { ProviderRunMetrics } from "../timeline"
-import { compactPath, drawCard, formatDuration } from "./tui-ansi"
+import { compactPath, displayWidth, drawCard, formatDuration } from "./tui-ansi"
 import type { TuiContext } from "./tui-types"
 
 function displayRunMode(mode: string) {
@@ -71,7 +71,8 @@ export function buildSuccessSummaryCard(
   language: UiLanguage,
   elapsedMs: number,
   metrics: ProviderRunMetrics | undefined,
-  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number },
+  subagentUsage: { inputTokens: number; outputTokens: number; calls: number },
+  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number },
   columns: number,
 ) {
   const copy = uiText(language)
@@ -94,6 +95,19 @@ export function buildSuccessSummaryCard(
       copy.sessionTokensLine(cumTotal.toLocaleString(), cumInput.toLocaleString(), cumOutput.toLocaleString()),
     )
   }
+  if (subagentUsage.calls > 0 || sessionTokenUsage.subagentCalls > 0) {
+    const roundSubagentTotal = subagentUsage.inputTokens + subagentUsage.outputTokens
+    const cumSubagentInput = sessionTokenUsage.subagentInputTokens + subagentUsage.inputTokens
+    const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
+    const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
+    const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
+    lines.push(
+      copy.roundSubagentCallsLine(String(subagentUsage.calls)),
+      copy.roundSubagentTokensLine(roundSubagentTotal.toLocaleString()),
+      copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
+      copy.sessionSubagentTokensLine(cumSubagentTotal.toLocaleString(), cumSubagentInput.toLocaleString(), cumSubagentOutput.toLocaleString()),
+    )
+  }
 
   return drawCard(`🏁 ${copy.successTitle}`, lines, columns, {
     color: "\x1b[32m",
@@ -105,15 +119,22 @@ export function buildFailureSummaryCard(
   language: UiLanguage,
   elapsedMs: number,
   metrics: ProviderRunMetrics | undefined,
-  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number },
+  subagentUsage: { inputTokens: number; outputTokens: number; calls: number },
+  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number },
   reason: string,
   columns: number,
 ) {
   const copy = uiText(language)
+  const reasonLabel = `${copy.reasonLine("").split(":")[0]}:`
+  const reasonLines = wrapCardText(reasonLabel, `⚠️  ${reason}`, Math.max(24, columns - 4))
   const lines = [
     `\x1b[1m${copy.statusLabel}:\x1b[0m         ❌ \x1b[31m\x1b[1m${copy.failureStatus}\x1b[0m`,
     `\x1b[1m${copy.durationLine("").split(":")[0]}:\x1b[0m       ⚡ \x1b[36m${formatDuration(elapsedMs)}\x1b[0m`,
-    `\x1b[1m${copy.reasonLine("").split(":")[0]}:\x1b[0m         ⚠️  \x1b[31m${reason}\x1b[0m`,
+    ...reasonLines.map((line, index) => {
+      const label = index === 0 ? reasonLabel : ""
+      const spacer = index === 0 ? "         " : " ".repeat(displayWidth(reasonLabel) + 9)
+      return `\x1b[1m${label}\x1b[0m${spacer}\x1b[31m${line}\x1b[0m`
+    }),
   ]
 
   if (metrics) {
@@ -129,9 +150,53 @@ export function buildFailureSummaryCard(
       copy.sessionTokensLine(cumTotal.toLocaleString(), cumInput.toLocaleString(), cumOutput.toLocaleString()),
     )
   }
+  if (subagentUsage.calls > 0 || sessionTokenUsage.subagentCalls > 0) {
+    const roundSubagentTotal = subagentUsage.inputTokens + subagentUsage.outputTokens
+    const cumSubagentInput = sessionTokenUsage.subagentInputTokens + subagentUsage.inputTokens
+    const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
+    const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
+    const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
+    lines.push(
+      copy.roundSubagentCallsLine(String(subagentUsage.calls)),
+      copy.roundSubagentTokensLine(roundSubagentTotal.toLocaleString()),
+      copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
+      copy.sessionSubagentTokensLine(cumSubagentTotal.toLocaleString(), cumSubagentInput.toLocaleString(), cumSubagentOutput.toLocaleString()),
+    )
+  }
 
   return drawCard(`🛑 ${copy.failureTitle}`, lines, columns, {
     color: "\x1b[31m",
     borderStyle: "round",
   })
+}
+
+function wrapCardText(label: string, text: string, maxLineWidth: number) {
+  const continuationPrefix = " ".repeat(displayWidth(label) + 9)
+  const firstLineBudget = Math.max(12, maxLineWidth - displayWidth(label) - 9)
+  const nextLineBudget = Math.max(12, maxLineWidth - displayWidth(continuationPrefix))
+  const wrapped: string[] = []
+
+  for (const paragraph of text.split("\n")) {
+    const words = paragraph.split(/\s+/).filter(Boolean)
+    if (words.length === 0) {
+      wrapped.push("")
+      continue
+    }
+
+    let current = ""
+    let budget = wrapped.length === 0 ? firstLineBudget : nextLineBudget
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word
+      if (displayWidth(candidate) <= budget) {
+        current = candidate
+        continue
+      }
+      if (current) wrapped.push(current)
+      current = word
+      budget = nextLineBudget
+    }
+    if (current) wrapped.push(current)
+  }
+
+  return wrapped.length > 0 ? wrapped : [text]
 }

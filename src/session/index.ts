@@ -12,6 +12,9 @@ export type SessionTokenUsage = {
   inputTokens: number
   outputTokens: number
   calls: number
+  subagentInputTokens: number
+  subagentOutputTokens: number
+  subagentCalls: number
 }
 
 export type SessionData = {
@@ -90,7 +93,7 @@ export class SessionStore {
       summary: context.state.summary,
       ledger: context.state.ledger,
       ...(settings ? { settings: normalizeSessionSettings(settings, settings.provider) } : {}),
-      ...(tokenUsage ? { tokenUsage } : {}),
+      ...(tokenUsage ? { tokenUsage: normalizeSessionTokenUsage(tokenUsage) } : {}),
       updatedAt: Date.now(),
     }
     await Bun.write(this.filePath(id), `${JSON.stringify(data, null, 2)}\n`)
@@ -141,6 +144,17 @@ export class SessionStore {
 
   private filePath(id: string) {
     return path.join(this.dir, `${safeSessionID(id)}.json`)
+  }
+}
+
+export function normalizeSessionTokenUsage(input: Partial<SessionTokenUsage> | undefined): SessionTokenUsage {
+  return {
+    inputTokens: normalizeUsageNumber(input?.inputTokens),
+    outputTokens: normalizeUsageNumber(input?.outputTokens),
+    calls: normalizeUsageNumber(input?.calls),
+    subagentInputTokens: normalizeUsageNumber(input?.subagentInputTokens),
+    subagentOutputTokens: normalizeUsageNumber(input?.subagentOutputTokens),
+    subagentCalls: normalizeUsageNumber(input?.subagentCalls),
   }
 }
 
@@ -212,4 +226,8 @@ function latestMessageText(messages: Message[], role: Message["role"]) {
     if (text) return text.slice(0, 280)
   }
   return undefined
+}
+
+function normalizeUsageNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0
 }

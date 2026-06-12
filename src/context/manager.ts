@@ -11,7 +11,7 @@ import { buildCompactionSnapshot, buildProviderMessages } from "./manager-compos
 import { addWindowStats, cloneStrategy, emptyWindowStats, estimateStaticPrefixTokens, staticPrefixMessageCount, type WindowStats } from "./manager-helpers"
 import { createBudgetStats, createCacheStats, createLedgerStats, ledgerTokenBudget, renderSelectedLedgerText, compactionBasis } from "./manager-stats"
 import { clampStrategyState, createInitialStrategyState, defaultCompactPreserveTokens, defaultSafetyMultiplier, initialMaxTokens, maxSafetyMultiplier, minMaxTokens, minSafetyMultiplier, minTokenFloorForOptions, responseReserveTokensForMax, safetyMultiplierForOptions } from "./strategy"
-import { estimateSummaryTokens, estimateTextTokens } from "./tokens"
+import { estimateSummaryTokens, estimateTextTokens, recentProviderMessageSuffix } from "./tokens"
 import type { ContextBudgetStats, ContextCacheStats, ContextCompactionSnapshot, ContextLedger, ContextLedgerStats, ContextManagerLike, ContextOptions, ContextPlan, ContextPlanInput, ContextState, ContextStrategyState, ContextUsageObservation } from "./types"
 
 export class ContextManager implements ContextManagerLike {
@@ -102,12 +102,17 @@ export class ContextManager implements ContextManagerLike {
 
   compactionSnapshot(): ContextCompactionSnapshot | undefined {
     if (!this.needsCompaction()) return undefined
-    return buildCompactionSnapshot({
+    const snapshot = buildCompactionSnapshot({
       messages: this.state.messages,
       preserveRecentUserTurns: this.preserveRecentUserTurns,
       ledger: this.state.ledger,
       summary: this.state.summary,
     })
+    if (this.state.summary && snapshot.compactedMessageCount === 0) {
+      const preserved = recentProviderMessageSuffix(this.state.messages, this.compactPreserveTokens)
+      if (sameMessageSequence(preserved, this.state.messages)) return undefined
+    }
+    return snapshot
   }
 
   compact(summary: string) {
@@ -231,4 +236,8 @@ export class ContextManager implements ContextManagerLike {
     this._strategyState = clampStrategyState(input, this.minTokenFloor, this.contextWindowTokens)
     this.state.maxTokens = this._strategyState.maxTokens
   }
+}
+
+function sameMessageSequence(left: Message[], right: Message[]) {
+  return left.length === right.length && left.every((message, index) => message === right[index])
 }

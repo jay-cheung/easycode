@@ -1,9 +1,17 @@
 import type { ToolCall } from "../message"
+import type { SubagentRole } from "../agent/types"
+import type { ReasoningEffort } from "../settings"
 import { languageLocale, uiText, type UiLanguage } from "../i18n"
 
 export type ProviderRunMetrics = {
   provider: string
   model?: string
+  source?: "main" | "subagent"
+  subagentRole?: SubagentRole
+  thinking?: boolean
+  effort?: ReasoningEffort
+  maxOutputTokens?: number
+  maxProviderCalls?: number
   calls: number
   inputTokens: number
   outputTokens: number
@@ -23,10 +31,22 @@ export type ProviderRunMetrics = {
   }
 }
 
+export type SubagentUiInfo = {
+  id: number
+  role: SubagentRole
+  provider: string
+  model?: string
+  thinking: boolean
+  effort?: ReasoningEffort
+  maxProviderCalls: number
+  maxOutputTokens?: number
+}
+
 export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
   | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number; phase?: "waiting" | "thinking" | "answering" }
   | { type: "provider_metrics"; metrics: ProviderRunMetrics; interim?: boolean }
+  | { type: "subagent"; status: "scheduled" | "completed" | "failed"; info: SubagentUiInfo; elapsedMs?: number; error?: string; metrics?: ProviderRunMetrics }
   | { type: "context_compaction"; status: "started" | "completed" | "failed"; inputMessages?: number; summaryChars?: number; summaryTokens?: number; elapsedMs?: number; error?: string }
   | { type: "repo_map"; status: "succeeded" | "failed"; cacheHit?: boolean; files?: number; relevantFiles?: number; cachePath?: string; error?: string }
   | { type: "reasoning_delta"; text: string }
@@ -98,6 +118,24 @@ export class TimelineRenderer {
       this.closeThought()
       this.closeAnswer()
       this.output.write(formatProviderMetrics(event.metrics, copy, this.language, (text) => this.title("thought", text)))
+      return
+    }
+    if (event.type === "subagent") {
+      this.closeThought()
+      this.closeAnswer()
+      const summary = formatSubagentInfo(event.info)
+      if (event.status === "scheduled") {
+        this.output.write(`\n${this.title("tool", copy.timelineSubagentScheduled(summary))}\n`)
+      } else if (event.status === "completed") {
+        const elapsed = event.elapsedMs === undefined ? "" : ` (${formatDuration(event.elapsedMs)})`
+        const metrics = event.metrics
+          ? `, calls=${event.metrics.calls}, input_tokens=${event.metrics.inputTokens}, output_tokens=${event.metrics.outputTokens}`
+          : ""
+        this.output.write(copy.timelineSubagentCompleted(event.info.role, elapsed, metrics))
+      } else {
+        const elapsed = event.elapsedMs === undefined ? "" : ` after ${formatDuration(event.elapsedMs)}`
+        this.output.write(copy.timelineSubagentFailed(event.info.role, elapsed, event.error ? `: ${event.error}` : ""))
+      }
       return
     }
     if (event.type === "context_compaction") {
@@ -210,6 +248,13 @@ export class TimelineRenderer {
     if (!this.colorEnabled) return text
     return `${titleColors[type]}${text}${resetColor}`
   }
+}
+
+function formatSubagentInfo(info: SubagentUiInfo) {
+  const model = info.model ? ` ${info.model}` : ""
+  const effort = info.thinking ? `, effort=${info.effort ?? "none"}` : ""
+  const maxOutputTokens = info.maxOutputTokens === undefined ? "" : `, max_output_tokens=${info.maxOutputTokens}`
+  return `role=${info.role}, provider=${info.provider}${model}, thinking=${info.thinking ? "on" : "off"}${effort}, max_calls=${info.maxProviderCalls}${maxOutputTokens}`
 }
 
 class MarkdownLineRenderer {

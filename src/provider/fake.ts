@@ -6,6 +6,7 @@ import { toolResults } from "../message"
 export class FakeProvider implements Provider {
   readonly name = "fake"
   readonly model?: string
+  readonly runtime: ProviderOptions
   readonly capabilities: ProviderCapabilities = { apiStyle: "local", supportsImages: true, supportsThinking: true, supportsReasoningEffort: true, effortValues: ["low", "medium", "high", "max"], supportsJsonObjectResponse: true, supportsMaxOutputTokens: true, promptCacheMode: "reported", promptCacheMinPrefixTokens: numberFromEnv("FAKE_PROMPT_CACHE_MIN_PREFIX_TOKENS") }
   private readonly promptCounts = new Map<string, number>()
 
@@ -32,6 +33,7 @@ export class FakeProvider implements Provider {
   }
 
   constructor(options: ProviderOptions = {}) {
+    this.runtime = options
     this.model = options.model
   }
 

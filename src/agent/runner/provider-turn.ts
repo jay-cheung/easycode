@@ -26,9 +26,11 @@ export type ProviderTurnInput = {
   messages: Message[]
   providerMessages: ProviderInputMessage[]
   tools: ToolDef[]
+  provider?: Provider
   signal?: AbortSignal
   providerMetrics?: ProviderMetricsAccumulator
   emitDeltas?: boolean
+  emitProgressEvents?: boolean
   observeContextUsage?: boolean
 }
 
@@ -51,13 +53,14 @@ export async function runProviderTurnStream(
   const replayEvents: ProviderTurnResult["replayEvents"] = []
   const tools = input.agent.tools === "none" ? [] : input.tools
   const emitDeltas = input.emitDeltas ?? true
+  const emitProgressEvents = input.emitProgressEvents ?? true
   const observeContextUsage = input.observeContextUsage ?? true
   let failureText: string | undefined
   const startedAt = Date.now()
   let currentPhase: "waiting" | "thinking" | "answering" = "waiting"
-  const stopProviderProgress = startProviderProgressTimer(deps, input, startedAt, () => currentPhase)
+  const stopProviderProgress = startProviderProgressTimer(deps, input, startedAt, () => currentPhase, emitProgressEvents)
   const metricCall = startProviderMetricCall(input.providerMetrics)
-  if (input.providerMetrics && deps.onEvent) {
+  if (emitProgressEvents && input.providerMetrics && deps.onEvent) {
     deps.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
   }
   const currentText = () => textChunks.join("")
@@ -66,7 +69,7 @@ export async function runProviderTurnStream(
   try {
     for await (const event of deps.provider.stream({ mode: input.agent.mode, prompt: input.prompt, messages: input.messages, providerMessages: input.providerMessages, tools, signal: input.signal })) {
       observeProviderMetricEvent(input.providerMetrics, metricCall, event)
-      if (event.type === "usage" && input.providerMetrics && deps.onEvent) {
+      if (emitProgressEvents && event.type === "usage" && input.providerMetrics && deps.onEvent) {
         deps.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
       }
       if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
@@ -74,7 +77,7 @@ export async function runProviderTurnStream(
         stopProviderProgress()
         if (currentPhase === "waiting") {
           currentPhase = "thinking"
-          deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: currentPhase })
+          if (emitProgressEvents) deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: currentPhase })
         }
         reasoningChunks.push(event.text)
         replayEvents.push({ type: "reasoning_delta", text: event.text })
@@ -87,7 +90,7 @@ export async function runProviderTurnStream(
         stopProviderProgress()
         if (currentPhase !== "answering") {
           currentPhase = "answering"
-          deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: currentPhase })
+          if (emitProgressEvents) deps.onEvent?.({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: Date.now() - startedAt, phase: currentPhase })
         }
         textChunks.push(event.text)
         replayEvents.push({ type: "text_delta", text: event.text })
@@ -133,7 +136,7 @@ export async function runProviderTurnStream(
   } finally {
     finishProviderMetricCall(input.providerMetrics, metricCall)
     stopProviderProgress()
-    if (input.providerMetrics && deps.onEvent) {
+    if (emitProgressEvents && input.providerMetrics && deps.onEvent) {
       deps.onEvent({ type: "provider_metrics", metrics: finalizeProviderMetrics(input.providerMetrics), interim: true })
     }
   }
@@ -182,8 +185,9 @@ function startProviderProgressTimer(
   input: ProviderTurnInput,
   startedAt: number,
   getPhase: () => "waiting" | "thinking" | "answering",
+  emitProgressEvents: boolean,
 ) {
-  if (!deps.onEvent || deps.providerProgressIntervalMs <= 0) return () => {}
+  if (!emitProgressEvents || !deps.onEvent || deps.providerProgressIntervalMs <= 0) return () => {}
   let stopped = false
   deps.onEvent({ type: "provider_progress", provider: deps.provider.name, model: deps.provider.model, elapsedMs: 0, phase: getPhase() })
   const timer = setInterval(() => {

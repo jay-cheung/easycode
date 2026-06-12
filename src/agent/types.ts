@@ -11,12 +11,16 @@ import type { RunAspect } from "../instrumentation"
 import type { SessionSettings } from "../settings"
 import type { RunUiEvent } from "../ui/timeline"
 
-export type AgentKind = AgentMode | "summary"
+export type SubagentRole = "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher"
+
+export type AgentKind = AgentMode | SubagentRole
 export type AgentToolPolicy = "enabled" | "none"
 
 export type Agent = {
   kind: AgentKind
   name: string
+  role?: SubagentRole
+  depth?: 0 | 1
   mode: AgentMode
   systemPrompt: string
   tools: AgentToolPolicy

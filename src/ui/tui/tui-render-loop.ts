@@ -1,6 +1,7 @@
 import { buildFailureSummaryCard, buildSuccessSummaryCard, buildWelcomeDashboardCard } from "./tui-cards"
 import { generateStatusPanelLines } from "./tui-status-panel"
 import type { TuiState } from "./tui-state"
+import type { TuiUsageTotals } from "./tui-state"
 import type { TuiContext, Writable } from "./tui-types"
 import type { SessionTokenUsage } from "../../session"
 import type { UiLanguage } from "../../i18n"
@@ -74,10 +75,10 @@ export function renderWelcomeDashboard(output: Writable, context: TuiContext, st
   output.write(`\n${buildWelcomeDashboardCard(context, status, columns)}\n`)
 }
 
-export function renderSuccessSummary(output: Writable, language: UiLanguage, runElapsedMs: number, metrics: TuiState["metrics"], sessionTokenUsage: SessionTokenUsage, columns: number) {
-  output.write(`\n${buildSuccessSummaryCard(language, runElapsedMs, metrics, sessionTokenUsage, columns)}\n`)
+export function renderSuccessSummary(output: Writable, language: UiLanguage, runElapsedMs: number, metrics: TuiState["metrics"], subagentUsage: TuiUsageTotals, sessionTokenUsage: SessionTokenUsage, columns: number) {
+  output.write(`\n${buildSuccessSummaryCard(language, runElapsedMs, metrics, subagentUsage, sessionTokenUsage, columns)}\n`)
 }
 
-export function renderFailureSummary(output: Writable, language: UiLanguage, runElapsedMs: number, metrics: TuiState["metrics"], sessionTokenUsage: SessionTokenUsage, reason: string, columns: number) {
-  output.write(`\n${buildFailureSummaryCard(language, runElapsedMs, metrics, sessionTokenUsage, reason, columns)}\n`)
+export function renderFailureSummary(output: Writable, language: UiLanguage, runElapsedMs: number, metrics: TuiState["metrics"], subagentUsage: TuiUsageTotals, sessionTokenUsage: SessionTokenUsage, reason: string, columns: number) {
+  output.write(`\n${buildFailureSummaryCard(language, runElapsedMs, metrics, subagentUsage, sessionTokenUsage, reason, columns)}\n`)
 }

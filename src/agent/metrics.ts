@@ -1,10 +1,18 @@
 import { defaultCachePricing, type CachePricing } from "../cache-policy"
 import type { ProviderEvent } from "../provider"
 import type { ProviderRunMetrics } from "../ui/timeline"
+import type { SubagentRole } from "./types"
+import type { ReasoningEffort } from "../settings"
 
 export type ProviderMetricsAccumulator = {
   provider: string
   model?: string
+  source?: "main" | "subagent"
+  subagentRole?: SubagentRole
+  thinking?: boolean
+  effort?: ReasoningEffort
+  maxOutputTokens?: number
+  maxProviderCalls?: number
   pricing: CachePricing
   calls: number
   inputTokens: number
@@ -22,10 +30,20 @@ type ProviderMetricCall = {
   firstResponseMs?: number
 }
 
-export function createProviderMetrics(provider: string, model?: string): ProviderMetricsAccumulator {
+export function createProviderMetrics(
+  provider: string,
+  model?: string,
+  metadata: Partial<Pick<ProviderMetricsAccumulator, "source" | "subagentRole" | "thinking" | "effort" | "maxOutputTokens" | "maxProviderCalls">> = {},
+): ProviderMetricsAccumulator {
   return {
     provider,
     model,
+    source: metadata.source,
+    subagentRole: metadata.subagentRole,
+    thinking: metadata.thinking,
+    effort: metadata.effort,
+    maxOutputTokens: metadata.maxOutputTokens,
+    maxProviderCalls: metadata.maxProviderCalls,
     pricing: defaultCachePricing(),
     calls: 0,
     inputTokens: 0,
@@ -73,6 +91,12 @@ export function finalizeProviderMetrics(metrics: ProviderMetricsAccumulator): Pr
   return {
     provider: metrics.provider,
     model: metrics.model,
+    source: metrics.source,
+    subagentRole: metrics.subagentRole,
+    thinking: metrics.thinking,
+    effort: metrics.effort,
+    maxOutputTokens: metrics.maxOutputTokens,
+    maxProviderCalls: metrics.maxProviderCalls,
     calls: metrics.calls,
     inputTokens: metrics.inputTokens,
     outputTokens: metrics.outputTokens,
@@ -88,4 +112,3 @@ export function finalizeProviderMetrics(metrics: ProviderMetricsAccumulator): Pr
     rates: metrics.pricing,
   }
 }
-

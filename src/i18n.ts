@@ -193,8 +193,12 @@ type UiCopy = {
   reasonLine: (reason: string) => string
   roundCallsLine: (value: string) => string
   roundTokensLine: (value: string, hitRate?: string) => string
+  roundSubagentCallsLine: (value: string) => string
+  roundSubagentTokensLine: (value: string) => string
   sessionCallsLine: (value: string) => string
   sessionTokensLine: (value: string, input: string, output: string) => string
+  sessionSubagentCallsLine: (value: string) => string
+  sessionSubagentTokensLine: (value: string, input: string, output: string) => string
   statusReady: string
   statusSessionSelected: string
   statusInitializing: string
@@ -218,6 +222,9 @@ type UiCopy = {
   timelineModel: string
   timelineWaitingFor: (provider: string, elapsed: string) => string
   timelineMetrics: string
+  timelineSubagentScheduled: (summary: string) => string
+  timelineSubagentCompleted: (role: string, elapsed: string, metrics: string) => string
+  timelineSubagentFailed: (role: string, elapsed: string, error: string) => string
   timelineContextCompactionStart: (count: string) => string
   timelineContextCompactionDone: (elapsed: string, summary: string, tokens: string) => string
   timelineContextCompactionFailed: (elapsed: string, error: string) => string
@@ -395,8 +402,12 @@ function buildEnglishCopy(): UiCopy {
     reasonLine: (reason) => `Reason: ${reason}`,
     roundCallsLine: (value) => `Round Calls: ${value}`,
     roundTokensLine: (value, hitRate) => `Round Tokens: ${value}${hitRate ? ` (cache hit: ${hitRate})` : ""}`,
+    roundSubagentCallsLine: (value) => `Round Subagent Calls: ${value}`,
+    roundSubagentTokensLine: (value) => `Round Subagent Tokens: ${value}`,
     sessionCallsLine: (value) => `Session Calls: ${value}`,
     sessionTokensLine: (value, input, output) => `Session Tokens: ${value} (in: ${input}, out: ${output})`,
+    sessionSubagentCallsLine: (value) => `Session Subagent Calls: ${value}`,
+    sessionSubagentTokensLine: (value, input, output) => `Session Subagent Tokens: ${value} (in: ${input}, out: ${output})`,
     statusReady: "ready",
     statusSessionSelected: "session selected",
     statusInitializing: "Initializing run...",
@@ -420,6 +431,9 @@ function buildEnglishCopy(): UiCopy {
     timelineModel: "● Model",
     timelineWaitingFor: (provider, elapsed) => `  … waiting for ${provider} after ${elapsed}\n`,
     timelineMetrics: "● Metrics",
+    timelineSubagentScheduled: (summary) => `● Subagent scheduled ${summary}`,
+    timelineSubagentCompleted: (role, elapsed, metrics) => `  ✓ Subagent ${role} completed${elapsed}${metrics}\n`,
+    timelineSubagentFailed: (role, elapsed, error) => `  × Subagent ${role} failed${elapsed}${error}\n`,
     timelineContextCompactionStart: (count) => `● Context compaction summarizing older context${count}`,
     timelineContextCompactionDone: (elapsed, summary, tokens) => `  ✓ Context compacted${elapsed}${summary}${tokens}\n`,
     timelineContextCompactionFailed: (elapsed, error) => `  × Context compaction failed${elapsed}${error}\n`,
@@ -589,8 +603,12 @@ const copies: Record<UiLanguage, UiCopy> = {
     reasonLine: (reason) => `原因：${reason}`,
     roundCallsLine: (value) => `本轮调用：${value}`,
     roundTokensLine: (value, hitRate) => `本轮 Tokens：${value}${hitRate ? `（缓存命中：${hitRate}）` : ""}`,
+    roundSubagentCallsLine: (value) => `本轮 Subagent 调用：${value}`,
+    roundSubagentTokensLine: (value) => `本轮 Subagent Tokens：${value}`,
     sessionCallsLine: (value) => `会话累计调用：${value}`,
     sessionTokensLine: (value, input, output) => `会话累计 Tokens：${value}（输入：${input}，输出：${output}）`,
+    sessionSubagentCallsLine: (value) => `会话累计 Subagent 调用：${value}`,
+    sessionSubagentTokensLine: (value, input, output) => `会话累计 Subagent Tokens：${value}（输入：${input}，输出：${output}）`,
     statusReady: "ready",
     statusSessionSelected: "会话已选定",
     statusInitializing: "正在初始化运行...",
@@ -614,6 +632,9 @@ const copies: Record<UiLanguage, UiCopy> = {
     timelineModel: "● 模型",
     timelineWaitingFor: (provider, elapsed) => `  … 正在等待 ${provider}，已耗时 ${elapsed}\n`,
     timelineMetrics: "● 指标",
+    timelineSubagentScheduled: (summary) => `● Subagent 已调度 ${summary}`,
+    timelineSubagentCompleted: (role, elapsed, metrics) => `  ✓ Subagent ${role} 已完成${elapsed}${metrics}\n`,
+    timelineSubagentFailed: (role, elapsed, error) => `  × Subagent ${role} 失败${elapsed}${error}\n`,
     timelineContextCompactionStart: (count) => `● 上下文压缩：正在总结旧上下文${count}`,
     timelineContextCompactionDone: (elapsed, summary, tokens) => `  ✓ 上下文已压缩${elapsed}${summary}${tokens}\n`,
     timelineContextCompactionFailed: (elapsed, error) => `  × 上下文压缩失败${elapsed}${error}\n`,
@@ -704,6 +725,9 @@ const copies: Record<UiLanguage, UiCopy> = {
     timelineModel: "● モデル",
     timelineWaitingFor: (provider, elapsed) => `  … ${provider} を待機中 (${elapsed})\n`,
     timelineMetrics: "● メトリクス",
+    timelineSubagentScheduled: (summary) => `● Subagent をスケジュールしました ${summary}`,
+    timelineSubagentCompleted: (role, elapsed, metrics) => `  ✓ Subagent ${role} が完了しました${elapsed}${metrics}\n`,
+    timelineSubagentFailed: (role, elapsed, error) => `  × Subagent ${role} が失敗しました${elapsed}${error}\n`,
     timelineContextCompactionStart: (count) => `● 古いコンテキストを要約中${count}`,
     timelineContextCompactionDone: (elapsed, summary, tokens) => `  ✓ コンテキストを圧縮しました${elapsed}${summary}${tokens}\n`,
     timelineContextCompactionFailed: (elapsed, error) => `  × コンテキスト圧縮に失敗しました${elapsed}${error}\n`,
@@ -786,6 +810,9 @@ const copies: Record<UiLanguage, UiCopy> = {
     timelineModel: "● Modèle",
     timelineWaitingFor: (provider, elapsed) => `  … attente de ${provider} après ${elapsed}\n`,
     timelineMetrics: "● Mesures",
+    timelineSubagentScheduled: (summary) => `● Subagent planifié ${summary}`,
+    timelineSubagentCompleted: (role, elapsed, metrics) => `  ✓ Subagent ${role} terminé${elapsed}${metrics}\n`,
+    timelineSubagentFailed: (role, elapsed, error) => `  × Subagent ${role} en échec${elapsed}${error}\n`,
     timelineThought: "● Réflexion",
     timelineThoughtDone: (elapsed) => `  Réflexion pendant ${elapsed}s\n`,
     timelineAnswer: "● Réponse",
@@ -864,6 +891,9 @@ const copies: Record<UiLanguage, UiCopy> = {
     timelineModel: "● 모델",
     timelineWaitingFor: (provider, elapsed) => `  … ${provider} 대기 중 (${elapsed})\n`,
     timelineMetrics: "● 지표",
+    timelineSubagentScheduled: (summary) => `● Subagent 예약됨 ${summary}`,
+    timelineSubagentCompleted: (role, elapsed, metrics) => `  ✓ Subagent ${role} 완료${elapsed}${metrics}\n`,
+    timelineSubagentFailed: (role, elapsed, error) => `  × Subagent ${role} 실패${elapsed}${error}\n`,
     timelineThought: "● 사고",
     timelineThoughtDone: (elapsed) => `  ${elapsed}s 동안 사고함\n`,
     timelineAnswer: "● 답변",
@@ -942,6 +972,9 @@ const copies: Record<UiLanguage, UiCopy> = {
     timelineModel: "● Modell",
     timelineWaitingFor: (provider, elapsed) => `  … warte auf ${provider} seit ${elapsed}\n`,
     timelineMetrics: "● Metriken",
+    timelineSubagentScheduled: (summary) => `● Subagent geplant ${summary}`,
+    timelineSubagentCompleted: (role, elapsed, metrics) => `  ✓ Subagent ${role} abgeschlossen${elapsed}${metrics}\n`,
+    timelineSubagentFailed: (role, elapsed, error) => `  × Subagent ${role} fehlgeschlagen${elapsed}${error}\n`,
     timelineThought: "● Denken",
     timelineThoughtDone: (elapsed) => `  ${elapsed}s nachgedacht\n`,
     timelineAnswer: "● Antwort",

@@ -60,10 +60,10 @@ describe("session store", () => {
     const store = new SessionStore(root)
     const context = new ContextManager()
     context.add(textMessage("user", "hello"))
-    await store.save("demo", context, undefined, { inputTokens: 1230, outputTokens: 456, calls: 5 })
+    await store.save("demo", context, undefined, { inputTokens: 1230, outputTokens: 456, calls: 5, subagentInputTokens: 80, subagentOutputTokens: 20, subagentCalls: 1 })
 
     const saved = await store.load("demo")
-    expect(saved?.tokenUsage).toMatchObject({ inputTokens: 1230, outputTokens: 456, calls: 5 })
+    expect(saved?.tokenUsage).toMatchObject({ inputTokens: 1230, outputTokens: 456, calls: 5, subagentInputTokens: 80, subagentOutputTokens: 20, subagentCalls: 1 })
     await rm(root, { recursive: true, force: true })
   })
 
@@ -281,7 +281,7 @@ describe("session store", () => {
     context.add(textMessage("user", "Investigate payment retry loops"))
     context.add(textMessage("assistant", "Root cause is a stale retry flag."))
     context.state.summary = "payment retry investigation"
-    await store.save("archive/me", context, { provider: "openai", model: "gpt-5.5", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] }, { inputTokens: 120, outputTokens: 45, calls: 2 })
+    await store.save("archive/me", context, { provider: "openai", model: "gpt-5.5", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] }, { inputTokens: 120, outputTokens: 45, calls: 2, subagentInputTokens: 60, subagentOutputTokens: 10, subagentCalls: 1 })
 
     const safe = safeSessionID("archive/me")
     const logsDir = path.join(root, ".easycode", "logs", "sessions")
