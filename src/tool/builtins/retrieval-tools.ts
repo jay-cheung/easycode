@@ -1,5 +1,5 @@
 import { McpSourceService, WebSearchService, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, webCitation } from "../../retrieval"
-import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, PlanStepCompleteInput, PlanStepFailInput, objectSchema } from "./common"
+import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, PlanStepCompleteInput, PlanStepFailInput, DelegateSubagentInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
 import { loadStructuredPlanState, nextIncompletePlanStep } from "../../plans"
@@ -124,6 +124,25 @@ export function registerRetrievalTools(registry: ToolRegistry) {
         },
       }
     },
+  })
+
+  registry.register({
+    name: "delegate_subagent",
+    description: "Coordinator-only internal action. Delegate a bounded internal task to a subagent role and consume its structured result in the next model turn. USE THIS FOR: finding all X in codebase (explorer), reviewing a file/plan (reviewer), debugging a test failure (debugger), running tests (tester), researching docs (docs_researcher), summarizing history (summary). Do NOT delegate: write operations, or work that depends on session history.",
+    inputSchema: DelegateSubagentInput,
+    jsonSchema: objectSchema({
+      role: { type: "string", enum: ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"] },
+      task: { type: "string" },
+      success_criteria: { type: "string" },
+    }, ["role", "task"]),
+    permission: "delegate_subagent",
+    modes: ["build"],
+    patterns: () => ["*"],
+    execute: async () => ({
+      title: "delegate_subagent",
+      output: "delegate_subagent must be intercepted by the runner before reaching the tool registry.",
+      metadata: { status: "failed", error: "internal_action_not_intercepted" },
+    }),
   })
 
   registry.register({
