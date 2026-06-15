@@ -113,9 +113,10 @@ export class ChatCompletionsLikeProvider extends HttpSSEProviderBase<ChatComplet
   }
 
   protected buildRequestBody(input: ProviderInput): unknown {
+    const thinkingEnabled = this.capabilities.supportsThinking && this.runtime.thinking !== false
     return {
       model: this.model,
-      messages: input.providerMessages.flatMap(chatMessagesFromProviderMessage),
+      messages: input.providerMessages.flatMap((msg) => chatMessagesFromProviderMessage(msg, thinkingEnabled)),
       stream: true,
       ...(this.includeUsageStreamOption ? { stream_options: { include_usage: true } } : {}),
       tools: input.tools.map(toolToChatCompletionTool),
@@ -221,7 +222,10 @@ function usageEvent(usage: ChatCompletionUsage): ProviderEvent {
   }
 }
 
-export function chatMessagesFromProviderMessage(message: ProviderInput["providerMessages"][number]): ChatCompletionMessage[] {
+export function chatMessagesFromProviderMessage(
+  message: ProviderInput["providerMessages"][number],
+  supportsThinking = false,
+): ChatCompletionMessage[] {
   const parts = message.parts ?? []
   const toolCalls = parts.filter((part): part is ToolCallPart => part.type === "tool_call")
   if (message.role === "assistant" && toolCalls.length > 0) {
@@ -231,7 +235,7 @@ export function chatMessagesFromProviderMessage(message: ProviderInput["provider
       {
         role: "assistant",
         content: text || null,
-        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+        ...(supportsThinking ? { reasoning_content: reasoningContent || "" } : reasoningContent ? { reasoning_content: reasoningContent } : {}),
         tool_calls: toolCalls.map((part) => ({
           id: part.call.id,
           type: "function",
@@ -248,7 +252,7 @@ export function chatMessagesFromProviderMessage(message: ProviderInput["provider
   if (role === "assistant") {
     const text = parts.filter((part): part is TextPart | SummaryPart => part.type === "text" || part.type === "summary").map((part) => partToText(part)).join("\n")
     const reasoningContent = parts.filter((part): part is ReasoningPart => part.type === "reasoning").map((part) => part.text).join("")
-    return [{ role, content: text || null, ...(reasoningContent ? { reasoning_content: reasoningContent } : {}) }]
+    return [{ role, content: text || null, ...(supportsThinking ? { reasoning_content: reasoningContent || "" } : reasoningContent ? { reasoning_content: reasoningContent } : {}) }]
   }
   return [{ role, content: message.content }]
 }

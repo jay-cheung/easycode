@@ -2,7 +2,6 @@ import { stdout as output } from "node:process"
 import { languageDisplay, parseUiLanguage, supportedLanguageSummary, uiText } from "../i18n"
 import { imageLabel, imagePartFromInput } from "../image"
 import type { AgentMode, ImagePart } from "../message"
-import { ProjectMemoryStore, formatProjectMemoryRecord, type ProjectMemoryRecord } from "../memory"
 import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService, type PermissionRequest } from "../permission"
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders } from "../provider"
 import { hasConfiguredWebSearch, tavilySetupHint } from "../retrieval"
@@ -52,6 +51,7 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
   const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
   let pendingImages = input.pendingImages
   let resetRunner = false
+  let goalAction: Extract<SlashCommand, { type: "goal" }> | undefined
   let sessionAction: { type: "switch" | "delete"; target: string } | undefined
   input.tui?.slashCommand(command.type)
   const write = (text: string, title?: string) => writeCliText(input.tui, text, title ?? uiText(next.language).commandTitle)
@@ -62,6 +62,9 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
       break
     case "settings":
       write(settingsText(next, pendingImages), uiText(next.language).settingsTitle)
+      break
+    case "goal":
+      goalAction = command
       break
     case "sessions":
       write(await sessionsText(input.sessions, input.currentSession, next.language), uiText(next.language).sessionsTitle)
@@ -183,36 +186,9 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
       }
       break
     }
-    case "task": {
-      const store = new ProjectMemoryStore(input.root)
-      const copy = uiText(next.language)
-      if (command.action === "list") {
-        const records = await store.query("", 20, { kinds: ["task_state"] })
-        if (records.length === 0) {
-          write(copy.noTaskCheckpoints, copy.taskTitle)
-        } else {
-          const lines = [copy.activeTaskCheckpoints, ...records.map((record) => `  ${record.id} [${record.kind}]: ${record.text}`)]
-          write(lines.join("\n"), copy.taskTitle)
-        }
-      }
-      if (command.action === "checkpoint") {
-        const record = await store.promote({
-          text: command.text,
-          kind: "task_state",
-          tags: ["task", "checkpoint"],
-          scope: { topics: ["task_checkpoint"] },
-        })
-        write(copy.taskCheckpointCreated(record.id), copy.taskTitle)
-      }
-      if (command.action === "resolve") {
-        const deleted = await store.delete(command.target)
-        write(deleted ? copy.taskCheckpointResolved(command.target) : copy.taskCheckpointNotFound(command.target), copy.taskTitle)
-      }
-      break
-    }
   }
 
-  return { settings: next, pendingImages, resetRunner, sessionAction }
+  return { settings: next, pendingImages, resetRunner, sessionAction, goalAction }
 }
 
 export async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined, language: SessionSettings["language"]) {
@@ -247,18 +223,6 @@ export function writeCliText(tui: TuiRenderer | undefined, text: string, title: 
     return
   }
   output.write(text.endsWith("\n") ? text : `${text}\n`)
-}
-
-export async function activeTaskCheckpoints(root: string) {
-  return new ProjectMemoryStore(root).query("", 20, { kinds: ["task_state"] })
-}
-
-export function formatTaskCheckpointsBlock(records: ProjectMemoryRecord[]) {
-  if (records.length === 0) return undefined
-  const lines = ["<active_task_checkpoints>"]
-  for (const record of records) lines.push(`- ${formatProjectMemoryRecord(record)}`)
-  lines.push("</active_task_checkpoints>")
-  return lines.join("\n")
 }
 
 export function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[], tui?: TuiRenderer) {

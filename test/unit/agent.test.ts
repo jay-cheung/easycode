@@ -8,6 +8,8 @@ describe("agent protocol", () => {
     expect(prompt).toContain("# Unified Run Mode - System Reminder")
     expect(prompt).toContain("EasyCode runs in one unified mode")
     expect(prompt).toContain("plan_exit")
+    expect(prompt).toContain("inspect only as needed with read-only tools")
+    expect(prompt).toContain("Every structured plan JSON MUST include \"lowRisk\"")
     expect(prompt).toContain("symbol-aware edit plan")
     expect(prompt).toContain("target symbols")
     expect(prompt).toContain("excluded same-name matches")

@@ -81,6 +81,7 @@ export interface ExecutionPlan {
   id: string
   title?: string
   steps: PlanStep[]
+  lowRisk: boolean
 }
 
 export type ReplanReason = "tool_failure" | "verification_failure" | "scope_change" | "new_evidence"
@@ -118,6 +119,7 @@ export function normalizeExecutionPlan(input: unknown): ExecutionPlan {
     throw new InvalidExecutionPlanError("Structured plan must contain at least one step.")
   }
   const steps = raw.steps.map(normalizePlanStep)
+  const lowRisk = typeof raw.lowRisk === "boolean" ? raw.lowRisk : inferLowRiskPlan(raw, steps)
 
   // Validate dependsOn references exist
   const stepIds = new Set(steps.map((s) => s.id))
@@ -150,7 +152,19 @@ export function normalizeExecutionPlan(input: unknown): ExecutionPlan {
     checkCycle(step.id)
   }
 
-  return { id, title, steps }
+  return { id, title, steps, lowRisk }
+}
+
+function inferLowRiskPlan(raw: Record<string, unknown>, steps: PlanStep[]) {
+  const text = [
+    typeof raw.title === "string" ? raw.title : "",
+    ...steps.flatMap((step) => [step.goal, step.doneWhen ?? "", step.fallback ?? "", ...(step.targetFiles ?? [])]),
+  ].join("\n").toLowerCase()
+  if (steps.length > 3) return false
+  if (steps.some((step) => step.kind === "edit" || step.kind === "gate")) return false
+  if (steps.some((step) => step.executorHint === "subagent" && (step.subagentRole === "debugger" || step.subagentRole === "tester"))) return false
+  if (/\b(delete|remove|migrate|release|deploy|publish|permission|credential|secret|token|env|payment|billing|auth|prod|production|database|schema|destructive|rollback)\b|删除|迁移|发布|部署|权限|凭证|密钥|生产|数据库|破坏/.test(text)) return false
+  return steps.every((step) => step.kind === "inspect" || step.kind === "verify" || step.kind === "document")
 }
 
 function normalizePlanStep(input: unknown, index: number): PlanStep {
@@ -166,8 +180,8 @@ function normalizePlanStep(input: unknown, index: number): PlanStep {
   const dependsOn = normalizeStringArray(raw.dependsOn)
   const doneWhen = typeof raw.doneWhen === "string" ? raw.doneWhen.trim() : ""
   const fallback = typeof raw.fallback === "string" ? raw.fallback.trim() : ""
-  const executorHint = normalizeExecutorHint(raw.executorHint)
-  const subagentRole = normalizeSubagentRole(raw.subagentRole)
+  const subagentRole = normalizeSubagentRole(raw.subagentRole) ?? inferSubagentRole(goal, kind, doneWhen, fallback)
+  const executorHint = normalizeExecutorHint(raw.executorHint) ?? (subagentRole ? "subagent" : inferExecutorHint(goal, kind, doneWhen, fallback))
   return {
     id,
     goal,
@@ -195,6 +209,32 @@ function normalizeSubagentRole(value: unknown): PlanStep["subagentRole"] | undef
   return value === "summary" || value === "explorer" || value === "reviewer" || value === "debugger" || value === "tester" || value === "docs_researcher"
     ? value
     : undefined
+}
+
+function inferSubagentRole(goal: string, kind: PlanStepKind, doneWhen: string, fallback: string): PlanStep["subagentRole"] | undefined {
+  const text = `${goal}\n${doneWhen}\n${fallback}`.toLowerCase()
+  if (/\bdocs(?:_|-|\s)?researcher\b/.test(text)) return "docs_researcher"
+  if (/\bexplorer\b/.test(text)) return "explorer"
+  if (/\breviewer\b/.test(text)) return "reviewer"
+  if (/\bdebugger\b/.test(text)) return "debugger"
+  if (/\btester\b/.test(text)) return "tester"
+  if (/\bsummary\b/.test(text)) return "summary"
+  if (!/\bdelegate\b|delegate_subagent|subagent|委派|子\s*agent/i.test(text)) return undefined
+  if (kind === "verify" || kind === "gate") return "tester"
+  if (/\breview\b|审查|评审/i.test(text)) return "reviewer"
+  if (/\bdebug\b|排查|定位/i.test(text)) return "debugger"
+  if (/\bdocs?\b|文档|spec/i.test(text)) return "docs_researcher"
+  if (kind === "inspect") return "explorer"
+  return undefined
+}
+
+function inferExecutorHint(goal: string, kind: PlanStepKind, doneWhen: string, fallback: string): PlanStepExecutorHint | undefined {
+  const text = `${goal}\n${doneWhen}\n${fallback}`.toLowerCase()
+  if (/\bdelegate\b|delegate_subagent|subagent|委派|子\s*agent/i.test(text)) return "subagent"
+  if ((kind === "inspect" || kind === "verify" || kind === "gate") && /\bresearch\b|调研|review|审查|评审|debug|排查|定位|test|验证/i.test(text)) {
+    return "subagent"
+  }
+  return undefined
 }
 
 function normalizeStringArray(value: unknown) {
@@ -336,6 +376,8 @@ export function renderPlanToMarkdown(plan: ExecutionPlan): string {
   const lines: string[] = []
   lines.push("<proposed_plan>")
   lines.push(`# ${sanitized.title || "Implementation Plan"}`)
+  lines.push("")
+  lines.push(`- **Low Risk**: ${sanitized.lowRisk ? "true" : "false"}`)
   lines.push("")
   for (const step of sanitized.steps) {
     lines.push(`## Step: ${step.id}`)

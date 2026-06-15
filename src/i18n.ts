@@ -56,8 +56,6 @@ export type SlashErrorCode =
   | "session_switch_requires_name"
   | "session_delete_requires_name"
   | "thinking_requires_value"
-  | "task_checkpoint_requires_text"
-  | "task_resolve_requires_id"
 
 export function languageLabel(language: UiLanguage) {
   return languageLabels[language]
@@ -145,12 +143,6 @@ type UiCopy = {
   skillActivated: (id: string) => string
   noActiveSkillFound: (name: string) => string
   skillRemoved: (ids: string) => string
-  taskTitle: string
-  taskCheckpointCreated: (id: string) => string
-  taskCheckpointResolved: (id: string) => string
-  taskCheckpointNotFound: (id: string) => string
-  noTaskCheckpoints: string
-  activeTaskCheckpoints: string
   languageCurrent: (current: string, options: string) => string
   languageInvalid: (value: string, options: string) => string
   languageUpdated: (value: string, envPath: string) => string
@@ -161,6 +153,7 @@ type UiCopy = {
   cancelledRun: string
   permissionTitle: string
   planApprovalPrompt: string
+  planAutoApproved: string
   promptChangedQuestion: string
   tuiConfiguredTitle: string
   tuiConfiguredLine: (provider: string, model: string, mode: string, status: string, language: string) => string
@@ -173,6 +166,8 @@ type UiCopy = {
   elapsedLabel: string
   queuedNextLabel: string
   metricsLabel: string
+  goalPanelSummary: (status: string, iteration: number, activePlanId?: string) => string
+  goalPanelDetail: (objective: string, blocker?: string) => string
   typeCancelHint: string
   welcomeTitle: string
   welcomeOverview: (mode: string, provider: string, model: string) => string
@@ -236,6 +231,7 @@ type UiCopy = {
   timelineThoughtDone: (elapsed: number) => string
   timelineAnswer: string
   timelineToolRunning: (tool: string, elapsed: string) => string
+  timelineGoalLifecycle: (phase: string, status: string, objective: string, iteration: number, activePlanId?: string, blocker?: string) => string
   timelineMetricsBody: (input: {
     provider: string
     model: string
@@ -258,6 +254,26 @@ type UiCopy = {
 }
 
 function buildEnglishCopy(): UiCopy {
+  const goalStatusName = (status: string) => ({
+    defining: "defining",
+    planning: "planning",
+    executing: "executing",
+    reviewing: "reviewing",
+    paused: "paused",
+    blocked: "blocked",
+    completed: "completed",
+  })[status] ?? status
+  const goalPhaseName = (phase: string) => ({
+    started: "started",
+    definition: "definition",
+    planning: "planning",
+    executing: "executing",
+    reviewing: "reviewing",
+    paused: "paused",
+    blocked: "blocked",
+    completed: "completed",
+    cleared: "cleared",
+  })[phase] ?? phase
   return {
     helpTitle: "Help",
     helpText: [
@@ -274,12 +290,13 @@ function buildEnglishCopy(): UiCopy {
       "  /thinking on|off        enable or disable model thinking",
       "  /lang <code>            set UI language: en, zh, ja, fr, ko, de",
       "  /settings               show current session settings",
+      "  /goal <objective>       start or replace the active goal",
+      "  /goal status            show the active goal state",
+      "  /goal pause|resume      pause or resume automatic goal continuation",
+      "  /goal clear             clear the active goal",
       "  /sessions               list saved sessions",
       "  /session switch <id>    switch to another session",
       "  /session delete <id>    archive and delete a session",
-      "  /task                   list active task checkpoints",
-      "  /task checkpoint <text> save a cross-session task checkpoint",
-      "  /task resolve <id>      resolve and remove a task checkpoint",
       "  //text                  send /text as a normal prompt",
     ].join("\n"),
     webSearchTitle: "Web Search",
@@ -319,8 +336,6 @@ function buildEnglishCopy(): UiCopy {
       session_switch_requires_name: "/session switch requires a session id",
       session_delete_requires_name: "/session delete requires a session id",
       thinking_requires_value: "/thinking requires on or off",
-      task_checkpoint_requires_text: "/task checkpoint requires a description",
-      task_resolve_requires_id: "/task resolve requires a checkpoint id",
     })[code],
     modelSet: (model) => `Model set to ${model}`,
     providerUnknown: (provider, available) => `Unknown provider: ${provider}. Available providers: ${available}`,
@@ -338,12 +353,6 @@ function buildEnglishCopy(): UiCopy {
     skillActivated: (id) => `Skill active: ${id}`,
     noActiveSkillFound: (name) => `No active skill found: ${name}`,
     skillRemoved: (ids) => `Skill removed: ${ids}`,
-    taskTitle: "Task",
-    taskCheckpointCreated: (id) => `Task checkpoint saved (${id}).`,
-    taskCheckpointResolved: (id) => `Task checkpoint resolved: ${id}`,
-    taskCheckpointNotFound: (id) => `Task checkpoint not found: ${id}`,
-    noTaskCheckpoints: "No active task checkpoints.",
-    activeTaskCheckpoints: "Active task checkpoints:",
     languageCurrent: (current, options) => `Current UI language: ${current}\nAvailable: ${options}`,
     languageInvalid: (value, options) => `Unsupported language: ${value}. Available: ${options}`,
     languageUpdated: (value, envPath) => `UI language set to ${value}. Saved to ${envPath}`,
@@ -353,7 +362,7 @@ function buildEnglishCopy(): UiCopy {
       `thinking: ${thinking ? "on" : "off"}`,
       `effort: ${effort}`,
       `language: ${language}`,
-      "cache: every-step",
+      "cache: enabled",
       `maxTokens: ${maxTokens}`,
       `maxSteps: ${maxSteps}`,
       `skills: ${skills}`,
@@ -366,6 +375,7 @@ function buildEnglishCopy(): UiCopy {
     cancelledRun: "Cancelling current run...",
     permissionTitle: "Permission Required",
     planApprovalPrompt: "[Plan] [A]pprove & execute  [R]eject  [E]dit plan  [N]ew prompt [A]: ",
+    planAutoApproved: "Low-risk plan detected. Auto-approving and executing...",
     promptChangedQuestion: "What would you like changed? ",
     tuiConfiguredTitle: "TUI Configured",
     tuiConfiguredLine: (provider, model, mode, status, language) => `provider: ${provider}  ·  model: ${model}  ·  mode: ${mode}  ·  language: ${language}  ·  status: ${status}`,
@@ -378,12 +388,14 @@ function buildEnglishCopy(): UiCopy {
     elapsedLabel: "Elapsed",
     queuedNextLabel: "Queued Next",
     metricsLabel: "Metrics",
+    goalPanelSummary: (status, iteration, activePlanId) => `Goal: ${goalStatusName(status)}  ·  iter: ${iteration}  ·  plan: ${activePlanId ?? "none"}`,
+    goalPanelDetail: (objective, blocker) => blocker ? `Objective: ${objective}  ·  blocker: ${blocker}` : `Objective: ${objective}`,
     typeCancelHint: "Type /cancel to stop execution",
     welcomeTitle: "EasyCode TUI",
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
     welcomeSession: (session, logger, status, language) => `session=${session} logger=${logger} language=${language} status=${status}`,
     welcomeRoot: (root) => `root=${root}`,
-    welcomeCommands: "/help /settings /sessions /session /model /skill /image /thinking /effort /lang /cancel",
+    welcomeCommands: "/help /settings /goal /sessions /session /model /skill /image /thinking /effort /lang /cancel",
     welcomeProjectRoot: "Project Root:",
     welcomeAgent: "AI Agent:",
     welcomeRunMode: "Run Mode:",
@@ -391,7 +403,8 @@ function buildEnglishCopy(): UiCopy {
     welcomeSlashCommands: "Slash Commands:",
     welcomeCommandLines: [
       "   /help      Show help details      /settings  View active settings",
-      "   /sessions  List saved sessions    /session   Switch or delete sessions",
+      "   /goal      Manage one active goal /sessions  List saved sessions",
+      "   /session   Switch or delete sessions",
       "   /model     Change active model    /skill     Manage skills",
       "   /image     Attach vision input    /lang      Change UI language",
       "   /cancel    Stop active execution",
@@ -447,6 +460,7 @@ function buildEnglishCopy(): UiCopy {
     timelineThoughtDone: (elapsed) => `  Thought for ${elapsed}s\n`,
     timelineAnswer: "● Answer",
     timelineToolRunning: (tool, elapsed) => `  … ${tool} still running after ${elapsed}\n`,
+    timelineGoalLifecycle: (phase, status, objective, iteration, activePlanId, blocker) => `● Goal ${goalPhaseName(phase)} status=${goalStatusName(status)}, iteration=${iteration}, objective=${JSON.stringify(objective)}, plan=${activePlanId ?? "none"}${blocker ? `, blocker=${JSON.stringify(blocker)}` : ""}`,
     timelineMetricsBody: ({ provider, model, calls, latency, ttft, speed, inputTokens, cached, miss, hitRate, outputTokens, reasoning, total, effectiveCost, cacheHitRate, cacheMissRate, outputRate }) => [
       `  provider ${provider}${model} · calls=${calls} · latency=${latency} · ttft=${ttft} · output_rate=${speed}`,
       `  usage input=${inputTokens} cached=${cached} miss=${miss} hit_rate=${hitRate} output=${outputTokens}${reasoning}${total}`,
@@ -492,12 +506,13 @@ const copies: Record<UiLanguage, UiCopy> = {
       "  /thinking on|off        开启或关闭思考",
       "  /lang <code>            设置界面语言：en、zh、ja、fr、ko、de",
       "  /settings               查看当前会话设置",
+      "  /goal <objective>       启动或替换当前 goal",
+      "  /goal status            查看当前 goal 状态",
+      "  /goal pause|resume      暂停或恢复 goal 自动续跑",
+      "  /goal clear             清空当前 goal",
       "  /sessions               查看保存的会话",
       "  /session switch <id>    切换到其他会话",
       "  /session delete <id>    归档并删除一个会话",
-      "  /task                   查看活跃任务检查点",
-      "  /task checkpoint <text> 保存跨会话任务检查点",
-      "  /task resolve <id>      完成并移除任务检查点",
       "  //text                  把 /text 当普通提示词发送",
     ].join("\n"),
     startingNewSession: (name) => `开始新会话：${name}`,
@@ -524,8 +539,6 @@ const copies: Record<UiLanguage, UiCopy> = {
       session_switch_requires_name: "/session switch 需要会话 id",
       session_delete_requires_name: "/session delete 需要会话 id",
       thinking_requires_value: "/thinking 需要 on 或 off",
-      task_checkpoint_requires_text: "/task checkpoint 需要一段描述文字",
-      task_resolve_requires_id: "/task resolve 需要检查点 id",
     })[code],
     modelSet: (model) => `模型已切换为 ${model}`,
     providerUnknown: (provider, available) => `未知 provider：${provider}。可用项：${available}`,
@@ -543,12 +556,6 @@ const copies: Record<UiLanguage, UiCopy> = {
     skillActivated: (id) => `技能已启用：${id}`,
     noActiveSkillFound: (name) => `当前未启用该技能：${name}`,
     skillRemoved: (ids) => `已移除技能：${ids}`,
-    taskTitle: "任务",
-    taskCheckpointCreated: (id) => `任务检查点已保存（${id}）。`,
-    taskCheckpointResolved: (id) => `任务检查点已完成：${id}`,
-    taskCheckpointNotFound: (id) => `未找到任务检查点：${id}`,
-    noTaskCheckpoints: "没有活跃的任务检查点。",
-    activeTaskCheckpoints: "活跃任务检查点：",
     languageCurrent: (current, options) => `当前界面语言：${current}\n可选：${options}`,
     languageInvalid: (value, options) => `不支持的语言：${value}。可选：${options}`,
     languageUpdated: (value, envPath) => `界面语言已切换为 ${value}，并保存到 ${envPath}`,
@@ -558,7 +565,7 @@ const copies: Record<UiLanguage, UiCopy> = {
       `thinking: ${thinking ? "on" : "off"}`,
       `effort: ${effort}`,
       `language: ${language}`,
-      "cache: every-step",
+      "cache: enabled",
       `maxTokens: ${maxTokens}`,
       `maxSteps: ${maxSteps}`,
       `skills: ${skills}`,
@@ -571,6 +578,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     cancelledRun: "正在取消当前运行...",
     permissionTitle: "权限确认",
     planApprovalPrompt: "[计划] [A]批准并执行  [R]拒绝  [E]修改计划  [N]新提示 [A]: ",
+    planAutoApproved: "检测到简单/低风险任务计划，自动批准并执行。",
     promptChangedQuestion: "你希望修改什么？",
     tuiConfiguredTitle: "TUI 已更新",
     tuiConfiguredLine: (provider, model, mode, status, language) => `provider: ${provider}  ·  model: ${model}  ·  mode: ${mode}  ·  language: ${language}  ·  status: ${status}`,
@@ -581,12 +589,14 @@ const copies: Record<UiLanguage, UiCopy> = {
     elapsedLabel: "耗时",
     queuedNextLabel: "下一条",
     metricsLabel: "指标",
+    goalPanelSummary: (status, iteration, activePlanId) => `Goal：${({ defining: "定义中", planning: "规划中", executing: "执行中", reviewing: "复核中", paused: "已暂停", blocked: "已阻塞", completed: "已完成" }[status] ?? status)}  ·  轮次：${iteration}  ·  计划：${activePlanId ?? "none"}`,
+    goalPanelDetail: (objective, blocker) => blocker ? `目标：${objective}  ·  阻塞：${blocker}` : `目标：${objective}`,
     typeCancelHint: "输入 /cancel 可停止执行",
     welcomeTitle: "EasyCode TUI",
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
     welcomeSession: (session, logger, status, language) => `session=${session} logger=${logger} language=${language} status=${status}`,
     welcomeRoot: (root) => `root=${root}`,
-    welcomeCommands: "/help /settings /sessions /session /model /skill /image /thinking /effort /lang /cancel",
+    welcomeCommands: "/help /settings /goal /sessions /session /model /skill /image /thinking /effort /lang /cancel",
     welcomeProjectRoot: "项目目录：",
     welcomeAgent: "AI Agent：",
     welcomeRunMode: "运行模式：",
@@ -594,7 +604,8 @@ const copies: Record<UiLanguage, UiCopy> = {
     welcomeSlashCommands: "Slash 命令：",
     welcomeCommandLines: [
       "   /help      查看帮助            /settings  查看当前设置",
-      "   /sessions  查看保存会话        /session   切换或删除会话",
+      "   /goal      管理当前 goal        /sessions  查看保存会话",
+      "   /session   切换或删除会话",
       "   /model     切换当前模型        /skill     管理技能",
       "   /image     附加图片输入        /lang      切换界面语言",
       "   /cancel    中止当前执行",
@@ -650,6 +661,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     timelineThoughtDone: (elapsed) => `  思考了 ${elapsed}s\n`,
     timelineAnswer: "● 回复",
     timelineToolRunning: (tool, elapsed) => `  … ${tool} 运行中，已耗时 ${elapsed}\n`,
+    timelineGoalLifecycle: (phase, status, objective, iteration, activePlanId, blocker) => `● Goal ${({ started: "已启动", definition: "定义阶段", planning: "规划阶段", executing: "执行阶段", reviewing: "复核阶段", paused: "已暂停", blocked: "已阻塞", completed: "已完成", cleared: "已清空" }[phase] ?? phase)} status=${({ defining: "定义中", planning: "规划中", executing: "执行中", reviewing: "复核中", paused: "已暂停", blocked: "已阻塞", completed: "已完成" }[status] ?? status)}, 轮次=${iteration}, 目标=${JSON.stringify(objective)}, 计划=${activePlanId ?? "none"}${blocker ? `, 阻塞=${JSON.stringify(blocker)}` : ""}`,
     timelineMetricsBody: ({ provider, model, calls, latency, ttft, speed, inputTokens, cached, miss, hitRate, outputTokens, reasoning, total, effectiveCost, cacheHitRate, cacheMissRate, outputRate }) => [
       `  provider ${provider}${model} · calls=${calls} · latency=${latency} · ttft=${ttft} · output_rate=${speed}`,
       `  usage input=${inputTokens} cached=${cached} miss=${miss} hit_rate=${hitRate} output=${outputTokens}${reasoning}${total}`,
@@ -688,6 +700,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     cancelledRun: "現在の実行をキャンセル中...",
     permissionTitle: "権限確認",
     planApprovalPrompt: "[Plan] [A]承認して実行  [R]拒否  [E]編集  [N]新しいプロンプト [A]: ",
+    planAutoApproved: "低リスクな計画が検出されました。自動承認して実行します...",
     promptChangedQuestion: "何を変更しますか？",
     tuiConfiguredTitle: "TUI 設定更新",
     sessionStartedTitle: "セッション開始",
@@ -773,6 +786,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     cancellingRun: "Annulation de l'exécution en cours...",
     cancelledRun: "Annulation de l'exécution en cours...",
     permissionTitle: "Autorisation requise",
+    planAutoApproved: "Plan à faible risque détecté. Approbation automatique et exécution...",
     promptChangedQuestion: "Que souhaitez-vous modifier ?",
     tuiConfiguredTitle: "TUI configurée",
     sessionStartedTitle: "Session démarrée",
@@ -854,6 +868,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     cancellingRun: "현재 실행을 취소하는 중...",
     cancelledRun: "현재 실행을 취소하는 중...",
     permissionTitle: "권한 확인",
+    planAutoApproved: "낮은 위험도의 계획이 감지되었습니다. 자동 승인 및 실행 중...",
     promptChangedQuestion: "무엇을 변경하시겠습니까?",
     tuiConfiguredTitle: "TUI 설정됨",
     sessionStartedTitle: "세션 시작됨",
@@ -935,6 +950,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     cancellingRun: "Aktuellen Lauf wird abgebrochen...",
     cancelledRun: "Aktuellen Lauf wird abgebrochen...",
     permissionTitle: "Berechtigung erforderlich",
+    planAutoApproved: "Plan mit geringem Risiko erkannt. Automatische Genehmigung und Ausführung...",
     promptChangedQuestion: "Was möchten Sie ändern?",
     tuiConfiguredTitle: "TUI konfiguriert",
     sessionStartedTitle: "Sitzung gestartet",

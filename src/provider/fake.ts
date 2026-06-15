@@ -52,25 +52,424 @@ export class FakeProvider implements Provider {
       }
     }
 
-    const prompt = input.prompt.toLowerCase()
+    const userPrompts = input.providerMessages
+      .filter((msg) => msg.role === "user")
+      .map((msg) => msg.content)
+      .join("\n")
+      .toLowerCase()
+    const currentPrompt = input.prompt.toLowerCase()
+    const prompt = `${userPrompts}\n${currentPrompt}`.toLowerCase()
+
+    if (input.prompt === "Inspect src/add.ts for goal-delegated-e2e") {
+      yield { type: "text_delta", text: "Found export function add in src/add.ts; it currently returns a - b." }
+      yield { type: "done" }
+      return
+    }
+
+    if (input.prompt === "Review goal-delegated-e2e completion state") {
+      yield { type: "text_delta", text: "Reviewer check: delegated evidence is complete, no extra bounded fix plan is needed for this synthetic goal." }
+      yield { type: "done" }
+      return
+    }
+
+    if (input.prompt === "Inspect src/add.ts for goal-multi-slice-e2e slice 1") {
+      yield { type: "text_delta", text: "Slice 1 explorer: src/add.ts exports add(a, b) and currently returns a - b." }
+      yield { type: "done" }
+      return
+    }
+
+    if (input.prompt === "Inspect src/sub.ts for goal-multi-slice-e2e slice 2") {
+      yield { type: "text_delta", text: "Slice 2 explorer: src/sub.ts exports sub(a, b) and currently returns a - b." }
+      yield { type: "done" }
+      return
+    }
+
+    if (input.prompt === "Review goal-multi-slice-e2e slice 1 completion state") {
+      yield { type: "text_delta", text: "Reviewer check: slice 1 is complete, but the goal still needs one more bounded slice covering src/sub.ts before completion." }
+      yield { type: "done" }
+      return
+    }
+
+    if (input.prompt === "Review goal-multi-slice-e2e slice 2 completion state") {
+      yield { type: "text_delta", text: "Reviewer check: slice 2 completed the remaining acceptance criteria, and no further bounded plan is required." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-delegated-e2e") && currentPrompt.includes("before creating any execution plan, define the goal acceptance contract.")) {
+      if (!hasToolResult(input.messages, "goal_set_acceptance")) {
+        yield {
+          type: "tool_call",
+          call: call("goal_set_acceptance", {
+            acceptanceCriteria: [
+              "The delegated inspection slice completes safely and captures the current behavior of src/add.ts.",
+            ],
+            completionChecks: [
+              "Verify the delegated result before planning the next slice or completing the goal.",
+            ],
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal acceptance contract recorded." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-multi-slice-e2e") && currentPrompt.includes("before creating any execution plan, define the goal acceptance contract.")) {
+      if (!hasToolResult(input.messages, "goal_set_acceptance")) {
+        yield {
+          type: "tool_call",
+          call: call("goal_set_acceptance", {
+            acceptanceCriteria: [
+              "The goal captures the current behavior of both src/add.ts and src/sub.ts through bounded delegated inspection slices.",
+            ],
+            completionChecks: [
+              "After each slice, run a bounded reviewer pass before deciding whether another plan is needed or the goal can complete.",
+            ],
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal acceptance contract recorded for the multi-slice goal." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-delegated-e2e") && currentPrompt.includes("the latest plan slice has finished.")) {
+      const results = toolResults(input.messages)
+      const reviewerCount = results.filter((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "reviewer").length
+      if (reviewerCount === 0) {
+        yield {
+          type: "tool_call",
+          call: call("delegate_subagent", {
+            role: "reviewer",
+            task: "Review goal-delegated-e2e completion state",
+            success_criteria: "State whether the goal can complete now or whether another bounded plan is still required.",
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      if (reviewerCount === 1) {
+        yield { type: "tool_call", call: call("goal_complete", { summary: "goal-delegated-e2e completed after delegated inspection." }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal delegated e2e review finished." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-multi-slice-e2e") && currentPrompt.includes("the latest plan slice has finished.")) {
+      const results = toolResults(input.messages)
+      const reviewerCount = results.filter((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "reviewer").length
+      const stepCompleteCount = results.filter((part) => part.toolName === "plan_step_complete" && part.status === "succeeded").length
+      if (stepCompleteCount === 1 && reviewerCount === 0) {
+        yield {
+          type: "tool_call",
+          call: call("delegate_subagent", {
+            role: "reviewer",
+            task: "Review goal-multi-slice-e2e slice 1 completion state",
+            success_criteria: "State whether the goal needs another bounded plan after slice 1.",
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      if (stepCompleteCount === 1 && reviewerCount === 1) {
+        const planMarkdown = [
+          "# Goal multi-slice e2e plan 2",
+          "- Research Phase: delegate explorer to inspect src/sub.ts.",
+          "- Delegation Phase: collect the explorer findings for the second slice.",
+          "- Review Phase: verify whether both acceptance targets are now satisfied.",
+          "```json",
+          JSON.stringify({
+            id: "plan_goal_multi_slice_e2e_2",
+            title: "Goal multi-slice e2e plan 2",
+            lowRisk: true,
+            steps: [
+              {
+                id: "step_1",
+                goal: "Delegate explorer to inspect src/sub.ts for goal-multi-slice-e2e",
+                kind: "inspect",
+                doneWhen: "The explorer has reported the exported function and current operator in src/sub.ts.",
+              },
+            ],
+          }, null, 2),
+          "```",
+        ].join("\n")
+        yield { type: "tool_call", call: call("plan_exit", { markdown: planMarkdown }) }
+        yield { type: "done" }
+        return
+      }
+      if (stepCompleteCount === 2 && reviewerCount === 1) {
+        yield {
+          type: "tool_call",
+          call: call("delegate_subagent", {
+            role: "reviewer",
+            task: "Review goal-multi-slice-e2e slice 2 completion state",
+            success_criteria: "State whether the multi-slice goal can complete now.",
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      if (stepCompleteCount === 2 && reviewerCount === 2) {
+        yield { type: "tool_call", call: call("goal_complete", { summary: "goal-multi-slice-e2e completed after two delegated inspection slices." }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal multi-slice e2e review finished." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-delegated-e2e") && input.prompt.includes("call goal_set_acceptance")) {
+      if (hasToolResult(input.messages, "goal_set_acceptance")) {
+        yield { type: "text_delta", text: "Goal acceptance recorded for goal-delegated-e2e." }
+        yield { type: "done" }
+        return
+      }
+      yield {
+        type: "tool_call",
+        call: call("goal_set_acceptance", {
+          acceptanceCriteria: ["The delegated inspect slice completes safely and captures the current behavior of src/add.ts."],
+          completionChecks: ["Verify the delegated result before planning the next slice or completing the goal."],
+        }),
+      }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-multi-slice-e2e") && input.prompt.includes("call goal_set_acceptance")) {
+      if (hasToolResult(input.messages, "goal_set_acceptance")) {
+        yield { type: "text_delta", text: "Goal acceptance recorded for goal-multi-slice-e2e." }
+        yield { type: "done" }
+        return
+      }
+      yield {
+        type: "tool_call",
+        call: call("goal_set_acceptance", {
+          acceptanceCriteria: ["The delegated inspect slices capture the current behavior of src/add.ts and src/sub.ts."],
+          completionChecks: ["Review each completed slice before replanning or completing the goal."],
+        }),
+      }
+      yield { type: "done" }
+      return
+    }
+
+    const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
+    if (prompt.includes("plan-exit") && !planExitAlreadyRan && input.tools.some((tool) => tool.name === "plan_exit")) {
+      yield { type: "tool_call", call: call("plan_exit", { markdown: "# Plan\n- Fix the failing test." }) }
+      yield { type: "done" }
+      return
+    }
+
+    if ((prompt.includes("low-risk-plan") || prompt.includes("high-risk-plan")) && !planExitAlreadyRan && input.tools.some((tool) => tool.name === "plan_exit")) {
+      const lowRisk = prompt.includes("low-risk-plan")
+      const planMarkdown = [
+        lowRisk ? "# Low-risk fake plan" : "# High-risk fake plan",
+        "",
+        "```json",
+        JSON.stringify({
+          id: lowRisk ? "plan_low_risk_fake" : "plan_high_risk_fake",
+          title: lowRisk ? "Low-risk fake plan" : "High-risk fake plan",
+          lowRisk,
+          steps: [
+            {
+              id: "step_1",
+              goal: lowRisk ? "Inspect src/add.ts and report behavior" : "Edit src/add.ts to fix behavior",
+              kind: lowRisk ? "inspect" : "edit",
+              doneWhen: lowRisk ? "Behavior has been reported." : "Behavior has been fixed.",
+            },
+          ],
+        }, null, 2),
+        "```",
+      ].join("\n")
+      yield { type: "tool_call", call: call("plan_exit", { markdown: planMarkdown }) }
+      yield { type: "done" }
+      return
+    }
+
     if (prompt.includes("summarize conversation for context compaction")) {
       yield { type: "text_delta", text: "<summary>\nFake compact summary.\n</summary>" }
       yield { type: "done" }
       return
     }
+
+    if (input.mode === "plan") {
+      if (prompt.includes("goal-delegated-e2e") && !hasToolResult(input.messages, "plan_exit")) {
+        const planMarkdown = [
+          "# Goal delegated e2e plan",
+          "- Research Phase: delegate explorer to inspect src/add.ts.",
+          "- Delegation Phase: collect the explorer findings.",
+          "- Review Phase: complete the goal after consuming the delegated result.",
+          "```json",
+          JSON.stringify({
+            id: "plan_goal_delegated_e2e",
+            title: "Goal delegated e2e plan",
+            lowRisk: true,
+            steps: [
+              {
+                id: "step_1",
+                goal: "Delegate explorer to inspect src/add.ts for goal-delegated-e2e",
+                kind: "inspect",
+                doneWhen: "The explorer has reported the exported function and current operator.",
+              },
+            ],
+          }, null, 2),
+          "```",
+        ].join("\n")
+        yield { type: "tool_call", call: call("plan_exit", { markdown: planMarkdown }) }
+        yield { type: "done" }
+        return
+      }
+      if (prompt.includes("goal-multi-slice-e2e") && !hasToolResult(input.messages, "plan_exit")) {
+        const planMarkdown = [
+          "# Goal multi-slice e2e plan 1",
+          "- Research Phase: delegate explorer to inspect src/add.ts.",
+          "- Delegation Phase: collect the explorer findings for the first slice.",
+          "- Review Phase: verify whether another bounded slice is still required.",
+          "```json",
+          JSON.stringify({
+            id: "plan_goal_multi_slice_e2e_1",
+            title: "Goal multi-slice e2e plan 1",
+            lowRisk: true,
+            steps: [
+              {
+                id: "step_1",
+                goal: "Delegate explorer to inspect src/add.ts for goal-multi-slice-e2e",
+                kind: "inspect",
+                doneWhen: "The explorer has reported the exported function and current operator in src/add.ts.",
+              },
+            ],
+          }, null, 2),
+          "```",
+        ].join("\n")
+        yield { type: "tool_call", call: call("plan_exit", { markdown: planMarkdown }) }
+        yield { type: "done" }
+        return
+      }
+      const editAlreadyAttempted = hasToolResult(input.messages, "edit")
+      if (prompt.includes("readonly-violation") && !editAlreadyAttempted) {
+        yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "-", newString: "+" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: `<proposed_plan>\n# Plan\n- Inspect the code.\n- Propose the smallest safe change.\n</proposed_plan>` }
+      yield { type: "usage", inputTokens: 10, outputTokens: 20 }
+      yield { type: "done" }
+      return
+    }
+
+    if ((prompt.includes("low-risk-plan") || prompt.includes("high-risk-plan")) && currentPrompt.includes("proceed with the approved plan")) {
+      if (!hasToolResult(input.messages, "plan_step_complete")) {
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "fake plan step complete" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Fake plan executed." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-delegated-e2e")) {
+      const results = toolResults(input.messages)
+      const delegateDone = results.some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded")
+      const stepDone = results.some((part) => part.toolName === "plan_step_complete" && part.status === "succeeded")
+      const goalDone = results.some((part) => part.toolName === "goal_complete" && part.status === "succeeded")
+      if (!delegateDone) {
+        yield {
+          type: "tool_call",
+          call: call("delegate_subagent", {
+            role: "explorer",
+            task: "Inspect src/add.ts for goal-delegated-e2e",
+            success_criteria: "Identify the exported function and current operator.",
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      if (!stepDone) {
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "delegated inspection complete" }) }
+        yield { type: "done" }
+        return
+      }
+      if (!goalDone) {
+        yield { type: "text_delta", text: "Goal delegated e2e execution slice finished." }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal delegated e2e finished." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-multi-slice-e2e")) {
+      const results = toolResults(input.messages)
+      const stepCompleteCount = results.filter((part) => part.toolName === "plan_step_complete" && part.status === "succeeded").length
+      const explorerCount = results.filter((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "explorer").length
+      const goalDone = results.some((part) => part.toolName === "goal_complete" && part.status === "succeeded")
+      if (stepCompleteCount === 0) {
+        if (explorerCount === 0) {
+          yield {
+            type: "tool_call",
+            call: call("delegate_subagent", {
+              role: "explorer",
+              task: "Inspect src/add.ts for goal-multi-slice-e2e slice 1",
+              success_criteria: "Identify the exported function and current operator in src/add.ts.",
+            }),
+          }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-multi-slice-e2e slice 1 complete" }) }
+        yield { type: "done" }
+        return
+      }
+      if (stepCompleteCount === 1) {
+        if (explorerCount === 1) {
+          yield {
+            type: "tool_call",
+            call: call("delegate_subagent", {
+              role: "explorer",
+              task: "Inspect src/sub.ts for goal-multi-slice-e2e slice 2",
+              success_criteria: "Identify the exported function and current operator in src/sub.ts.",
+            }),
+          }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-multi-slice-e2e slice 2 complete" }) }
+        yield { type: "done" }
+        return
+      }
+      if (!goalDone) {
+        yield { type: "text_delta", text: "Goal multi-slice e2e execution slice finished." }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal multi-slice e2e finished." }
+      yield { type: "done" }
+      return
+    }
+
     if (prompt.includes("loop")) {
       yield { type: "text_delta", text: "Still working." }
       yield { type: "tool_call", call: call("read", { filePath: "src/add.ts" }) }
       yield { type: "done" }
       return
     }
-    if (prompt.includes("delayed")) {
+    if (currentPrompt.includes("delayed")) {
       await new Promise((resolve) => setTimeout(resolve, 500))
       yield { type: "text_delta", text: "Delayed done." }
       yield { type: "done" }
       return
     }
-    if (prompt.includes("queued-ok")) {
+    if (currentPrompt.includes("queued-ok")) {
       yield { type: "text_delta", text: "Queued done." }
       yield { type: "done" }
       return
@@ -127,13 +526,6 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
-    if (prompt.includes("active task checkpoint eval")) {
-      const providerText = input.providerMessages.map((message) => message.content).join("\n")
-      const recalled = providerText.includes("<active_task_checkpoints>") && providerText.includes("Fix the login bug")
-      yield { type: "text_delta", text: recalled ? "Task checkpoint context used." : "Task checkpoint context missing." }
-      yield { type: "done" }
-      return
-    }
     if (prompt.includes("memory recall eval")) {
       const providerText = input.providerMessages.map((message) => message.content).join("\n")
       const recalled = providerText.includes("<project_memory_recall>") && providerText.includes("stale retry flag")
@@ -184,24 +576,6 @@ export class FakeProvider implements Provider {
 }
 \`\`\``,
       }
-      yield { type: "done" }
-      return
-    }
-    const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
-    if (prompt.includes("plan-exit") && !planExitAlreadyRan) {
-      yield { type: "tool_call", call: call("plan_exit", { markdown: "# Plan\n- Fix the failing test." }) }
-      yield { type: "done" }
-      return
-    }
-    if (input.mode === "plan") {
-      const editAlreadyAttempted = hasToolResult(input.messages, "edit")
-      if (prompt.includes("readonly-violation") && !editAlreadyAttempted) {
-        yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "-", newString: "+" }) }
-        yield { type: "done" }
-        return
-      }
-      yield { type: "text_delta", text: `<proposed_plan>\n# Plan\n- Inspect the code.\n- Propose the smallest safe change.\n</proposed_plan>` }
-      yield { type: "usage", inputTokens: 10, outputTokens: 20 }
       yield { type: "done" }
       return
     }
@@ -305,6 +679,31 @@ export class FakeProvider implements Provider {
       }
       yield { type: "text_delta", text: "Task completed." }
       yield { type: "usage", inputTokens: 120, outputTokens: 30 }
+      yield { type: "done" }
+      return
+    }
+    if (currentPrompt.includes("fix the failing test")) {
+      const countKey = "default-fix-the-failing-test"
+      const seen = this.promptCounts.get(countKey) ?? 0
+      this.promptCounts.set(countKey, seen + 1)
+      if (seen === 0) {
+        yield { type: "tool_call", call: call("read", { filePath: "src/add.ts" }) }
+        yield { type: "done" }
+        return
+      }
+      if (seen === 1) {
+        yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "return a - b", newString: "return a + b" }) }
+        yield { type: "done" }
+        return
+      }
+      if (seen === 2) {
+        yield { type: "tool_call", call: call("bash", { command: "bun run test" }) }
+        yield { type: "done" }
+        return
+      }
+      const bash = latestToolResult(input.messages, "bash")
+      yield { type: "text_delta", text: bash?.status === "succeeded" ? "Task passed." : "Task completed with tool feedback." }
+      yield { type: "usage", inputTokens: 100, outputTokens: 20 }
       yield { type: "done" }
       return
     }

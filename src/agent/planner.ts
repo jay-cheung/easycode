@@ -1,10 +1,22 @@
 import type { Provider } from "../provider/types"
 import type { ProviderInputMessage } from "../message"
 import type { ContextManagerLike } from "../context/types"
+import type { ContextLedger, StructuredContextLedger } from "../context"
 import { ledgerRecord } from "./ledger"
 import { ProjectMemoryStore } from "../memory"
 import type { ExecutionPlan, PlanCheckpoint, PlanStepStatus, ReplanReason, StoredExecutionPlan } from "../plans"
 import { createPlanCheckpoint, InvalidExecutionPlanError, nextIncompletePlanStep, normalizeExecutionPlan, saveStructuredPlan } from "../plans"
+
+export const planLedgerSubjects = [
+  "current_plan_id",
+  "current_plan_step",
+  "plan_step_status",
+  "plan_blocker",
+  "plan_verification_target",
+  "plan_last_replan_reason",
+  "plan_step_status_map",
+  "plan_lifecycle_status",
+] as const
 
 export async function askProvider(provider: Provider, prompt: string, systemPrompt?: string): Promise<string> {
   const providerMessages: ProviderInputMessage[] = []
@@ -52,6 +64,7 @@ The JSON format MUST be exactly:
 {
   "id": "plan_${Date.now()}",
   "title": "Short descriptive title of the plan",
+  "lowRisk": false,
   "steps": [
     {
       "id": "step_1",
@@ -68,6 +81,18 @@ The JSON format MUST be exactly:
 }
 
 Use executorHint/subagentRole only for hidden internal execution metadata. The user-visible markdown plan must not mention them directly.
+If a step is a Delegation Phase step, or the markdown explicitly says to delegate or use a subagent role, you MUST set executorHint to "subagent" and set the matching subagentRole.
+Use the named roles consistently:
+- explorer: bounded repository inspection or fact-finding
+- reviewer: bounded code review or regression review
+- debugger: bounded failure diagnosis
+- tester: bounded verification or test execution
+- docs_researcher: bounded docs/spec research
+- summary: context summarization only
+Do not leave delegation steps without executor metadata.
+Always include lowRisk as a boolean:
+- true only for short read-only/review/documentation plans that do not edit files, run risky commands, touch secrets/auth/payment/database/deploy paths, or require debugger/tester execution.
+- false for any edit, shell mutation, release/deploy, permission, credential, payment, database, migration, broad refactor, or uncertain-risk work.
 
 Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`\`\`. Do not output any other text or explanation.`
 
@@ -104,12 +129,14 @@ The JSON format must strictly match:
 {
   "id": "${currentPlan.id}",
   "title": "${currentPlan.title}",
+  "lowRisk": false,
   "steps": [
     ...
   ]
 }
 
 You may keep or revise hidden internal executor metadata (\`executorHint\`, \`subagentRole\`) when it helps execution, but user-visible markdown will not show those fields.
+Always include lowRisk as a boolean. Use false unless the revised remaining work is short, read-only/review/documentation-only, and does not require debugger/tester, risky commands, edits, deploys, credentials, auth, payment, or database work.
 
 Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`\`\`. Do not output any other text or explanation.`
 
@@ -173,66 +200,21 @@ export class PlanTracker {
     await this.syncPlanState(context, root, sessionId, plan, checkpoint)
   }
 
-  static async writeMemoryCheckpoint(
-    root: string,
-    plan: ExecutionPlan,
-    checkpoint: PlanCheckpoint,
-  ): Promise<void> {
-    const store = new ProjectMemoryStore(root)
-    const allRecords = await store.list()
-    const targetTag = `plan_${plan.id}`
-    for (const record of allRecords) {
-      if (record.kind === "task_state" && record.tags.includes(targetTag)) {
-        await store.delete(record.id)
-      }
-    }
-    
-    const completedPhases = plan.steps
-      .filter((step) => checkpoint.stepStatuses[step.id] === "completed")
-      .map((step) => step.id)
-      .join(", ") || "none"
-      
-    const activeStep = checkpoint.currentStepId
-      ? plan.steps.find((step) => step.id === checkpoint.currentStepId)
-      : undefined
-    const nextStepGoal = activeStep ? activeStep.goal : "none"
-    
-    const checkpointText = `Task: ${plan.title || "Implementation"}. Completed phases: ${completedPhases}. Current blocker: ${checkpoint.blocker || "none"}. Next step: ${nextStepGoal}.`
-    
-    await store.add({
-      text: checkpointText,
-      kind: "task_state",
-      tags: ["task", "checkpoint", targetTag],
-      scope: { topics: ["task_checkpoint", plan.id] }
-    })
-  }
-
   static async clearActivePlan(
     context: ContextManagerLike,
     root: string,
     planId: string
   ): Promise<void> {
     const turn = context.state.messages.length
-    const activeSubjects = [
-      "current_plan_id",
-      "current_plan_step",
-      "plan_step_status",
-      "plan_blocker",
-      "plan_verification_target",
-      "plan_last_replan_reason",
-      "plan_step_status_map",
-      "plan_lifecycle_status",
-    ]
+    const activeSubjects = new Set<string>(planLedgerSubjects)
     
     // Transition all active plan records to resolved/archived
     const currentRecords = context.state.ledger?.current || []
-    const nextCurrent = currentRecords.filter(r => 
-      !activeSubjects.includes(r.subject)
-    )
+    const nextCurrent = currentRecords.filter((record) => !activeSubjects.has(record.subject))
     const nextHistory = (context.state.ledger?.history || []).concat(
       currentRecords
-        .filter(r => activeSubjects.includes(r.subject))
-        .map(r => ({ ...r, status: "resolved" as const, updatedAtTurn: turn }))
+        .filter((record) => activeSubjects.has(record.subject))
+        .map((record) => ({ ...record, status: "resolved" as const, updatedAtTurn: turn }))
     )
     context.setLedger({ current: nextCurrent, history: nextHistory })
     
@@ -272,8 +254,16 @@ export class PlanTracker {
     }
     context.updateLedger({ current: records })
     await saveStructuredPlan(root, sessionId, plan.id, plan, checkpoint)
-    await this.writeMemoryCheckpoint(root, plan, checkpoint)
   }
+}
+
+export function stripPlanLedger(ledger: StructuredContextLedger | ContextLedger | undefined): StructuredContextLedger | ContextLedger | undefined {
+  if (!ledger) return ledger
+  const subjects = new Set<string>(planLedgerSubjects)
+  const current = (ledger.current ?? []).filter((record) => !subjects.has(record.subject))
+  const history = (ledger.history ?? []).filter((record) => !subjects.has(record.subject))
+  if (current.length === 0 && history.length === 0) return undefined
+  return { current, history }
 }
 
 function summarizeStepStatuses(stepStatuses: Record<string, PlanStepStatus>) {

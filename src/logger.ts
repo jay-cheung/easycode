@@ -38,6 +38,10 @@ export function createLogger(options: LoggerOptions = {}): Logger {
       transcriptTurn += 1
       appendFileSync(transcriptFilePath, formatTranscriptTurn(transcriptTurn, event, previousTranscriptInput))
       previousTranscriptInput = stringDetail(event.detail?.input)
+      return
+    }
+    if (event.type === "provider" && event.name === "provider.validation_rejected") {
+      appendFileSync(transcriptFilePath, formatTranscriptValidation(event))
     }
   }) as Logger
   logger.filePath = filePath
@@ -83,6 +87,10 @@ function formatTranscriptTurn(turn: number, event: LogEvent, previousInput = "")
     "",
     formatProviderInputText(stringDetail(detail.input)),
     "",
+    "Reasoning",
+    "",
+    stringDetail(detail.reasoningContent) || "(none)",
+    "",
     "Output",
     "",
     "Assistant",
@@ -95,6 +103,25 @@ function formatTranscriptTurn(turn: number, event: LogEvent, previousInput = "")
     cacheSummaryText(detail, previousInput),
     "",
   ].join("\n")
+}
+
+function formatTranscriptValidation(event: LogEvent) {
+  const detail = event.detail ?? {}
+  const attempt = numberDetail(detail.attempt)
+  const maxAttempts = numberDetail(detail.maxAttempts)
+  const shouldRetry = booleanDetail(detail.shouldRetry)
+  const status = shouldRetry ? "rejected, retrying" : "rejected, stopping"
+  const suffix = attempt && maxAttempts ? ` (${attempt}/${maxAttempts})` : attempt ? ` (${attempt})` : ""
+  const lines = [
+    "Validation",
+    "",
+    `${status}${suffix}`,
+  ]
+  const failureText = stringDetail(detail.failureText)
+  if (failureText) lines.push(failureText)
+  const correction = stringDetail(detail.correction)
+  if (correction) lines.push("", "Correction", "", correction)
+  return `${lines.join("\n")}\n\n`
 }
 
 function cacheSummaryText(detail: Record<string, unknown>, previousInput: string) {
@@ -134,6 +161,14 @@ function usageNumber(detail: Record<string, unknown>, key: string) {
 
 function stringDetail(value: unknown) {
   return typeof value === "string" ? value : value === undefined || value === null ? "" : String(value)
+}
+
+function numberDetail(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function booleanDetail(value: unknown) {
+  return typeof value === "boolean" ? value : false
 }
 
 function formatProviderInputText(input: string) {

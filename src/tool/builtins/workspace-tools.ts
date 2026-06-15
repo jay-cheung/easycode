@@ -128,7 +128,7 @@ export function registerWorkspaceTools(registry: ToolRegistry) {
 
   registry.register({
     name: "memory_query",
-    description: "Query structured project memory for cross-session task state, preferences, archived sessions, or repeated failure/workflow notes.",
+    description: "Query structured project memory for preferences, archived sessions, repo facts, or repeated failure/workflow notes.",
     inputSchema: MemoryQueryInput,
     jsonSchema: objectSchema({ query: { type: "string" }, maxResults: { type: "number" } }, ["query"]),
     permission: "read",
@@ -143,11 +143,11 @@ export function registerWorkspaceTools(registry: ToolRegistry) {
 
   registry.register({
     name: "memory_add",
-    description: "Add a short structured project memory record. Use this for durable preferences, repo facts, repeated failures, reusable workflows, or explicit cross-session task checkpoints. Do not store secrets or raw logs.",
+    description: "Add a short structured project memory record. Use this for durable preferences, repo facts, archived session notes, repeated failures, or reusable workflows. Do not store secrets or raw logs.",
     inputSchema: MemoryAddInput,
     jsonSchema: objectSchema({
       text: { type: "string" },
-      kind: { type: "string", description: "note, session_archive, preference, repo_fact, failure_pattern, successful_workflow, or task_state" },
+      kind: { type: "string", description: "note, session_archive, preference, repo_fact, failure_pattern, or successful_workflow" },
       tags: { type: "array", items: { type: "string" } },
       scope: {
         type: "object",
@@ -172,11 +172,11 @@ export function registerWorkspaceTools(registry: ToolRegistry) {
 
   registry.register({
     name: "memory_promote",
-    description: "Promote one durable cross-session lesson into project memory. Use this only for stable preferences, reusable repo facts, recurring failure diagnoses, successful workflows, or explicit task checkpoints. Do not store raw logs, transient chatter, or long narratives.",
+    description: "Promote one durable cross-session lesson into project memory. Use this only for stable preferences, reusable repo facts, recurring failure diagnoses, or successful workflows. Do not store raw logs, transient chatter, or long narratives.",
     inputSchema: MemoryPromoteInput,
     jsonSchema: objectSchema({
       text: { type: "string", description: "One concise durable lesson, under 400 characters." },
-      kind: { type: "string", description: "preference, repo_fact, failure_pattern, successful_workflow, or task_state" },
+      kind: { type: "string", description: "preference, repo_fact, failure_pattern, or successful_workflow" },
       tags: { type: "array", items: { type: "string" } },
       scope: {
         type: "object",

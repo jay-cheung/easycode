@@ -28,11 +28,9 @@
 - `/lang <code>` updates the fixed CLI/TUI language for the current session and persists the default in `~/.easycode/.env`.
 - `/session switch <id>` switches the active interactive session and reloads that session's saved settings.
 - `/session delete <id>` archives a short summary into project memory, deletes the session file, logs, and saved plans, and keeps the interactive shell on a valid session.
-- `/task checkpoint <text>` stores a durable `task_state` checkpoint, `/task` or `/task list` shows active checkpoints, and `/task resolve <id>` removes a resolved checkpoint.
 - Project memory records in `.easycode/memory.json` are structured, backward-compatible, and queryable through `memory_query`.
 - Continuation-style prompts such as `继续`, `上次`, `resume`, or `continue` can trigger bounded automatic project-memory recall.
 - `memory_promote` stores only promotable durable lesson kinds and rejects oversized narrative memory payloads.
-- Interactive session startup and `/session switch <id>` inject active `task_state` checkpoints into runtime context as `<active_task_checkpoints>` without merging them into user text.
 - Memory retrieval applies ranking refinements that filter trigger-word noise, boost matching active-file scope, and deduplicate repeated records before bounded recall.
 - Non-logger interactive sessions render thinking/tool/answer timeline blocks.
 - `--logger` sessions keep structured logs and do not render the timeline.
@@ -43,7 +41,7 @@
 - Skills expose title/description before full content is requested.
 - Context compaction preserves summary plus the most recent three user turns by default.
 - Context compaction summaries keep the latest user language, respect the active summary token budget, preserve the current diagnostic hypothesis when still supported, and avoid replaying raw tool noise by default.
-- Active structured plans persist their current step, step-status map, lifecycle status, and task checkpoint without requiring raw message-history reconstruction.
+- Active structured plans persist their current step, step-status map, and lifecycle status during the live session without requiring raw message-history reconstruction.
 - Active structured plans replan only on explicit revision/scope-change prompts; ordinary status or progress questions do not rewrite the saved plan.
 - MCP stays default-allowed, and WebSearch is default-allowed with structured citations, logger events, eval fixtures, and Tavily-only live search when configured.
 - `web_fetch` stays default-allowed for bounded readonly HTTP/HTTPS fetches with structured citation metadata, and supported readonly `curl` usage is redirected to that internal tool instead of bash.

@@ -1,7 +1,7 @@
 import path from "node:path"
 import { z } from "zod"
 import { easycodeDir } from "../easycode-path"
-import { getTlsConfig } from "../tls-config"
+import { getTlsConfig, type TlsConfig } from "../tls-config"
 import { clampLimit, formatMcpResource, formatMcpResources, formatWebFetchResult, formatWebResults, mcpCitation, rankResources, rankWebResults, webCitation, webFetchCitation } from "./retrieval-format"
 import { apiKeyFor, headersFor, normalizeEngine, parseEngineResults, requestFor, timeoutSignal } from "./retrieval-live"
 import { selectEngine, withImplicitDefaults } from "./retrieval-config"
@@ -108,6 +108,7 @@ export type WebFetchResult = {
 }
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
+type RequestInitWithTls = RequestInit & { tls?: TlsConfig }
 const safeWebFetchHeaderNames = new Set([
   "accept",
   "accept-language",
@@ -190,12 +191,16 @@ export class WebSearchService {
     const normalized = normalizeEngine(engine, tavilySetupHint)
     const apiKey = apiKeyFor(normalized, this.options.env ?? process.env, webSearchEnvHint)
     const headers = headersFor(normalized, apiKey)
-    const request = requestFor(normalized, query, clampLimit(limit), headers, signal)
+    const request = requestFor(normalized, query, clampLimit(limit), headers, signal) as {
+      url: string | URL
+      init: RequestInitWithTls
+      cleanup: () => void
+    }
     const fetcher = this.options.fetch ?? fetch
 
     const tlsConfig = getTlsConfig()
     if (tlsConfig && !this.options.fetch) {
-      (request.init as any).tls = tlsConfig
+      request.init.tls = tlsConfig
     }
 
     try {
@@ -220,7 +225,7 @@ export class WebFetchService {
     const headers = sanitizeWebFetchHeaders(request.headers)
     const redirect = request.followRedirects ? "follow" : "manual"
     const timeout = timeoutSignal(options.signal, request.timeoutMs)
-    const init: RequestInit & { tls?: unknown } = {
+    const init: RequestInitWithTls = {
       method: request.method,
       headers,
       redirect,

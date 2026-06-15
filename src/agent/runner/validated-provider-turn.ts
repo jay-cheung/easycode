@@ -6,11 +6,20 @@ export type TurnValidationFailure = {
   failureText: string
 }
 
+export type TurnValidationObservation = {
+  failure: TurnValidationFailure
+  attempts: number
+  maxAttempts: number
+  shouldRetry: boolean
+  turn: ProviderTurnResult
+}
+
 type ValidatedProviderTurnDeps = {
   runProviderTurn: (input: ProviderTurnInput) => Promise<ProviderTurnResult>
   emitProviderTurn: (turn: ProviderTurnResult) => void
   updateActiveHypothesis: (summary: string, normalized: string) => void
   recordHypothesisViolation: (violation: HypothesisViolation) => void
+  reportTurnValidationFailure?: (observation: TurnValidationObservation) => void
   hypothesisCorrectionMessage: (violation: HypothesisViolation, activeHypothesis: ActiveHypothesis | undefined) => string
   validateTurn?: (turn: ProviderTurnResult) => TurnValidationFailure | undefined
   activeHypothesis?: ActiveHypothesis
@@ -29,9 +38,7 @@ export async function runValidatedProviderTurnLoop(
   const maxHypothesisAttempts = 2
   const maxTurnValidationAttempts = deps.validateTurn ? 3 : 0
   while (hypothesisAttempts < maxHypothesisAttempts || turnValidationAttempts < maxTurnValidationAttempts) {
-    const providerMessages = correctionMessages.length > 0
-      ? [...input.providerMessages, ...correctionMessages.map((content) => ({ role: "system" as const, content }))]
-      : input.providerMessages
+    const providerMessages = providerMessagesWithCorrections(input.providerMessages, correctionMessages)
     const turn = await deps.runProviderTurn({ ...input, providerMessages, emitDeltas: false })
     fallbackTurn = turn
     const validation = evaluateHypothesisTurn({
@@ -42,12 +49,19 @@ export async function runValidatedProviderTurnLoop(
       evidenceRevision: deps.evidenceRevision,
     })
     if (!validation.violation) {
-      const turnValidationFailure = deps.validateTurn?.(turn)
-      if (turnValidationFailure) {
-        lastTurnValidationFailure = turnValidationFailure
-        turnValidationAttempts += 1
-        if (turnValidationAttempts >= maxTurnValidationAttempts) break
-        correctionMessages.push(turnValidationFailure.correction)
+      const rejection = nextTurnValidationRejection(deps.validateTurn, turn, turnValidationAttempts, maxTurnValidationAttempts)
+      if (rejection) {
+        deps.reportTurnValidationFailure?.({
+          failure: rejection.failure,
+          attempts: rejection.attempts,
+          maxAttempts: maxTurnValidationAttempts,
+          shouldRetry: rejection.shouldRetry,
+          turn,
+        })
+        lastTurnValidationFailure = rejection.failure
+        turnValidationAttempts = rejection.attempts
+        if (rejection.shouldRetry) correctionMessages.push(rejection.failure.correction)
+        else break
         continue
       }
       if (validation.nextHypothesis) deps.updateActiveHypothesis(validation.nextHypothesis.summary, validation.nextHypothesis.normalized)
@@ -65,10 +79,44 @@ export async function runValidatedProviderTurnLoop(
       ...fallbackTurn,
       text: "",
       toolCalls: [],
-      failureText: lastTurnValidationFailure.failureText,
-      replayEvents: [{ type: "failure", text: lastTurnValidationFailure.failureText }],
+      failureText: undefined,
+      retryMessage: lastTurnValidationFailure.correction,
+      validationFailureCount: turnValidationAttempts,
+      lastRejectedTurn: {
+        text: fallbackTurn.text,
+        reasoningText: fallbackTurn.reasoningText,
+        toolNames: fallbackTurn.toolCalls.map((call) => call.name),
+      },
+      replayEvents: [],
     }
   }
   deps.emitProviderTurn(fallbackTurn)
   return fallbackTurn
+}
+
+function providerMessagesWithCorrections(
+  providerMessages: ProviderTurnInput["providerMessages"],
+  correctionMessages: string[],
+) {
+  if (correctionMessages.length === 0) return providerMessages
+  return [
+    ...providerMessages,
+    ...correctionMessages.map((content) => ({ role: "system" as const, content })),
+  ]
+}
+
+function nextTurnValidationRejection(
+  validateTurn: ValidatedProviderTurnDeps["validateTurn"],
+  turn: ProviderTurnResult,
+  turnValidationAttempts: number,
+  maxTurnValidationAttempts: number,
+) {
+  const failure = validateTurn?.(turn)
+  if (!failure) return undefined
+  const attempts = turnValidationAttempts + 1
+  return {
+    failure,
+    attempts,
+    shouldRetry: attempts < maxTurnValidationAttempts,
+  }
 }

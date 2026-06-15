@@ -65,6 +65,13 @@ const SANDBOX_EXEC = "/usr/bin/sandbox-exec"
 
 let nativeWriteSandboxAvailable: Promise<boolean> | undefined
 
+type PipeSubprocess = {
+  stdout: ReadableStream<Uint8Array>
+  stderr: ReadableStream<Uint8Array>
+  exited: Promise<number>
+  kill(signal?: string): void
+}
+
 function truncateBytes(input: string, maxBytes: number) {
   if (Buffer.byteLength(input) <= maxBytes) return { text: input, truncated: false }
   const buffer = Buffer.from(input)
@@ -235,17 +242,20 @@ export class Sandbox {
 
     const started = Date.now()
     const controller = new AbortController()
+    let proc: PipeSubprocess | undefined
     let timedOut = false
     let cancelled = Boolean(options.signal?.aborted)
     const onAbort = () => {
       cancelled = true
       controller.abort()
+      proc?.kill("SIGTERM")
     }
     if (cancelled) return cancelledBashResult(input.command, started)
     options.signal?.addEventListener("abort", onAbort, { once: true })
     const timer = setTimeout(() => {
       timedOut = true
       controller.abort()
+      proc?.kill("SIGTERM")
     }, input.timeoutMs ?? this.timeoutMs)
 
     const shell = process.platform === "win32" ? "cmd.exe" : "bash"
@@ -257,12 +267,12 @@ export class Sandbox {
       return cancelledBashResult(input.command, started)
     }
     const command = commandForBackend(this, cwd, input.command, shell, shellFlag, nativeWriteSandbox)
-    const proc = Bun.spawn(command, {
+    proc = Bun.spawn(command, {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
       signal: controller.signal,
-    })
+    }) as PipeSubprocess
     // When cancelled, race pipe reads + exit code against a 3-second kill-grace timeout
     const pipePromise = Promise.all([
       new Response(proc.stdout).text().catch((error: unknown) => (error instanceof Error ? error.message : String(error))),

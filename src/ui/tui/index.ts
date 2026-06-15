@@ -7,7 +7,7 @@ import { buildConfiguredCard, buildFailureSummaryCard, buildPanelCard, buildSess
 import { TuiState } from "./tui-state"
 import { spinnerFrames } from "./tui-status-panel"
 import { drawStatusPanel, eraseStatusPanel, renderFailureSummary, renderSuccessSummary, renderWelcomeDashboard, writeTextWithPanel, writeTimelineText } from "./tui-render-loop"
-import type { TuiContext, Writable } from "./tui-types"
+import type { TuiContext, TuiGoalContext, Writable } from "./tui-types"
 
 class TuiWritable implements Writable {
   constructor(private readonly renderer: TuiRenderer) {}
@@ -81,6 +81,14 @@ export class TuiRenderer {
     this.configure({ language })
   }
 
+  setGoal(goal: TuiGoalContext | undefined) {
+    this.context = { ...this.context, goal }
+    if (this.state.shouldRenderPanel()) {
+      this.lastPanelSnapshot = ""
+      this.drawStatusPanel()
+    }
+  }
+
   configure(context: Partial<TuiContext>, status = this.state.lastStatus) {
     this.context = { ...this.context, ...context }
     this.timeline.setLanguage(this.getLanguage())
@@ -128,7 +136,9 @@ export class TuiRenderer {
       }
     }
 
-    if (event.type === "provider_progress") {
+    if (event.type === "goal") {
+      this.setGoal(event.phase === "cleared" ? undefined : event.goal)
+    } else if (event.type === "provider_progress") {
       if (event.elapsedMs === 0 || !this.currentProviderPhaseKey) {
         this.providerCallCount++
         this.currentProviderPhaseKey = `provider:${event.provider}:${event.model ?? "unknown"}:${this.providerCallCount}`
@@ -171,6 +181,8 @@ export class TuiRenderer {
         inputTokens: this.state.subagentUsage.inputTokens + event.metrics.inputTokens,
         outputTokens: this.state.subagentUsage.outputTokens + event.metrics.outputTokens,
         calls: this.state.subagentUsage.calls + event.metrics.calls,
+        cacheHitTokens: this.state.subagentUsage.cacheHitTokens + event.metrics.cacheHitTokens,
+        cacheMissTokens: this.state.subagentUsage.cacheMissTokens + event.metrics.cacheMissTokens,
       }
     } else if (event.type === "run_done") {
       this.state.finishRun()

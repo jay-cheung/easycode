@@ -44,6 +44,433 @@ describe("tool", () => {
     expect(registry.list("build").some((tool) => tool.name === "plan_exit")).toBe(true)
   })
 
+  test("goal tools update transient goal ledger state", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "goal_id",
+          kind: "checkpoint",
+          subject: "current_goal_id",
+          value: "goal_123",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_objective",
+          kind: "checkpoint",
+          subject: "current_goal_objective",
+          value: "Implement goal mode",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_status",
+          kind: "checkpoint",
+          subject: "current_goal_status",
+          value: "executing",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_iteration",
+          kind: "checkpoint",
+          subject: "current_goal_iteration",
+          value: "2",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_acceptance",
+          kind: "checkpoint",
+          subject: "current_goal_acceptance_criteria",
+          value: "- The code path is correct",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_checks",
+          kind: "checkpoint",
+          subject: "current_goal_completion_checks",
+          value: "- Run focused verification",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_blocker",
+          kind: "checkpoint",
+          subject: "current_goal_blocker",
+          value: "none",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+
+    const blocked = await registry.run("goal_blocked", { reason: "Awaiting user approval" }, { ...toolContext(root), context })
+    expect(blocked.metadata.status).toBe("succeeded")
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "blocked" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_blocker", value: "Awaiting user approval" }))
+
+    const completed = await registry.run("goal_complete", { summary: "Done" }, { ...toolContext(root), context })
+    expect(completed.metadata.status).toBe("succeeded")
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "completed" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_blocker", value: "none" }))
+  })
+
+  test("goal_set_acceptance records acceptance criteria and completion checks", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "goal_id",
+          kind: "checkpoint",
+          subject: "current_goal_id",
+          value: "goal_456",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_objective",
+          kind: "checkpoint",
+          subject: "current_goal_objective",
+          value: "Ship goal review loop",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_status",
+          kind: "checkpoint",
+          subject: "current_goal_status",
+          value: "defining",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_iteration",
+          kind: "checkpoint",
+          subject: "current_goal_iteration",
+          value: "1",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_blocker",
+          kind: "checkpoint",
+          subject: "current_goal_blocker",
+          value: "none",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+
+    const result = await registry.run("goal_set_acceptance", {
+      acceptanceCriteria: ["All named acceptance criteria are satisfied"],
+      completionChecks: ["Run focused verification", "Review for remaining defects"],
+    }, { ...toolContext(root), context })
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "planning" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_acceptance_criteria", value: expect.stringContaining("All named acceptance criteria are satisfied") }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_completion_checks", value: expect.stringContaining("Review for remaining defects") }))
+  })
+
+  test("goal_set_acceptance fails outside the defining phase", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "goal_id",
+          kind: "checkpoint",
+          subject: "current_goal_id",
+          value: "goal_457",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_objective",
+          kind: "checkpoint",
+          subject: "current_goal_objective",
+          value: "Ship goal review loop",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_status",
+          kind: "checkpoint",
+          subject: "current_goal_status",
+          value: "planning",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_iteration",
+          kind: "checkpoint",
+          subject: "current_goal_iteration",
+          value: "1",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+
+    const result = await registry.run("goal_set_acceptance", {
+      acceptanceCriteria: ["All named acceptance criteria are satisfied"],
+      completionChecks: ["Run focused verification"],
+    }, { ...toolContext(root), context })
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("goal_acceptance_wrong_phase")
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "planning" }))
+    expect(context.state.ledger?.current?.some((record) => record.subject === "current_goal_acceptance_criteria")).toBe(false)
+  })
+
+  test("goal_complete fails if acceptance criteria were never recorded", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "goal_id",
+          kind: "checkpoint",
+          subject: "current_goal_id",
+          value: "goal_789",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_objective",
+          kind: "checkpoint",
+          subject: "current_goal_objective",
+          value: "Finish the feature",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_status",
+          kind: "checkpoint",
+          subject: "current_goal_status",
+          value: "reviewing",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_iteration",
+          kind: "checkpoint",
+          subject: "current_goal_iteration",
+          value: "2",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_blocker",
+          kind: "checkpoint",
+          subject: "current_goal_blocker",
+          value: "none",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+
+    const result = await registry.run("goal_complete", { summary: "done" }, { ...toolContext(root), context })
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("goal_acceptance_missing")
+  })
+
+  test("goal_complete fails while a plan slice is still active", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "goal_id",
+          kind: "checkpoint",
+          subject: "current_goal_id",
+          value: "goal_790",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_objective",
+          kind: "checkpoint",
+          subject: "current_goal_objective",
+          value: "Finish the feature",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_status",
+          kind: "checkpoint",
+          subject: "current_goal_status",
+          value: "executing",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_iteration",
+          kind: "checkpoint",
+          subject: "current_goal_iteration",
+          value: "2",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_acceptance",
+          kind: "checkpoint",
+          subject: "current_goal_acceptance_criteria",
+          value: "- Finish the feature safely",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_checks",
+          kind: "checkpoint",
+          subject: "current_goal_completion_checks",
+          value: "- Run focused verification",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "plan_id",
+          kind: "checkpoint",
+          subject: "current_plan_id",
+          value: "plan_active",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+
+    const result = await registry.run("goal_complete", { summary: "done" }, { ...toolContext(root), context })
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("goal_review_required")
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "executing" }))
+  })
+
+  test("goal_complete fails in review when the latest findings still report blockers", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        {
+          id: "goal_id",
+          kind: "checkpoint",
+          subject: "current_goal_id",
+          value: "goal_791",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_objective",
+          kind: "checkpoint",
+          subject: "current_goal_objective",
+          value: "Review current changes",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_status",
+          kind: "checkpoint",
+          subject: "current_goal_status",
+          value: "reviewing",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_iteration",
+          kind: "checkpoint",
+          subject: "current_goal_iteration",
+          value: "2",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_acceptance",
+          kind: "checkpoint",
+          subject: "current_goal_acceptance_criteria",
+          value: "- Review all modified files",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_checks",
+          kind: "checkpoint",
+          subject: "current_goal_completion_checks",
+          value: "- Replan if review finds blocking defects",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+        {
+          id: "goal_blocker",
+          kind: "checkpoint",
+          subject: "current_goal_blocker",
+          value: "none",
+          status: "current",
+          createdAtTurn: 0,
+          updatedAtTurn: 0,
+        },
+      ],
+    })
+    context.add(toolCallMessage([
+      {
+        id: "call_goal_complete",
+        name: "goal_complete",
+        input: { summary: "NOT COMMITTABLE. Blockers C1+C2 must be fixed before commit." },
+      },
+    ], "", "Final verdict: NOT COMMITTABLE. Blockers C1+C2 must be fixed before commit."))
+
+    const result = await registry.run("goal_complete", { summary: "NOT COMMITTABLE. Blockers C1+C2 must be fixed before commit." }, { ...toolContext(root), context })
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("goal_review_blocking_findings")
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "reviewing" }))
+  })
+
   test("ledger tool pulls structured context only when called", async () => {
     const registry = createBuiltinRegistry()
     const context = new ContextManager()
@@ -345,13 +772,13 @@ describe("tool", () => {
     const root = await tmpdir()
     const ctx = toolContext(root)
 
-    const added = await registry.run("memory_add", { text: "OPENAI_API_KEY=sk-secret123456 for task", kind: "task_state", tags: ["task"], scope: { topics: ["continuation"] } }, ctx)
-    const queried = await registry.run("memory_query", { query: "task" }, ctx)
+    const added = await registry.run("memory_add", { text: "OPENAI_API_KEY=sk-secret123456 for workflow", kind: "successful_workflow", tags: ["workflow"], scope: { topics: ["verification"] } }, ctx)
+    const queried = await registry.run("memory_query", { query: "workflow" }, ctx)
 
     expect(added.metadata.status).toBe("succeeded")
-    expect(added.metadata.kind).toBe("task_state")
-    expect(queried.output).toContain("task")
-    expect(queried.output).toContain("[task_state]")
+    expect(added.metadata.kind).toBe("successful_workflow")
+    expect(queried.output).toContain("workflow")
+    expect(queried.output).toContain("[successful_workflow]")
     expect(queried.output).toContain("[redacted]")
     expect(queried.output).not.toContain("sk-secret123456")
   })

@@ -13,7 +13,7 @@ describe("subagent routing", () => {
       role: "explorer",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 6,
+      maxProviderCalls: 8,
     })
     expect(resolveSubagentRoute({ role: "summary", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "summary",
@@ -26,25 +26,25 @@ describe("subagent routing", () => {
       role: "reviewer",
       thinking: true,
       effort: "medium",
-      maxProviderCalls: 3,
+      maxProviderCalls: 5,
     })
     expect(resolveSubagentRoute({ role: "debugger", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "debugger",
       thinking: true,
       effort: "high",
-      maxProviderCalls: 5,
+      maxProviderCalls: 7,
     })
     expect(resolveSubagentRoute({ role: "tester", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "tester",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 3,
+      maxProviderCalls: 5,
     })
     expect(resolveSubagentRoute({ role: "docs_researcher", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "docs_researcher",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 5,
+      maxProviderCalls: 7,
     })
   })
 
@@ -56,7 +56,7 @@ describe("subagent routing", () => {
       role: "tester",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 3,
+      maxProviderCalls: 5,
     })
     expect(resolveSubagentRoute({ role: "summary", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "summary",
@@ -69,25 +69,25 @@ describe("subagent routing", () => {
       role: "reviewer",
       thinking: true,
       effort: "high",
-      maxProviderCalls: 3,
+      maxProviderCalls: 5,
     })
     expect(resolveSubagentRoute({ role: "debugger", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "debugger",
       thinking: true,
       effort: "max",
-      maxProviderCalls: 5,
+      maxProviderCalls: 7,
     })
     expect(resolveSubagentRoute({ role: "explorer", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "explorer",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 6,
+      maxProviderCalls: 8,
     })
     expect(resolveSubagentRoute({ role: "docs_researcher", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "docs_researcher",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 5,
+      maxProviderCalls: 7,
     })
   })
 
@@ -153,5 +153,25 @@ describe("subagent routing", () => {
     expect(suggestedCoordinatorSubagentRole([
       { id: "call_3", name: "delegate_subagent", input: { role: "explorer", task: "inspect" } },
     ])).toBeUndefined()
+  })
+
+  test("delegation gate recognizes reviewer, tester, debugger, and required-role hints", () => {
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_4", name: "git_diff", input: { path: "src/agent.ts" } },
+      { id: "call_5", name: "read", input: { filePath: "src/agent.ts" } },
+    ], { taskHint: "Please review this diff for regressions." })).toBe("reviewer")
+
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_6", name: "bash", input: { command: "bun test prompt.test.ts" } },
+    ])).toBe("tester")
+
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_7", name: "bash", input: { command: "node scripts/repro-crash.js" } },
+      { id: "call_8", name: "read", input: { filePath: "logs/app.log" } },
+    ], { taskHint: "Debug this crash from the logs." })).toBe("debugger")
+
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_9", name: "read", input: { filePath: "src/agent.ts" } },
+    ], { requiredRole: "reviewer" })).toBe("reviewer")
   })
 })

@@ -6,6 +6,8 @@ export type TuiUsageTotals = {
   outputTokens: number
   calls: number
   invocations: number
+  cacheHitTokens: number
+  cacheMissTokens: number
   roleCounts: Partial<Record<SubagentRole, number>>
 }
 
@@ -31,7 +33,7 @@ export class TuiState {
   panelDrawnLines = 0
   panelDirty = false
   metrics: ProviderRunMetrics | undefined = undefined
-  subagentUsage: TuiUsageTotals = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, roleCounts: {} }
+  subagentUsage: TuiUsageTotals = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, cacheHitTokens: 0, cacheMissTokens: 0, roleCounts: {} }
   queuedPrompt: string | undefined = undefined
 
   beginRun(statusText: string) {
@@ -41,7 +43,7 @@ export class TuiState {
     this.pausedForPrompt = false
     this.queuedPrompt = undefined
     this.metrics = undefined
-    this.subagentUsage = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, roleCounts: {} }
+    this.subagentUsage = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, cacheHitTokens: 0, cacheMissTokens: 0, roleCounts: {} }
     this.statusText = statusText
     this.runElapsedStart = now
     this.runElapsedMs = 0

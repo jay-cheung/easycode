@@ -1,7 +1,7 @@
 import path from "node:path"
 import { ContextManager, type ContextCompactionSnapshot, type ContextManagerLike } from "../../context"
-import { canonicalizeAssistantHistory, createID, textMessage, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
-import { defaultPermissionRules, PermissionService } from "../../permission"
+import { Message, canonicalizeAssistantHistory, createID, textMessage, userMessage, toolCallMessage, toolResultMessage, type AgentMode, type ImagePart, type ToolCall } from "../../message"
+import { defaultPermissionRules, defaultSubagentPermissionRules, PermissionService } from "../../permission"
 import { createProvider, type Provider, type ProviderName } from "../../provider"
 import { Sandbox } from "../../sandbox"
 import { SkillService, type SkillArtifact, type SkillServiceLike, type SkillInfo } from "../../skill"
@@ -32,13 +32,48 @@ import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
 import { runFailureText } from "./failure-policy"
 import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
-import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState, renderPlanToMarkdown, type ExecutionPlan } from "../../plans"
+import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState, renderPlanToMarkdown, type ExecutionPlan, type PlanStep } from "../../plans"
 import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../planner"
 import { defaultToolProgressIntervalMs, defaultProviderProgressIntervalMs, maxAutoSkillArtifactInspections, autoInspectFileExtensions, autoInspectFileBasenames, autoInspectIgnoredBasenames, autoInspectIgnoredDirectories, autoRecallMemoryKinds, maxAutoRecalledMemoryRecords } from "./constants"
 import { createSubagentLogger, withSubagentLogContext, buildSubagentTaskPrompt, autoSkillArtifactCalls, memoryLedgerValue, memoryScopeToLedger } from "./helpers"
-import type { AgentRunState } from "../types"
+import type { AgentRunState, SubagentRole } from "../types"
 
-const coordinatorDelegationGateBypassProviders = new Set(["fake", "test-provider"])
+const coordinatorDelegationGateBypassProviders = new Set(["fake", "test-provider", "simulated"])
+const subagentRoles: SubagentRole[] = ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"]
+
+type SubagentRoleUsage = {
+  started: number
+  succeeded: number
+  failed: number
+  handoff: number
+  turnsUsed: number
+  inputTokens: number
+  outputTokens: number
+  cacheHitTokens: number
+  cacheMissTokens: number
+}
+
+type SubagentRunUsage = {
+  startedInvocations: number
+  usedTurns: number
+  reservedTurns: number
+  byRole: Record<SubagentRole, number>
+  statsByRole: Record<SubagentRole, SubagentRoleUsage>
+}
+
+function createSubagentRoleUsage(): SubagentRoleUsage {
+  return { started: 0, succeeded: 0, failed: 0, handoff: 0, turnsUsed: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 }
+}
+
+function createSubagentRunUsage(): SubagentRunUsage {
+  return {
+    startedInvocations: 0,
+    usedTurns: 0,
+    reservedTurns: 0,
+    byRole: Object.fromEntries(subagentRoles.map((role) => [role, 0])) as Record<SubagentRole, number>,
+    statsByRole: Object.fromEntries(subagentRoles.map((role) => [role, createSubagentRoleUsage()])) as Record<SubagentRole, SubagentRoleUsage>,
+  }
+}
 
 function shouldEnforceCoordinatorDelegation(provider: Provider) {
   return !coordinatorDelegationGateBypassProviders.has(provider.name)
@@ -67,6 +102,7 @@ export class AgentRunner {
   readonly settings: SessionSettings
   readonly onBackgroundContextUpdate?: () => void | Promise<void>
   readonly sessionId?: string
+  readonly forcePlanning?: boolean
   private summarySubagent: BackgroundAgentTask | undefined
   private nextSummarySubagentID = 1
   private nextSubagentRequestID = 1
@@ -74,23 +110,12 @@ export class AgentRunner {
   private evidenceRevision = 0
   private activeHypothesis: ActiveHypothesis | undefined
   private activeForegroundSubagentRequestID: number | undefined
-  private subagentUsage = {
-    startedInvocations: 0,
-    usedTurns: 0,
-    reservedTurns: 0,
-    byRole: {
-      summary: 0,
-      explorer: 0,
-      reviewer: 0,
-      debugger: 0,
-      tester: 0,
-      docs_researcher: 0,
-    } satisfies Record<NonNullable<Agent["role"]>, number>,
-  }
+  private subagentUsage = createSubagentRunUsage()
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
     this.sessionId = options.sessionId
+    this.forcePlanning = options.forcePlanning
     this.logger = options.logger
     this.aspect = options.aspect ?? createRunAspect(options.logger)
     this.provider = this.aspect.instrumentProvider(options.provider)
@@ -129,6 +154,7 @@ export class AgentRunner {
   }
 
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[]; signal?: AbortSignal } = {}): Promise<AgentRunResult> {
+    this.subagentUsage = createSubagentRunUsage()
     const prep = await this.prepareRun(prompt, mode, input)
     if (prep.aborted) {
       return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
@@ -222,6 +248,7 @@ export class AgentRunner {
       }
     }
 
+    this.emitSubagentUsageSummary()
     return runResult
   }
 
@@ -246,6 +273,9 @@ export class AgentRunner {
     const ledger = this.context.state.ledger
     const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
     let resolvedMode = mode
+    if (this.forcePlanning && !planIdRecord) {
+      resolvedMode = "plan"
+    }
     let activePlanState = undefined
     let earlyExitResult: AgentRunResult | undefined = undefined
 
@@ -327,7 +357,7 @@ export class AgentRunner {
 
     const effectiveMode = this.effectiveMode(prompt, resolvedMode)
     const requiresProposedPlan = resolvedMode === "plan"
-    const agent = createAgent(effectiveMode)
+    const agent = { ...createAgent(effectiveMode), mode: requiresProposedPlan ? "plan" as const : effectiveMode }
     const state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
     this.context.add(userMessage(prompt, input.images ?? []))
@@ -486,6 +516,15 @@ export class AgentRunner {
         result: { status: "completed", text: output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
       }
     }
+
+    if (toolCall.name === "plan_step_complete" && result.metadata.status === "succeeded" && result.metadata.planCompleted === true) {
+      state = this.aspect.transition("completed", { usedTools })
+      this.emitRunDone("completed", providerMetrics)
+      return {
+        action: "exit",
+        result: { status: "completed", text: result.output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+      }
+    }
     
     return { action: "continue", state }
   }
@@ -518,6 +557,7 @@ export class AgentRunner {
     if (input.signal?.aborted) return { action: "cancel", reasoningTranscript }
 
     let activeHypothesisMsgs = this.activeHypothesisMessages()
+    let activePlanStep: PlanStep | undefined
     const latestLedger = this.context.state.ledger
     const activePlanIdRec = latestLedger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
     if (activePlanIdRec) {
@@ -528,6 +568,7 @@ export class AgentRunner {
       if (currentPlanState && stepId) {
         const s = currentPlanState.plan.steps.find(stepItem => stepItem.id === stepId)
         if (s) {
+          activePlanStep = s
           activeHypothesisMsgs = [
             ...activeHypothesisMsgs,
             {
@@ -544,7 +585,7 @@ Executor Hint: ${s.executorHint ?? "main"}${s.subagentRole ? ` (${s.subagentRole
 Focus ONLY on achieving the goal of this step. Do not deviate.
 When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' to proceed.
 After a step is completed, continue immediately with the next plan step in the same run. Do not ask the user whether to continue between steps.
-${s.executorHint === "subagent" && s.subagentRole ? `For this step, prefer the internal action 'delegate_subagent' with role='${s.subagentRole}' unless direct execution is clearly simpler and equally safe.` : ""}
+${s.executorHint === "subagent" && s.subagentRole ? `This step is assigned to a subagent. Before any non-coordinator tool use, you MUST call 'delegate_subagent' with role='${s.subagentRole}'. Do not execute this step directly from the coordinator.` : ""}
 If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear explanation.`
             }
           ]
@@ -564,18 +605,22 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       tools,
       usedTools,
       activeHypothesisMessages: activeHypothesisMsgs,
+      activePlanStepId: activePlanStep?.id,
     })
+    const providerMessages = shouldInjectReviewPlanningTemplate(prompt, requiresProposedPlan)
+      ? [...preparedTurn.providerMessages, { role: "system" as const, content: reviewPlanningTemplate(prompt) }]
+      : preparedTurn.providerMessages
 
     let currentState = this.aspect.transition("streaming", { step: step + 1 })
     const turn = await this.runValidatedProviderTurn({
       agent,
       prompt,
       messages: this.context.state.messages,
-      providerMessages: preparedTurn.providerMessages,
+      providerMessages,
       tools: preparedTurn.availableTools,
       signal: input.signal,
       providerMetrics,
-    }, requiresProposedPlan)
+    }, requiresProposedPlan, activePlanStep)
 
     const currentReasoningTranscript = appendOutput(reasoningTranscript, turn.reasoningText)
     if (turn.cancelledOutput) {
@@ -585,6 +630,28 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     const nextReasoningTranscript = currentReasoningTranscript
     if (input.signal?.aborted) {
       return { action: "cancel", output: appendOutput(turn.text, "Run cancelled by user."), reasoningTranscript: nextReasoningTranscript }
+    }
+
+    if (turn.retryMessage) {
+      this.onEvent?.({ type: "failure", text: turn.retryMessage })
+      if (requiresProposedPlan && (turn.validationFailureCount ?? 0) >= 3) {
+        const output = buildPlanGateFallbackMessage(turn)
+        this.onEvent?.({ type: "failure", text: output })
+        this.context.add(assistantMessage(nextReasoningTranscript, output))
+        currentState = this.aspect.runFailed("provider_error", usedTools)
+        this.emitRunDone("failed", providerMetrics)
+        return {
+          action: "exit",
+          result: { status: "failed", failureReason: "provider_error", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
+        }
+      }
+      this.context.add(textMessage("system", turn.retryMessage))
+      return {
+        action: "continue",
+        reasoningTranscript: nextReasoningTranscript,
+        latestAssistantText,
+        state: this.aspect.transition("streaming", { step: step + 1 })
+      }
     }
 
     if (turn.failureText) {
@@ -614,7 +681,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     }
 
     currentState = this.aspect.transition("tool_pending", { tools: turn.toolCalls.map((call) => call.name), callIDs: turn.toolCalls.map((call) => call.id) })
-    this.context.add(toolCallMessage(turn.toolCalls))
+    this.context.add(toolCallMessage(turn.toolCalls, turn.reasoningText, turn.text))
 
     for (const toolCall of turn.toolCalls) {
       const toolCallResult = await this.executeToolCall(
@@ -664,7 +731,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     )
   }
 
-  private async runValidatedProviderTurn(input: ProviderTurnInput, requiresProposedPlan: boolean): Promise<ProviderTurnResult> {
+  private async runValidatedProviderTurn(input: ProviderTurnInput, requiresProposedPlan: boolean, activePlanStep?: PlanStep): Promise<ProviderTurnResult> {
     return runValidatedProviderTurnLoop(
       {
         runProviderTurn: (nextInput) => this.runProviderTurn(nextInput),
@@ -674,14 +741,51 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         hypothesisCorrectionMessage,
         validateTurn: (turn) => {
           if (requiresProposedPlan) {
-            if (turn.toolCalls.length > 0 || protocol.isProposalPlanTurn(turn)) return undefined
+            if (protocol.isProposalPlanTurn(turn)) return undefined
+            if (turn.toolCalls.length > 0) return undefined
             return {
-              correction: protocol.hardPlanGateCorrection,
-              failureText: protocol.hardPlanGateFailureText,
+              correction: [
+                "Planning mode hard gate:",
+                "- Your next assistant turn must return a proposal plan.",
+                "- Return either a final <proposed_plan>...</proposed_plan> block or call plan_exit.",
+                "- Read-only planning tools are allowed before the final plan, but do not finish with ordinary status text.",
+                "- Fold already gathered evidence into the proposal plan itself.",
+              ].join("\n"),
+              failureText: "Planning mode hard gate failed: the model must submit a proposal plan before ending the planning run.",
+            }
+          }
+          if (requiresReviewerDelegationBeforeFinal(input.prompt, activePlanStep) && turn.toolCalls.length === 0 && turn.text.trim() && !hasSuccessfulReviewerSubagent(this.context.state.messages)) {
+            return {
+              correction: [
+                "Reviewer delegation anti-pattern gate:",
+                "- Before outputting a review/repair/optimization plan, check whether the review can be delegated to reviewer.",
+                "- This task can be split into bounded review scopes such as Code Complete dimensions, file groups, type-safety, error handling, or test coverage.",
+                "- Do not complete the whole review as coordinator.",
+                "- Call delegate_subagent with role='reviewer' for at least one bounded review task, then synthesize only the reviewer conclusion.",
+              ].join("\n"),
+              failureText: "Reviewer delegation gate failed: broad review output requires a bounded reviewer subagent result before final synthesis.",
+            }
+          }
+          const requiredDelegationRole = activePlanStep?.executorHint === "subagent" ? activePlanStep.subagentRole : undefined
+          const directCoordinatorTools = turn.toolCalls.filter((call) => !isCoordinatorOnlyTool(call.name))
+          if (requiredDelegationRole && directCoordinatorTools.length > 0 && !turn.toolCalls.some((call) => call.name === "delegate_subagent")) {
+            const toolNames = [...new Set(directCoordinatorTools.map((call) => call.name))].join(", ")
+            return {
+              correction: [
+                "Plan step delegation gate:",
+                `- The active plan step is assigned to subagent role='${requiredDelegationRole}'.`,
+                `- Do not execute coordinator tools directly for this step (${toolNames}).`,
+                `- Call delegate_subagent with role='${requiredDelegationRole}' and a narrow task first.`,
+                "- Include explicit success_criteria so the coordinator can review the bounded result.",
+              ].join("\n"),
+              failureText: `Plan step delegation gate failed: step '${activePlanStep?.id ?? "unknown"}' must delegate to role='${requiredDelegationRole}' before direct coordinator execution.`,
             }
           }
           if (!shouldEnforceCoordinatorDelegation(input.provider ?? this.provider)) return undefined
-          const suggestedRole = suggestedCoordinatorSubagentRole(turn.toolCalls)
+          if (lastSubagentDelegationFailedOrHandoff(this.context.state.messages)) return undefined
+          const suggestedRole = suggestedCoordinatorSubagentRole(turn.toolCalls, {
+            taskHint: [input.prompt, activePlanStep?.goal, activePlanStep?.doneWhen].filter(Boolean).join("\n"),
+          })
           if (!suggestedRole) return undefined
           const toolNames = [...new Set(turn.toolCalls.map((call) => call.name))].join(", ")
           return {
@@ -694,6 +798,22 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
             ].join("\n"),
             failureText: `Coordinator delegation gate failed: pure bounded retrieval or verification must use delegate_subagent role='${suggestedRole}' instead of direct coordinator tools (${toolNames}).`,
           }
+        },
+        reportTurnValidationFailure: ({ failure, attempts, maxAttempts, shouldRetry, turn }) => {
+          emitLog(this.logger, {
+            type: "provider",
+            name: "provider.validation_rejected",
+            detail: {
+              attempt: attempts,
+              maxAttempts,
+              shouldRetry,
+              failureText: failure.failureText,
+              correction: failure.correction,
+              reasoningContent: turn.reasoningText,
+              output: turn.text,
+              toolNames: turn.toolCalls.map((call) => call.name),
+            },
+          })
         },
         activeHypothesis: this.activeHypothesis,
         evidenceRevision: this.evidenceRevision,
@@ -860,6 +980,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
     const requestId = this.nextSubagentRequestID++
     this.activeForegroundSubagentRequestID = requestId
+    const maxProviderCalls = reservation.reservedTurns
     const provider = createDerivedSubagentProvider(
       this.provider,
       route,
@@ -872,7 +993,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       model: route.model,
       thinking: route.thinking,
       effort: route.effort,
-      maxProviderCalls: route.maxProviderCalls,
+      maxProviderCalls,
       maxOutputTokens: route.maxOutputTokens,
     } as const
     this.onEvent?.({ type: "subagent", status: "scheduled", info })
@@ -888,31 +1009,41 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         model: route.model,
         thinking: route.thinking,
         effort: route.effort,
-        maxProviderCalls: route.maxProviderCalls,
+        maxProviderCalls,
         maxOutputTokens: route.maxOutputTokens,
       },
     })
 
     const providerMetrics = createProviderMetrics(provider.name, provider.model, {
       source: "subagent",
-      subagentRole: request.role,
-      thinking: route.thinking,
-      effort: route.effort,
-      maxOutputTokens: route.maxOutputTokens,
-      maxProviderCalls: route.maxProviderCalls,
-    })
+        subagentRole: request.role,
+        thinking: route.thinking,
+        effort: route.effort,
+        maxOutputTokens: route.maxOutputTokens,
+        maxProviderCalls,
+      })
+    let taskState: SubagentTaskState | undefined
     try {
-      const taskState = createSubagentTaskState({
+      taskState = createSubagentTaskState({
         requestId,
         role: request.role,
         task: request.task,
         successCriteria: request.successCriteria,
-        maxProviderCalls: route.maxProviderCalls,
+        maxProviderCalls,
         assignedStep: await this.currentAssignedSubagentStep(),
       })
       const result = await this.runGenericSubagent(requestId, taskState, provider, providerMetrics, signal)
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
       const metrics = providerMetrics.calls > 0 ? finalizeProviderMetrics(providerMetrics) : undefined
+      this.recordSubagentInvocationSummary({
+        requestId,
+        role: request.role,
+        status: result.status,
+        turnsUsed: taskState.turnsUsed,
+        providerCalls: providerMetrics.calls,
+        metrics,
+        budgetSnapshot: this.subagentBudgetSnapshot(request.role),
+      })
       this.onEvent?.({ type: "subagent", status: result.status === "failed" ? "failed" : "completed", info, elapsedMs: metrics?.providerElapsedMs, error: result.status === "failed" ? result.summary : undefined, metrics })
       emitLog(this.subagentLogger, {
         type: "state",
@@ -938,8 +1069,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     } catch (error) {
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
       const detail = error instanceof Error ? error.message : String(error)
+      const metrics = providerMetrics.calls > 0 ? finalizeProviderMetrics(providerMetrics) : undefined
+      this.recordSubagentInvocationSummary({
+        requestId,
+        role: request.role,
+        status: "failed",
+        turnsUsed: taskState?.turnsUsed ?? providerMetrics.calls,
+        providerCalls: providerMetrics.calls,
+        metrics,
+        budgetSnapshot: this.subagentBudgetSnapshot(request.role),
+      })
       emitLog(this.subagentLogger, { type: "state", name: "subagent.result", detail: { requestId, role: request.role, status: "failed", error: detail, turnsUsed: providerMetrics.calls, budget: this.subagentBudgetSnapshot(request.role) } })
-      this.onEvent?.({ type: "subagent", status: "failed", info, error: detail, elapsedMs: providerMetrics.providerElapsedMs, metrics: providerMetrics.calls > 0 ? finalizeProviderMetrics(providerMetrics) : undefined })
+      this.onEvent?.({ type: "subagent", status: "failed", info, error: detail, elapsedMs: providerMetrics.providerElapsedMs, metrics })
       return {
         title: `subagent ${request.role}`,
         output: formatSubagentResult({ role: request.role, status: "failed", summary: detail }),
@@ -960,7 +1101,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     const { packet } = taskState
     const agent = createAgent(packet.role)
     const context = new ContextManager({ maxTokens: this.settings.maxTokens, contextWindowTokens: this.provider.capabilities?.contextWindowTokens ?? this.settings.maxTokens })
-    context.add(userMessage(buildSubagentTaskPrompt(packet, this.context.selectedLedgerText(), this.context.state.summary), []))
+    context.add(userMessage(buildSubagentTaskPrompt(packet, this.context.selectedLedgerText(), this.context.state.summary, this.recentSubagentResults()), []))
     const tools = filterToolsForAgent(this.subagentRegistry.list("build"), { role: packet.role, depth: agent.depth ?? 1 })
     const reasoningChunks: string[] = []
 
@@ -1014,11 +1155,12 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           status: "succeeded",
           summary,
           ...(taskState.findings.length > 0 ? { findings: taskState.findings.slice(0, 6) } : {}),
+          ...(taskState.evidenceRefs.length > 0 ? { evidenceRefs: taskState.evidenceRefs.slice(0, 6) } : {}),
           ...(taskState.artifacts.length > 0 ? { artifacts: taskState.artifacts.slice(0, 6) } : {}),
         }
       }
 
-      context.add(toolCallMessage(turn.toolCalls))
+      context.add(toolCallMessage(turn.toolCalls, turn.reasoningText, turn.text))
       for (const call of turn.toolCalls) {
         const result = await this.executeSubagentInnerToolCall(requestId, taskState, context, call, signal)
         noteSubagentToolResult(taskState, {
@@ -1062,8 +1204,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     return runToolCall({
       registry: this.subagentRegistry,
       sandbox: this.subagentSandbox,
-      permission: PermissionService.autoApprove(defaultPermissionRules("build")),
-      permissionFor: () => PermissionService.autoApprove(defaultPermissionRules("build")),
+      permission: new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject"),
+      permissionFor: () => new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject"),
       skills: this.subagentSkills,
       context,
       toolProgressIntervalMs: 0,
@@ -1080,6 +1222,19 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
   private pendingSelectedSkills(selectedSkills: Awaited<ReturnType<AgentRunner["selectedSkills"]>>) {
     return pendingSelectedSkillsForSettings(this.settings, selectedSkills)
+  }
+
+  private recentSubagentResults(limit = 4) {
+    const results: string[] = []
+    for (const message of [...this.context.state.messages].reverse()) {
+      for (const part of [...message.parts].reverse()) {
+        if (part.type !== "tool_result") continue
+        if (part.toolName !== "delegate_subagent" || part.status !== "succeeded") continue
+        if (part.output.trim()) results.push(part.output.trim())
+        if (results.length >= limit) return results.reverse()
+      }
+    }
+    return results.reverse()
   }
 
   private markSkillLoaded(input: unknown) {
@@ -1193,15 +1348,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     if (role !== "summary" && this.activeForegroundSubagentRequestID !== undefined) {
       return { ok: false as const, error: "subagent_concurrency_blocked" as const, reason: `Subagent concurrency blocked: request ${this.activeForegroundSubagentRequestID} is still running.`, snapshot }
     }
-    if (this.subagentUsage.usedTurns + this.subagentUsage.reservedTurns + requestedTurns > maxSubagentTurnsPerRun) {
+    const remainingTurns = maxSubagentTurnsPerRun - this.subagentUsage.usedTurns - this.subagentUsage.reservedTurns
+    if (remainingTurns <= 0) {
       return { ok: false as const, error: "subagent_budget_denied" as const, reason: `Subagent budget denied: turn cap ${maxSubagentTurnsPerRun} would be exceeded.`, snapshot }
     }
+    const reservedTurns = Math.max(1, Math.min(requestedTurns, remainingTurns))
     this.subagentUsage.startedInvocations += 1
     this.subagentUsage.byRole[role] += 1
-    this.subagentUsage.reservedTurns += requestedTurns
+    this.subagentUsage.statsByRole[role].started += 1
+    this.subagentUsage.reservedTurns += reservedTurns
     return {
       ok: true as const,
-      reservedTurns: requestedTurns,
+      reservedTurns,
       snapshot: this.subagentBudgetSnapshot(role),
     }
   }
@@ -1225,6 +1383,64 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       roleInvocationLimit: roleInvocationLimit(role),
       roleInvocations: this.subagentUsage.byRole[role],
     }
+  }
+
+  private recordSubagentInvocationSummary(input: {
+    requestId: number
+    role: SubagentRole
+    status: SubagentExecutionResult["status"]
+    turnsUsed: number
+    providerCalls: number
+    metrics?: ReturnType<typeof finalizeProviderMetrics>
+    budgetSnapshot: SubagentBudgetSnapshot
+  }) {
+    const stats = this.subagentUsage.statsByRole[input.role]
+    if (input.status === "succeeded") stats.succeeded += 1
+    if (input.status === "failed") stats.failed += 1
+    if (input.status === "handoff") stats.handoff += 1
+    stats.turnsUsed += input.turnsUsed
+    stats.inputTokens += input.metrics?.inputTokens ?? 0
+    stats.outputTokens += input.metrics?.outputTokens ?? 0
+    stats.cacheHitTokens += input.metrics?.cacheHitTokens ?? 0
+    stats.cacheMissTokens += input.metrics?.cacheMissTokens ?? 0
+    const detail = {
+      role: input.role,
+      requestId: input.requestId,
+      status: input.status,
+      turnsUsed: input.turnsUsed,
+      providerCalls: input.providerCalls,
+      tokens: {
+        inputTokens: input.metrics?.inputTokens ?? 0,
+        outputTokens: input.metrics?.outputTokens ?? 0,
+      },
+      cache: {
+        cacheHitTokens: input.metrics?.cacheHitTokens ?? 0,
+        cacheMissTokens: input.metrics?.cacheMissTokens ?? 0,
+        hitRate: input.metrics?.hitRate ?? 0,
+      },
+      budgetSnapshot: input.budgetSnapshot,
+    }
+    emitLog(this.logger, { type: "state", name: "subagent.invocation_summary", detail })
+    emitLog(this.subagentLogger, { type: "state", name: "subagent.invocation_summary", detail })
+  }
+
+  private emitSubagentUsageSummary() {
+    if (this.subagentUsage.startedInvocations === 0) return
+    const byRole = Object.fromEntries(
+      subagentRoles
+        .map((role) => [role, this.subagentUsage.statsByRole[role]] as const)
+        .filter(([, stats]) => stats.started > 0),
+    )
+    const detail = {
+      total: {
+        started: this.subagentUsage.startedInvocations,
+        turnsUsed: this.subagentUsage.usedTurns,
+        reservedTurns: this.subagentUsage.reservedTurns,
+      },
+      byRole,
+    }
+    emitLog(this.logger, { type: "state", name: "subagent.usage_summary", detail })
+    emitLog(this.subagentLogger, { type: "state", name: "subagent.usage_summary", detail })
   }
 
   private noteExternalEvidence() {
@@ -1261,7 +1477,75 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
   }
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string; forcePlanning?: boolean }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId })
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId, forcePlanning: input.forcePlanning })
+}
+
+function lastSubagentDelegationFailedOrHandoff(messages: Message[]): boolean {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    for (const part of msg.parts) {
+      if (part.type === "tool_result" && part.toolName === "delegate_subagent") {
+        const subagentStatus = part.metadata?.subagentStatus
+        const isTruncated = typeof part.output === "string" && part.output.includes("[truncated")
+        return subagentStatus === "failed" || subagentStatus === "handoff" || isTruncated
+      }
+    }
+  }
+  return false
+}
+
+function hasSuccessfulReviewerSubagent(messages: Message[]): boolean {
+  return messages.some((message) => message.parts.some((part) =>
+    part.type === "tool_result" &&
+    part.toolName === "delegate_subagent" &&
+    part.status === "succeeded" &&
+    part.metadata?.subagentRole === "reviewer" &&
+    part.metadata?.subagentStatus !== "failed"
+  ))
+}
+
+function requiresReviewerDelegationBeforeFinal(prompt: string, activePlanStep?: PlanStep) {
+  const text = [prompt, activePlanStep?.goal ?? "", activePlanStep?.doneWhen ?? ""].join("\n").toLowerCase()
+  const reviewIntent = /\b(code complete|code review|review\/repair|review\/fix|audit)\b|code-complete|项目\s*review|代码审查|代码评审|审查\/修复|修复\/优化方案|优化方案/.test(text)
+  const boundedReviewSignal = /\b(cc|code complete|type safety|error handling|test coverage|bounded scope|dimension|file group)\b|维度|文件组|类型安全|错误处理|测试覆盖|防御式编程/.test(text)
+  const pureQuestion = /为什么|why|怎么|how/.test(text) && !/制定|输出|生成|create|write/.test(text)
+  return reviewIntent && boundedReviewSignal && !pureQuestion
+}
+
+function shouldInjectReviewPlanningTemplate(prompt: string, requiresProposedPlan: boolean) {
+  if (!requiresProposedPlan) return false
+  return /\b(review|code review|audit|regression)\b|代码评审|代码审查|审查代码|评审代码|review 当前代码/i.test(prompt)
+}
+
+function reviewPlanningTemplate(prompt: string) {
+  return [
+    "Review Planning Gate Template:",
+    `- The current request looks like a review task: ${compactLine(prompt) || "review task"}.`,
+    "- Use only bounded read-only inspection before submitting the proposal plan.",
+    "- Call plan_exit with a low-risk review plan once the review scope is clear.",
+    "- Anti-pattern warning: before outputting a review/repair/optimization plan, check whether reviewer can be delegated. If a broad review can be split into bounded scopes such as Code Complete dimensions, file groups, type safety, error handling, or test coverage, include reviewer delegation; coordinator must synthesize, not do all review work itself.",
+    "- Use this structure:",
+    "  1. Research Phase: inspect diff/relevant files.",
+    "  2. Delegation Phase: delegate bounded review or exploration work.",
+    "  3. Review Phase: synthesize findings and produce the final review output.",
+    "- If you need delegate_subagent or deeper multi-step investigation, put that inside plan steps instead of calling it now.",
+    "- If the scope is broad, still submit a small bounded first-pass review plan now.",
+  ].join("\n")
+}
+
+function buildPlanGateFallbackMessage(turn: ProviderTurnResult) {
+  const rawText = turn.lastRejectedTurn?.text?.trim()
+  const toolNames = turn.lastRejectedTurn?.toolNames ?? []
+  const reasoning = turn.lastRejectedTurn?.reasoningText?.trim()
+  const evidence = rawText
+    || (toolNames.length > 0 ? `Last invalid tool intent: ${toolNames.join(", ")}.` : "")
+    || (reasoning ? `Last hidden reasoning summary: ${compactLine(reasoning)}` : "")
+    || "The model did not return any usable proposal content."
+  return [
+    "模型连续未按要求产出计划，已中断本轮执行。",
+    "要求：必须先提交 proposal plan（`plan_exit` 或 `<proposed_plan>`），然后才能继续。",
+    `最后一次无效输出：${evidence}`,
+  ].join("\n")
 }

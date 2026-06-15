@@ -36,5 +36,5 @@ export const autoInspectIgnoredBasenames = new Set(["Cargo.lock", "package-lock.
 export const autoInspectIgnoredDirectories = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"])
 
 // Memory recall
-export const autoRecallMemoryKinds = ["session_archive", "preference", "repo_fact", "failure_pattern", "successful_workflow", "task_state"] as const
+export const autoRecallMemoryKinds = ["session_archive", "preference", "repo_fact", "failure_pattern", "successful_workflow"] as const
 export const maxAutoRecalledMemoryRecords = 3

@@ -16,6 +16,7 @@ export type SubagentExecutionResult = {
   status: SubagentExecutionStatus
   summary: string
   findings?: string[]
+  evidenceRefs?: string[]
   artifacts?: string[]
   nextAction?: string
 }
@@ -41,6 +42,7 @@ export type SubagentTaskState = {
   turnsUsed: number
   lastAssistantText?: string
   findings: string[]
+  evidenceRefs: string[]
   artifacts: string[]
   blockedActions: string[]
 }
@@ -56,16 +58,16 @@ export type SubagentBudgetSnapshot = {
 }
 
 export const subagentInvocationLimits: Record<SubagentRole, number> = {
-  summary: 2,
-  explorer: 2,
-  reviewer: 1,
-  debugger: 2,
-  tester: 2,
-  docs_researcher: 1,
+  summary: 3,
+  explorer: 4,
+  reviewer: 2,
+  debugger: 3,
+  tester: 3,
+  docs_researcher: 2,
 }
 
-export const maxSubagentInvocationsPerRun = 6
-export const maxSubagentTurnsPerRun = 15
+export const maxSubagentInvocationsPerRun = 10
+export const maxSubagentTurnsPerRun = 32
 
 const coordinatorOnlyToolNames = new Set(["delegate_subagent", "plan_exit", "plan_step_complete", "plan_step_fail"])
 const writeToolNames = new Set(["patch", "write", "edit", "memory_add", "memory_promote", "git_stage", "git_commit", "git_restore_guarded", "git_branch", "connector_call"])
@@ -109,6 +111,9 @@ const pureFactFindingToolNames = new Set([
 ])
 const delegatedCoordinatorToolNames = new Set([...docsResearchToolNames, ...pureFactFindingToolNames])
 const delegatedSearchToolNames = new Set(["repo_map", "find_definition", "find_references", "call_graph", "rg_search", "grep"])
+const reviewTaskHintPattern = /\b(code review|review|reviewer|regression|audit)\b|代码评审|代码审查|复审|评审/i
+const debugTaskHintPattern = /\b(debug|debugger|diagnos|trace|repro|crash|error|failure|flake|flaky|logs?)\b|调试|排查|复现|报错|错误|失败|日志/i
+const verificationBashPattern = /^(bun test|bun run test|bun run build|bun run typecheck|bun run verify|bun run gate|npm test|npm run test|npm run build|npm run typecheck|npm run verify|pnpm test|pnpm run test|pnpm run build|pnpm run typecheck|pnpm run verify|pnpm exec tsc|npx tsc|go test|cargo test|pytest|vitest|jest|mocha)\b/i
 
 export function roleInvocationLimit(role: SubagentRole) {
   return subagentInvocationLimits[role]
@@ -171,6 +176,7 @@ export function createSubagentTaskState(packet: SubagentTaskPacket): SubagentTas
     packet,
     turnsUsed: 0,
     findings: [],
+    evidenceRefs: [],
     artifacts: [],
     blockedActions: [],
   }
@@ -192,6 +198,7 @@ export function noteSubagentToolResult(
   if (input.status === "succeeded") {
     const preview = compactText(input.output, 200)
     if (preview) pushUnique(state.findings, `${input.toolName}: ${preview}`)
+    pushUnique(state.evidenceRefs, evidenceRef(input.toolName, input.title, input.output))
   }
 }
 
@@ -204,6 +211,7 @@ export function buildSubagentHandoffResult(state: SubagentTaskState): SubagentEx
     ? `Success criteria not yet proven: ${state.packet.successCriteria}.`
     : "The assigned task is not yet fully proven complete."
   const findings = state.findings.slice(0, 6)
+  const evidenceRefs = state.evidenceRefs.slice(0, 6)
   const artifacts = state.artifacts.slice(0, 6)
   const summaryParts = [
     `Subagent ${state.packet.role} reached its ${state.packet.maxProviderCalls}-turn budget and is returning a stage summary for the coordinator.`,
@@ -219,20 +227,58 @@ export function buildSubagentHandoffResult(state: SubagentTaskState): SubagentEx
     status: "handoff",
     summary: summaryParts.join(" "),
     ...(findings.length > 0 ? { findings } : {}),
+    ...(evidenceRefs.length > 0 ? { evidenceRefs } : {}),
     ...(artifacts.length > 0 ? { artifacts } : {}),
     nextAction,
   }
 }
 
-export function suggestedCoordinatorSubagentRole(toolCalls: ToolCall[]): Exclude<SubagentRole, "summary" | "reviewer" | "debugger" | "tester"> | undefined {
+function evidenceRef(toolName: string, title: string, output: string) {
+  const fileMatch = output.match(/\b(?:file|path):\s*([^\n]+)/i)
+  const excerptMatch = output.match(/\bexcerpt:\s*([\s\S]{0,120})/i)
+  const detail = fileMatch?.[1]?.trim() || excerptMatch?.[1]?.replace(/\s+/g, " ").trim() || compactText(output, 120)
+  return compactText(`${toolName}: ${title}${detail ? ` (${detail})` : ""}`, 220)
+}
+
+export function suggestedCoordinatorSubagentRole(
+  toolCalls: ToolCall[],
+  hint: { taskHint?: string; requiredRole?: Exclude<SubagentRole, "summary"> } = {},
+): Exclude<SubagentRole, "summary"> | undefined {
   if (toolCalls.length === 0) return undefined
   if (toolCalls.some((call) => call.name === "delegate_subagent")) return undefined
   const actionableCalls = toolCalls.filter((call) => !isCoordinatorOnlyTool(call.name))
   if (actionableCalls.length === 0) return undefined
-  if (!actionableCalls.every((call) => delegatedCoordinatorToolNames.has(call.name))) return undefined
+  if (hint.requiredRole) return hint.requiredRole
+  if (!actionableCalls.every((call) => delegatedCoordinatorToolNames.has(call.name) || call.name === "bash")) return undefined
   if (actionableCalls.every((call) => docsResearchToolNames.has(call.name))) return "docs_researcher"
+  if (looksLikeTesterTurn(actionableCalls)) return "tester"
+  if (looksLikeDebuggerTurn(actionableCalls, hint.taskHint)) return "debugger"
+  if (looksLikeReviewerTurn(actionableCalls, hint.taskHint)) return "reviewer"
   if (actionableCalls.some((call) => delegatedSearchToolNames.has(call.name) || pureFactFindingToolNames.has(call.name))) return "explorer"
   return undefined
+}
+
+function looksLikeReviewerTurn(actionableCalls: ToolCall[], taskHint?: string) {
+  if (!taskHint || !reviewTaskHintPattern.test(taskHint)) return false
+  return actionableCalls.every((call) => pureFactFindingToolNames.has(call.name))
+}
+
+function looksLikeDebuggerTurn(actionableCalls: ToolCall[], taskHint?: string) {
+  if (!actionableCalls.some((call) => call.name === "bash")) return false
+  if (looksLikeTesterTurn(actionableCalls)) return false
+  return debugTaskHintPattern.test(taskHint ?? "")
+}
+
+function looksLikeTesterTurn(actionableCalls: ToolCall[]) {
+  const bashCalls = actionableCalls.filter((call) => call.name === "bash")
+  if (bashCalls.length === 0) return false
+  return bashCalls.every((call) => verificationBashPattern.test(bashCommand(call)))
+}
+
+function bashCommand(call: ToolCall) {
+  if (!call.input || typeof call.input !== "object") return ""
+  const command = (call.input as Record<string, unknown>).command
+  return typeof command === "string" ? command.trim() : ""
 }
 
 function pushUnique(list: string[], value: string) {

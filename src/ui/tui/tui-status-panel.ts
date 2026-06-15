@@ -57,6 +57,24 @@ export function generateStatusPanelLines(input: {
     reset,
   ))
 
+  if (input.context.goal) {
+    const goal = input.context.goal
+    lines.push(padPanelLine(
+      `  \x1b[35m🎯\x1b[0m  \x1b[1m${truncateToWidth(copy.goalPanelSummary(goal.status, goal.iteration, goal.activePlanId), width - 6)}\x1b[0m`,
+      width,
+      chars,
+      color,
+      reset,
+    ))
+    lines.push(padPanelLine(
+      `  \x1b[90m${truncateToWidth(copy.goalPanelDetail(goal.objective, goal.blocker), width - 6)}\x1b[0m`,
+      width,
+      chars,
+      color,
+      reset,
+    ))
+  }
+
   let body = ""
   if (input.queuedPrompt) {
     body = `  \x1b[33m📥\x1b[0m  \x1b[1m${copy.queuedNextLabel}:\x1b[0m \x1b[90m"${truncateToWidth(input.queuedPrompt, width - 20)}"\x1b[0m`

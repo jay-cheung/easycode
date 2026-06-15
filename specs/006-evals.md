@@ -36,7 +36,7 @@ Tasks without `providers` are fake-provider deterministic evals. Real provider e
 
 ## Cache Benchmark Contract
 - Cache benchmarks support `--suite real` and `--suite all`.
-- The benchmark measures the fixed every-step prompt strategy used by normal agent runs.
+- The benchmark measures the default prompt/cache strategy used by normal agent runs.
 - Effective benchmark cost is input-only by default: cache-miss input tokens plus cached input tokens multiplied by the cached-input discount. Output tokens are reported for visibility but do not affect `effective_input` unless explicitly overridden.
 
 ## Unified Quality Gate Contract

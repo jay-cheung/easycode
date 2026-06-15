@@ -11,7 +11,6 @@ import { createProvider, defaultProviderCapabilities, hasProvider, listProviders
 import { normalizeSessionSettings, type SessionSettings } from "../../src/settings"
 import { createBuiltinRegistry, type ToolContext, type ToolRegistryLike, type ToolResult } from "../../src/tool"
 
-type CacheBenchmarkProfile = "every-step"
 type BenchmarkProviderName = ProviderName | "simulated"
 type BenchmarkSuite = "real" | "all"
 
@@ -21,7 +20,6 @@ type CacheBenchmarkTask = {
   fixture: string
   tools?: "builtin" | "none"
   providers?: BenchmarkProviderName[]
-  profiles?: CacheBenchmarkProfile[]
   suite?: BenchmarkSuite
   settings?: Partial<SessionSettings>
   syntheticToolLoop?: "read-once" | "read-always" | "semantic-once"
@@ -32,7 +30,6 @@ type CacheBenchmarkTask = {
 type BenchmarkOptions = {
   root?: string
   provider?: BenchmarkProviderName
-  profiles?: CacheBenchmarkProfile[]
   cachedInputMultiplier?: number
   outputTokenMultiplier?: number
   suite?: BenchmarkSuite
@@ -42,7 +39,6 @@ type BenchmarkOptions = {
 }
 
 type ProviderCallObservation = {
-  profile: CacheBenchmarkProfile
   taskID: string
   turnIndex: number
   callIndex: number
@@ -55,7 +51,6 @@ type ProviderCallObservation = {
 }
 
 type ProfileSummary = {
-  profile: CacheBenchmarkProfile
   calls: number
   inputTokens: number
   outputTokens: number
@@ -85,7 +80,7 @@ class CacheBenchmarkRecorder {
   private readonly observations: ProviderCallObservation[] = []
   private turnIndex = 0
 
-  constructor(private readonly profile: CacheBenchmarkProfile, private readonly taskID: string) {}
+  constructor(private readonly taskID: string) {}
 
   startTurn(turnIndex: number) {
     this.turnIndex = turnIndex
@@ -97,7 +92,6 @@ class CacheBenchmarkRecorder {
     const estimatedCachedPrefixTokens = this.cacheEntries.reduce((best, entry) => Math.max(best, cacheableCommonPrefixTokens(entry, serialized)), 0)
     this.cacheEntries.push(serialized)
     const observation: ProviderCallObservation = {
-      profile: this.profile,
       taskID: this.taskID,
       turnIndex: this.turnIndex,
       callIndex: this.observations.length + 1,
@@ -142,16 +136,16 @@ class RecordingProvider implements Provider {
 
   async *stream(input: ProviderInput): AsyncIterable<ProviderEvent> {
     const observation = this.recorder.observe(input)
-    this.log(`call start profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} est_input=${observation.estimatedInputTokens} est_cached_prefix=${observation.estimatedCachedPrefixTokens} provider=${this.name}`)
+    this.log(`call start task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} est_input=${observation.estimatedInputTokens} est_cached_prefix=${observation.estimatedCachedPrefixTokens} provider=${this.name}`)
     if (!this.options.inner) {
       yield* this.syntheticStream(input, observation)
-      this.log(`call done profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex}`)
+      this.log(`call done task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex}`)
       return
     }
     let lastEventAt = Date.now()
     const heartbeat = setInterval(() => {
       const idleSeconds = Math.round((Date.now() - lastEventAt) / 1000)
-      this.log(`waiting profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} idle=${idleSeconds}s provider=${this.name}`)
+      this.log(`waiting task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} idle=${idleSeconds}s provider=${this.name}`)
     }, this.options.heartbeatMs ?? 10_000)
     try {
       for await (const event of this.options.inner.stream(input)) {
@@ -159,15 +153,15 @@ class RecordingProvider implements Provider {
         if (event.type === "usage") {
           const usage = this.patternedUsage(observation) ?? event
           this.recorder.recordUsage(observation, usage)
-          this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${usage.inputTokens} cached=${usage.cacheHitTokens ?? 0} miss=${usage.cacheMissTokens ?? Math.max(0, usage.inputTokens - (usage.cacheHitTokens ?? 0))} output=${usage.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+          this.log(`usage task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${usage.inputTokens} cached=${usage.cacheHitTokens ?? 0} miss=${usage.cacheMissTokens ?? Math.max(0, usage.inputTokens - (usage.cacheHitTokens ?? 0))} output=${usage.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
           yield usage
           continue
         }
-        if (event.type === "request") this.log(`request profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} url=${event.request.url}`)
-        if (event.type === "response") this.log(`response profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} status=${event.response.status} ok=${event.response.ok}`)
-        if (event.type === "tool_call") this.log(`tool_call profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} tool=${event.call.name}`)
-        if (event.type === "failure") this.log(`failure profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} code=${event.error.code ?? "-"} message=${oneLine(event.error.message)}`)
-        if (event.type === "done") this.log(`call done profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex}`)
+        if (event.type === "request") this.log(`request task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} url=${event.request.url}`)
+        if (event.type === "response") this.log(`response task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} status=${event.response.status} ok=${event.response.ok}`)
+        if (event.type === "tool_call") this.log(`tool_call task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} tool=${event.call.name}`)
+        if (event.type === "failure") this.log(`failure task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} code=${event.error.code ?? "-"} message=${oneLine(event.error.message)}`)
+        if (event.type === "done") this.log(`call done task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex}`)
         yield event
       }
     } finally {
@@ -188,7 +182,7 @@ class RecordingProvider implements Provider {
     if (this.shouldRepoMap(input)) {
       yield { type: "tool_call", call: { id: `call_cache_repo_map_${observation.callIndex}`, name: "repo_map", input: { dir: "src", language: "typescript" } } }
       this.recorder.recordUsage(observation, patterned)
-      this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+      this.log(`usage task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
       yield patterned
       yield { type: "done" }
       return
@@ -197,7 +191,7 @@ class RecordingProvider implements Provider {
     if (this.shouldReadLines(input)) {
       yield { type: "tool_call", call: { id: `call_cache_read_lines_${observation.callIndex}`, name: "read_lines", input: { filePath: "src/add.ts", startLine: 1, endLine: 3 } } }
       this.recorder.recordUsage(observation, patterned)
-      this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+      this.log(`usage task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
       yield patterned
       yield { type: "done" }
       return
@@ -206,7 +200,7 @@ class RecordingProvider implements Provider {
     if (this.shouldRead(input)) {
       yield { type: "tool_call", call: { id: `call_cache_read_${observation.callIndex}`, name: "read", input: { filePath: "src/add.ts" } } }
       this.recorder.recordUsage(observation, patterned)
-      this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+      this.log(`usage task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
       yield patterned
       yield { type: "done" }
       return
@@ -214,7 +208,7 @@ class RecordingProvider implements Provider {
 
     yield { type: "text_delta", text: "Cache benchmark response." }
     this.recorder.recordUsage(observation, patterned)
-    this.log(`usage profile=${observation.profile} task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
+    this.log(`usage task=${observation.taskID} turn=${observation.turnIndex + 1} call=${observation.callIndex} input=${patterned.inputTokens} cached=${patterned.cacheHitTokens ?? 0} miss=${patterned.cacheMissTokens ?? Math.max(0, patterned.inputTokens - (patterned.cacheHitTokens ?? 0))} output=${patterned.outputTokens}${this.options.syntheticUsagePattern ? " source=pattern" : ""}`)
     yield patterned
     yield { type: "done" }
   }
@@ -256,64 +250,60 @@ export async function runCacheBenchmark(options: BenchmarkOptions = {}) {
   await loadEnvFile(projectRoot)
   const provider = options.provider ?? "deepseek"
   const suite = options.suite ?? "real"
-  const profiles = options.profiles ?? ["every-step" as const]
   const defaultPricing = defaultCachePricing()
   const cachedInputMultiplier = options.cachedInputMultiplier ?? defaultPricing.inputCacheHit / defaultPricing.inputCacheMiss
   const outputTokenMultiplier = options.outputTokenMultiplier ?? 0
   const tasks = await loadTasks(projectRoot, provider, suite)
   const observations: ProviderCallObservation[] = []
-  const finalStrategyStates = new Map<CacheBenchmarkProfile, ContextStrategyState>()
+  let finalStrategyState: ContextStrategyState | undefined
   const logger = options.quiet === false ? benchmarkLogger() : undefined
-  logger?.(`start provider=${provider} suite=${suite} profiles=${profiles.join(",")} tasks=${tasks.map((task) => task.id).join(",")} heartbeat_ms=${options.heartbeatMs ?? 10_000}`)
+  logger?.(`start provider=${provider} suite=${suite} tasks=${tasks.map((task) => task.id).join(",")} heartbeat_ms=${options.heartbeatMs ?? 10_000}`)
 
-  for (const profile of profiles) {
-    logger?.(`profile start profile=${profile}`)
-    for (const task of tasks) {
-      if (task.profiles && !task.profiles.includes(profile)) continue
-      logger?.(`task start profile=${profile} task=${task.id} turns=${task.turns.length} tools=${task.tools ?? "builtin"} synthetic_usage=${task.syntheticUsagePattern ? "yes" : "no"}`)
-      const workdir = path.join(os.tmpdir(), `easycode-cache-${task.id}-${profile}-${Date.now()}`)
-      await copyDir(path.join(projectRoot, task.fixture), workdir)
-      const recorder = new CacheBenchmarkRecorder(profile, task.id)
-      const inner = provider === "simulated" ? undefined : createProvider(provider)
-      const wrappedProvider = new RecordingProvider(recorder, { inner, syntheticToolLoop: task.syntheticToolLoop, syntheticUsagePattern: task.syntheticUsagePattern, logger, heartbeatMs: options.heartbeatMs })
-      const settings = normalizeSessionSettings({ ...task.settings, provider }, provider)
-      const context = new ContextManager()
-      const runner = new AgentRunner({
-        root: workdir,
-        provider: wrappedProvider,
-        registry: task.tools === "none" ? emptyRegistry : createBuiltinRegistry(),
-        context,
-        permission: PermissionService.autoApprove(defaultPermissionRules(task.mode)),
-        settings,
-      })
+  for (const task of tasks) {
+    logger?.(`task start task=${task.id} turns=${task.turns.length} tools=${task.tools ?? "builtin"} synthetic_usage=${task.syntheticUsagePattern ? "yes" : "no"}`)
+    const workdir = path.join(os.tmpdir(), `easycode-cache-${task.id}-${Date.now()}`)
+    await copyDir(path.join(projectRoot, task.fixture), workdir)
+    const recorder = new CacheBenchmarkRecorder(task.id)
+    const inner = provider === "simulated" ? undefined : createProvider(provider)
+    const wrappedProvider = new RecordingProvider(recorder, { inner, syntheticToolLoop: task.syntheticToolLoop, syntheticUsagePattern: task.syntheticUsagePattern, logger, heartbeatMs: options.heartbeatMs })
+    const settings = normalizeSessionSettings({ ...task.settings, provider }, provider)
+    const context = new ContextManager()
+    const runner = new AgentRunner({
+      root: workdir,
+      provider: wrappedProvider,
+      registry: task.tools === "none" ? emptyRegistry : createBuiltinRegistry(),
+      context,
+      permission: PermissionService.autoApprove(defaultPermissionRules(task.mode)),
+      settings,
+    })
 
-      for (const [turnIndex, prompt] of task.turns.entries()) {
-        logger?.(`turn start profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} prompt=${oneLine(prompt)}`)
-        recorder.startTurn(turnIndex)
-        await runner.run(prompt, task.mode)
-        logger?.(`turn done profile=${profile} task=${task.id} turn=${turnIndex + 1}/${task.turns.length} strategy=${strategyLabel(context.strategyState)}`)
-      }
-
-      observations.push(...recorder.snapshot())
-      finalStrategyStates.set(profile, context.strategyState)
-      await rm(workdir, { recursive: true, force: true })
-      logger?.(`task done profile=${profile} task=${task.id} calls=${recorder.snapshot().length} strategy=${strategyLabel(context.strategyState)}`)
+    for (const [turnIndex, prompt] of task.turns.entries()) {
+      logger?.(`turn start task=${task.id} turn=${turnIndex + 1}/${task.turns.length} prompt=${oneLine(prompt)}`)
+      recorder.startTurn(turnIndex)
+      await runner.run(prompt, task.mode)
+      logger?.(`turn done task=${task.id} turn=${turnIndex + 1}/${task.turns.length} strategy=${strategyLabel(context.strategyState)}`)
     }
-    logger?.(`profile done profile=${profile}`)
+
+    observations.push(...recorder.snapshot())
+    finalStrategyState = context.strategyState
+    await rm(workdir, { recursive: true, force: true })
+    logger?.(`task done task=${task.id} calls=${recorder.snapshot().length} strategy=${strategyLabel(context.strategyState)}`)
   }
 
+  const summary = summarizeProfile(observations, cachedInputMultiplier, outputTokenMultiplier, finalStrategyState)
   return {
     provider,
     suite,
     cachedInputMultiplier,
     outputTokenMultiplier,
-    summaries: profiles.map((profile) => summarizeProfile(profile, observations, cachedInputMultiplier, outputTokenMultiplier, finalStrategyStates.get(profile))),
+    summaries: [summary],
+    summary,
     observations,
   }
 }
 
-function summarizeProfile(profile: CacheBenchmarkProfile, observations: ProviderCallObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number, finalStrategyState: ContextStrategyState | undefined): ProfileSummary {
-  const calls = observations.filter((observation) => observation.profile === profile)
+function summarizeProfile(observations: ProviderCallObservation[], cachedInputMultiplier: number, outputTokenMultiplier: number, finalStrategyState: ContextStrategyState | undefined): ProfileSummary {
+  const calls = observations
   let inputTokens = 0
   let outputTokens = 0
   let cacheHitTokens = 0
@@ -329,7 +319,6 @@ function summarizeProfile(profile: CacheBenchmarkProfile, observations: Provider
   const effectiveInputTokens = cacheMissTokens + cacheHitTokens * cachedInputMultiplier
   const effectiveOutputTokens = outputTokens * outputTokenMultiplier
   return {
-    profile,
     calls: calls.length,
     inputTokens,
     outputTokens,
@@ -407,9 +396,6 @@ function commonPrefixLength(left: string, right: string) {
 function parseArgs(argv: string[]): BenchmarkOptions {
   const provider = valueAfter(argv, "--provider") ?? "deepseek"
   if (provider !== "simulated" && !hasProvider(provider)) throw new Error(`Unknown provider: ${provider}. Available providers: simulated, ${listProviders().join(", ")}`)
-  const profile = valueAfter(argv, "--profile")
-  const profiles = profile ? [profile as CacheBenchmarkProfile] : undefined
-  if (profiles?.some((item) => item !== "every-step")) throw new Error("Unknown profile. Use every-step.")
   const suite = (valueAfter(argv, "--suite") ?? "real") as BenchmarkSuite
   if (!["real", "all"].includes(suite)) throw new Error("Unknown suite. Use real or all.")
   const cachedMultiplier = valueAfter(argv, "--cached-input-multiplier")
@@ -417,7 +403,6 @@ function parseArgs(argv: string[]): BenchmarkOptions {
   const heartbeatMs = valueAfter(argv, "--heartbeat-ms")
   return {
     provider,
-    profiles,
     suite,
     cachedInputMultiplier: cachedMultiplier === undefined ? undefined : Number(cachedMultiplier),
     outputTokenMultiplier: outputMultiplier === undefined ? undefined : Number(outputMultiplier),
@@ -434,16 +419,13 @@ function valueAfter(argv: string[], flag: string) {
 }
 
 function formatReport(report: Awaited<ReturnType<typeof runCacheBenchmark>>) {
+  const summary = report.summary
   const lines = [
     `Cache benchmark provider=${report.provider} suite=${report.suite} cached_input_multiplier=${report.cachedInputMultiplier} output_token_multiplier=${report.outputTokenMultiplier}`,
     `cost ratio: 1 cache-miss input token ~= ${(1 / report.cachedInputMultiplier).toFixed(1)} cached input tokens`,
-    "profile       calls  input  cached  hit%   miss   output  effective_input  final",
+    "calls  input  cached  hit%   miss   output  effective_input  final",
   ]
-  for (const summary of report.summaries) {
-    lines.push(`${summary.profile.padEnd(13)} ${String(summary.calls).padStart(5)} ${String(Math.round(summary.inputTokens)).padStart(6)} ${String(Math.round(summary.cacheHitTokens)).padStart(7)} ${(summary.hitRate * 100).toFixed(1).padStart(5)} ${String(Math.round(summary.cacheMissTokens)).padStart(6)} ${String(Math.round(summary.outputTokens)).padStart(7)} ${String(Math.round(summary.effectiveTotalTokens)).padStart(16)} ${strategyLabel(summary.finalStrategyState)}`)
-  }
-  const best = [...report.summaries].sort((left, right) => left.effectiveTotalTokens - right.effectiveTotalTokens)[0]
-  if (best) lines.push(`recommendation: ${best.profile} minimizes effective token cost in this benchmark.`)
+  lines.push(`${String(summary.calls).padStart(5)} ${String(Math.round(summary.inputTokens)).padStart(6)} ${String(Math.round(summary.cacheHitTokens)).padStart(7)} ${(summary.hitRate * 100).toFixed(1).padStart(5)} ${String(Math.round(summary.cacheMissTokens)).padStart(6)} ${String(Math.round(summary.outputTokens)).padStart(7)} ${String(Math.round(summary.effectiveTotalTokens)).padStart(16)} ${strategyLabel(summary.finalStrategyState)}`)
   return lines.join("\n")
 }
 

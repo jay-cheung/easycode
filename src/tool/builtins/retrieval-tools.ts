@@ -1,9 +1,11 @@
 import { McpSourceService, WebFetchService, WebSearchService, formatMcpResource, formatMcpResources, formatWebFetchResult, formatWebResults, mcpCitation, webCitation, webFetchCitation } from "../../retrieval"
-import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, WebFetchInput, PlanStepCompleteInput, PlanStepFailInput, DelegateSubagentInput, objectSchema } from "./common"
+import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, WebFetchInput, PlanStepCompleteInput, PlanStepFailInput, GoalCompleteInput, GoalBlockedInput, GoalSetAcceptanceInput, DelegateSubagentInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
 import { loadStructuredPlanState, nextIncompletePlanStep } from "../../plans"
 import { PlanTracker } from "../../agent/planner"
+import { GoalStateError, assertGoalPhase, goalStateFromContext, writeGoalState } from "../../goal"
+import type { Message } from "../../message"
 
 function formatSkillArtifact(artifact: SkillArtifact) {
   const detail = artifact.kind === "missing" ? "missing" : artifact.kind
@@ -289,4 +291,182 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       }
     }
   })
+
+  registry.register({
+    name: "goal_set_acceptance",
+    description: "Record the goal acceptance criteria and completion checks that must be satisfied before the goal can be completed.",
+    inputSchema: GoalSetAcceptanceInput,
+    jsonSchema: objectSchema({
+      acceptanceCriteria: { type: "array", items: { type: "string" } },
+      completionChecks: { type: "array", items: { type: "string" } },
+    }, ["acceptanceCriteria", "completionChecks"]),
+    permission: "goal_set_acceptance",
+    modes: ["build"],
+    patterns: () => ["*"],
+    execute: async (input, ctx) => {
+      const params = GoalSetAcceptanceInput.parse(input)
+      if (!ctx.context) return { title: "Goal Acceptance Recorded", output: "Context manager missing.", metadata: { status: "failed", error: "context_missing" } }
+      let goal
+      try {
+        goal = assertGoalPhase(goalStateFromContext(ctx.context), "goal_set_acceptance", ["defining"])
+      } catch (error) {
+        if (error instanceof GoalStateError) {
+          return {
+            title: "Goal Acceptance Recorded",
+            output: error.message,
+            metadata: { status: "failed", error: "goal_acceptance_wrong_phase" },
+          }
+        }
+        return {
+          title: "Goal Acceptance Recorded",
+          output: String(error),
+          metadata: { status: "failed", error: "goal_acceptance_wrong_phase" },
+        }
+      }
+      writeGoalState(ctx.context, {
+        ...goal,
+        status: "planning",
+        acceptanceCriteria: params.acceptanceCriteria.map((item) => item.trim()).filter(Boolean),
+        completionChecks: params.completionChecks.map((item) => item.trim()).filter(Boolean),
+        blocker: undefined,
+        updatedAt: Date.now(),
+      })
+      return {
+        title: "Goal Acceptance Recorded",
+        output: [
+          "Acceptance criteria:",
+          ...params.acceptanceCriteria.map((item) => `- ${item}`),
+          "Completion checks:",
+          ...params.completionChecks.map((item) => `- ${item}`),
+        ].join("\n"),
+        metadata: {
+          status: "succeeded",
+          acceptanceCriteria: params.acceptanceCriteria,
+          completionChecks: params.completionChecks,
+        },
+      }
+    },
+  })
+
+  registry.register({
+    name: "goal_complete",
+    description: "Mark the current goal as fully satisfied and stop automatic continuation.",
+    inputSchema: GoalCompleteInput,
+    jsonSchema: objectSchema({ summary: { type: "string" } }, ["summary"]),
+    permission: "goal_complete",
+    modes: ["build"],
+    patterns: () => ["*"],
+    execute: async (input, ctx) => {
+      const params = GoalCompleteInput.parse(input)
+      if (ctx.context) {
+        const goal = goalStateFromContext(ctx.context)
+        if (goal) {
+          if (goal.acceptanceCriteria.length === 0 || goal.completionChecks.length === 0) {
+            return {
+              title: "Goal Completed",
+              output: "Goal acceptance criteria have not been recorded yet.",
+              metadata: { status: "failed", error: "goal_acceptance_missing" },
+            }
+          }
+          const planId = ctx.context.state.ledger?.current.find((record) => record.subject === "current_plan_id" && record.status === "current")?.value
+          if (goal.status === "executing" || planId) {
+            return {
+              title: "Goal Completed",
+              output: "The active plan slice must finish and be reviewed before the goal can be completed.",
+              metadata: { status: "failed", error: "goal_review_required", goalStatus: goal.status, activePlanId: planId },
+            }
+          }
+          if (goal.status === "reviewing") {
+            const latestAssistantText = latestAssistantTextFromMessages(ctx.context.state.messages)
+            if (reviewCompletionHasBlockingSignals(params.summary, latestAssistantText)) {
+              return {
+                title: "Goal Completed",
+                output: "Goal review still reports blocking defects or gaps. Use plan_exit for the next bounded fix/review slice instead of goal_complete.",
+                metadata: { status: "failed", error: "goal_review_blocking_findings", goalStatus: goal.status },
+              }
+            }
+          }
+          writeGoalState(ctx.context, { ...goal, status: "completed", blocker: undefined, summary: params.summary, updatedAt: Date.now() })
+          if (planId) await PlanTracker.clearActivePlan(ctx.context, ctx.sandbox.root, planId)
+        }
+      }
+      return {
+        title: "Goal Completed",
+        output: params.summary,
+        metadata: { status: "succeeded", goalStatus: "completed", summary: params.summary },
+      }
+    },
+  })
+
+  registry.register({
+    name: "goal_blocked",
+    description: "Mark the current goal as blocked because safe progress now requires user input or a denied high-risk action.",
+    inputSchema: GoalBlockedInput,
+    jsonSchema: objectSchema({ reason: { type: "string" } }, ["reason"]),
+    permission: "goal_blocked",
+    modes: ["build"],
+    patterns: () => ["*"],
+    execute: async (input, ctx) => {
+      const params = GoalBlockedInput.parse(input)
+      if (ctx.context) {
+        const goal = goalStateFromContext(ctx.context)
+        if (goal) {
+          writeGoalState(ctx.context, { ...goal, status: "blocked", blocker: params.reason, updatedAt: Date.now() })
+          const planId = ctx.context.state.ledger?.current.find((record) => record.subject === "current_plan_id" && record.status === "current")?.value
+          if (planId) await PlanTracker.clearActivePlan(ctx.context, ctx.sandbox.root, planId)
+        }
+      }
+      return {
+        title: "Goal Blocked",
+        output: params.reason,
+        metadata: { status: "succeeded", goalStatus: "blocked", reason: params.reason },
+      }
+    },
+  })
+}
+
+function latestAssistantTextFromMessages(messages: Message[]) {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message.role !== "assistant") continue
+    const text = message.parts
+      .flatMap((part) => part.type === "text" ? [part.text] : [])
+      .join("\n")
+      .trim()
+    if (text) return text
+  }
+  return ""
+}
+
+function reviewCompletionHasBlockingSignals(summary: string, latestAssistantText: string) {
+  const combined = [summary, latestAssistantText].filter(Boolean).join("\n").toLowerCase()
+  if (!combined) return false
+  const cleanPassPatterns = [
+    /\bno remaining (blocker|blockers|defect|defects|gap|gaps|critical issue|critical issues)\b/,
+    /\ball blockers resolved\b/,
+    /\bready to commit\b/,
+    /\bready for commit\b/,
+    /未发现阻塞/,
+    /无阻塞/,
+    /所有阻塞(已)?解决/,
+    /可以提交/,
+    /可提交/,
+  ]
+  if (cleanPassPatterns.some((pattern) => pattern.test(combined))) return false
+  const blockerPatterns = [
+    /\bnot committable\b/,
+    /\bmust be fixed\b/,
+    /\bblocking defects?\b/,
+    /\bblockers?\b/,
+    /\bcritical issues?\b/,
+    /\bremaining defects?\b/,
+    /\bfix(es)? first\b/,
+    /不可提交/,
+    /必须修复/,
+    /阻塞/,
+    /关键问题/,
+    /严重问题/,
+    /缺陷/,
+  ]
+  return blockerPatterns.some((pattern) => pattern.test(combined))
 }

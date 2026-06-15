@@ -36,7 +36,7 @@ export function summarize(options: APIxOptions, results: APIxResult[]) {
   const instructionFailures = instructionCases.filter((result) => !result.passed)
   const qualityGate = strict.length > 0 && strictSLA >= 0.95 && strictP0ResolutionSLA === 1 ? 1 : 0
   const compositeScore = qualityGate ? 1 : 0
-  const runID = `${new Date().toISOString()}-every-step-${options.provider}`
+  const runID = `${new Date().toISOString()}-${options.provider}`
   const ignoredExpectedFields = ignoredFieldsByTask(results)
   const benchmarkDefects = results.filter((result) => result.evaluationMode === "benchmark_defect").map((result) => ({
     taskID: result.id,
@@ -44,7 +44,6 @@ export function summarize(options: APIxOptions, results: APIxResult[]) {
   }))
   return {
     runID,
-    profile: "every-step",
     provider: options.provider,
     model: options.model ?? null,
     count: results.length,

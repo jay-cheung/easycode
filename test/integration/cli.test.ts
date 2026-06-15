@@ -367,7 +367,7 @@ describe("cli integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("task command creates, lists, and resolves checkpoints", async () => {
+  test("task command is no longer available", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
@@ -375,18 +375,16 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("/task checkpoint Fix the login bug\n/task list\n/task\n:exit\n")
+    child.stdin.write("/task checkpoint Fix the login bug\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
-    expect(stdout).toContain("Task checkpoint saved")
-    expect(stdout).toContain("Active task checkpoints:")
-    expect(stdout).toContain("Fix the login bug")
+    expect(stdout).toContain("Unknown command: /task")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })
 
-  test("session startup displays active task checkpoints", async () => {
+  test("session startup ignores legacy task_state memory records", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, ".easycode"), { recursive: true })
     await Bun.write(path.join(root, ".easycode", "memory.json"), JSON.stringify({
@@ -409,49 +407,25 @@ describe("cli integration", () => {
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
-    expect(stdout).toContain("Active task checkpoints:")
-    expect(stdout).toContain("Refactor auth module")
+    expect(stdout).not.toContain("Active task checkpoints:")
+    expect(stdout).not.toContain("Refactor auth module")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })
 
-  test("session startup injects active task checkpoints into provider context", async () => {
-    const root = await tmpdir()
-    await mkdir(path.join(root, ".easycode"), { recursive: true })
-    await Bun.write(path.join(root, ".easycode", "memory.json"), JSON.stringify({
-      records: [{
-        id: "mem_task_1",
-        kind: "task_state",
-        text: "Fix the login bug",
-        tags: ["task", "checkpoint"],
-        scope: { topics: ["task_checkpoint"] },
-        createdAt: Date.now(),
-      }],
-    }))
-
-    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
-      cwd: path.resolve(import.meta.dir, "../.."),
-      stdin: "pipe",
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    child.stdin.write("active task checkpoint eval\n:exit\n")
-    child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-
-    expect(status).toBe(0)
-    expect(stdout).toContain("Active task checkpoints:")
-    expect(stdout).toContain("Task checkpoint context used.")
-    expect(stderr).toBe("")
-    await rm(root, { recursive: true, force: true })
-  })
-
-  test("session switch keeps active task checkpoints in provider context", async () => {
+  test("session switch does not revive saved active plan state", async () => {
     const root = await tmpdir()
     await mkdir(path.join(root, ".easycode", "sessions"), { recursive: true })
     await Bun.write(path.join(root, ".easycode", "sessions", "alpha.json"), JSON.stringify({
       id: "alpha",
       messages: [],
+      ledger: {
+        current: [
+          { id: "cp1", kind: "checkpoint", subject: "current_plan_id", value: "plan_alpha", status: "current", updatedAtTurn: 1 },
+          { id: "cp2", kind: "checkpoint", subject: "current_plan_step", value: "step_1", status: "current", updatedAtTurn: 1 },
+          { id: "cp3", kind: "checkpoint", subject: "plan_lifecycle_status", value: "running", status: "current", updatedAtTurn: 1 },
+        ],
+      },
       settings: { provider: "fake", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
       updatedAt: 100,
     }, null, 2))
@@ -461,29 +435,18 @@ describe("cli integration", () => {
       settings: { provider: "fake", language: "en", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] },
       updatedAt: 200,
     }, null, 2))
-    await Bun.write(path.join(root, ".easycode", "memory.json"), JSON.stringify({
-      records: [{
-        id: "mem_task_1",
-        kind: "task_state",
-        text: "Fix the login bug",
-        tags: ["task", "checkpoint"],
-        scope: { topics: ["task_checkpoint"] },
-        createdAt: Date.now(),
-      }],
-    }))
-
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("1\n/session switch alpha\nactive task checkpoint eval\n:exit\n")
+    child.stdin.write("1\n/session switch alpha\n/goal status\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
 
     expect(status).toBe(0)
-    expect(stdout).toContain("Task checkpoint context used.")
+    expect(stdout).toContain("No active goal.")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   })
@@ -528,7 +491,7 @@ describe("cli integration", () => {
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
     expect(stdout).toContain("EasyCode TUI")
-    expect(stdout).toContain("/help /settings /sessions")
+    expect(stdout).toContain("/help /settings /goal /sessions")
     expect(stdout).toContain("[Settings]")
     expect(stdout).toContain("provider: fake")
     expect(stdout).toContain("[Sessions]")
@@ -734,6 +697,176 @@ describe("cli integration", () => {
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   }, { timeout: 12_000 })
+
+  test("non-low-risk default approval keeps [A] behavior and logs user_default", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("high-risk-plan\n")
+    await waitForOutput(() => stdout, "[A]pprove & execute", 5_000)
+    child.stdin.write("\n:exit\n")
+    child.stdin.end()
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+
+    expect(status).toBe(0)
+    expect(stdout).toContain("[A]pprove & execute")
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
+    expect(logText).toContain("\"name\":\"plan.approval\"")
+    expect(logText).toContain("\"approval_source\":\"user_default\"")
+    expect(logText).toContain("\"lowRisk\":false")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 15_000 })
+
+  test("low-risk plans auto-approve and log low_risk_auto", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("low-risk-plan\n:exit\n")
+    child.stdin.end()
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+
+    expect(status).toBe(0)
+    expect(stdout).toContain("Low-risk plan detected")
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
+    expect(logText).toContain("\"approval_source\":\"low_risk_auto\"")
+    expect(logText).toContain("\"lowRisk\":true")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 15_000 })
+
+  test("goal mode auto-plans, delegates a subagent step, and completes", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "add.ts"), "export function add(a: number, b: number) {\n  return a - b\n}\n")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("/goal goal-delegated-e2e\n:exit\n")
+    child.stdin.end()
+
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Goal started.")
+    expect(stdout).toContain("Goal Acceptance Recorded")
+    expect(stdout).toContain("Goal delegated e2e plan")
+    expect(stdout).toContain("delegate_subagent")
+    expect(stdout).toContain("plan_step_complete")
+    expect(stdout).toContain("Reviewer check: delegated evidence is complete")
+    expect(stdout).toContain("Goal completed.")
+    expect(stdout).toContain("goal-delegated-e2e completed after delegated inspection.")
+    expect(stderr).toBe("")
+
+    const planState = JSON.parse(await Bun.file(path.join(root, ".easycode", "plans", "default", "plan_goal_delegated_e2e.json")).text())
+    expect(planState.plan.lowRisk).toBe(true)
+    expect(planState.plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
+    expect(planState.checkpoint.status).toBe("completed")
+
+    const session = JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).text())
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "completed" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_objective", value: "goal-delegated-e2e" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_iteration", value: "1" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_acceptance_criteria", value: expect.stringContaining("delegated inspection slice") }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_completion_checks", value: expect.stringContaining("delegated result") }))
+
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
+    expect(logText).toContain("\"name\":\"provider.output\"")
+    expect(logText).toContain("\"name\":\"goal.started\"")
+    expect(logText).toContain("\"name\":\"goal.definition\"")
+    expect(logText).toContain("\"name\":\"goal.planning\"")
+    expect(logText).toContain("\"name\":\"goal.executing\"")
+    expect(logText).toContain("\"name\":\"goal.reviewing\"")
+    expect(logText).toContain("\"name\":\"goal.completed\"")
+    expect(logText).toContain("goal_set_acceptance")
+    expect(logText).toContain("plan_exit")
+    expect(logText).toContain("delegate_subagent")
+    expect(logText).toContain("plan_step_complete")
+    expect(logText).toContain("goal_complete")
+
+    const subagentLogText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.subagents.jsonl")).text()
+    expect(subagentLogText).toContain("\"name\":\"subagent.request\"")
+    expect(subagentLogText).toContain("\"role\":\"explorer\"")
+    expect(subagentLogText).toContain("\"role\":\"reviewer\"")
+    expect(subagentLogText).toContain("Found export function add")
+
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 15_000 })
+
+  test("goal mode can review a finished slice, replan automatically, and complete on a later slice", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "add.ts"), "export function add(a: number, b: number) {\n  return a - b\n}\n")
+    await Bun.write(path.join(root, "src", "sub.ts"), "export function sub(a: number, b: number) {\n  return a - b\n}\n")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    child.stdin.write("/goal goal-multi-slice-e2e\n:exit\n")
+    child.stdin.end()
+
+    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    expect(status).toBe(0)
+    expect(stdout).toContain("Goal started.")
+    expect(stdout).toContain("Goal multi-slice e2e plan 1")
+    expect(stdout).toContain("Goal multi-slice e2e plan 2")
+    expect(stdout).toContain("Slice 1 explorer: src/add.ts")
+    expect(stdout).toContain("Slice 2 explorer: src/sub.ts")
+    expect(stdout).toContain("Reviewer check: slice 1 is complete, but the goal still needs one more bounded slice")
+    expect(stdout).toContain("Reviewer check: slice 2 completed the remaining acceptance criteria")
+    expect(stdout).toContain("Goal completed.")
+    expect(stdout).toContain("goal-multi-slice-e2e completed after two delegated inspection slices.")
+    expect(stderr).toBe("")
+
+    const firstPlanState = JSON.parse(await Bun.file(path.join(root, ".easycode", "plans", "default", "plan_goal_multi_slice_e2e_1.json")).text())
+    const secondPlanState = JSON.parse(await Bun.file(path.join(root, ".easycode", "plans", "default", "plan_goal_multi_slice_e2e_2.json")).text())
+    expect(firstPlanState.plan.lowRisk).toBe(true)
+    expect(secondPlanState.plan.lowRisk).toBe(true)
+    expect(firstPlanState.checkpoint.status).toBe("completed")
+    expect(secondPlanState.checkpoint.status).toBe("completed")
+
+    const session = JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).text())
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "completed" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_objective", value: "goal-multi-slice-e2e" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_iteration", value: "2" }))
+
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
+    expect(logText).toContain("\"name\":\"goal.reviewing\"")
+    expect(logText.match(/"name":"goal\.planning"/g)?.length ?? 0).toBe(1)
+    expect(logText.match(/"name":"goal\.reviewing"/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+    expect(logText.match(/"name":"goal\.executing"/g)?.length ?? 0).toBeGreaterThanOrEqual(2)
+    expect(logText).toContain("plan_goal_multi_slice_e2e_1")
+    expect(logText).toContain("plan_goal_multi_slice_e2e_2")
+    expect(logText).toContain("goal_complete")
+
+    const subagentLogText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.subagents.jsonl")).text()
+    expect(subagentLogText).toContain("\"role\":\"explorer\"")
+    expect(subagentLogText).toContain("\"role\":\"reviewer\"")
+    expect(subagentLogText).toContain("Inspect src/add.ts for goal-multi-slice-e2e slice 1")
+    expect(subagentLogText).toContain("Inspect src/sub.ts for goal-multi-slice-e2e slice 2")
+    expect(subagentLogText).toContain("Review goal-multi-slice-e2e slice 1 completion state")
+    expect(subagentLogText).toContain("Review goal-multi-slice-e2e slice 2 completion state")
+
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 20_000 })
 
   test("tui single-run mode remains compatible with session logs", async () => {
     const root = await tmpdir()

@@ -24,7 +24,7 @@ describe("tui renderer", () => {
 
     expect(output).toContain("EasyCode TUI")
     expect(output).toContain("session=demo")
-    expect(output).toContain("/help /settings /sessions")
+    expect(output).toContain("/help /settings /goal /sessions")
     expect(output).toContain("[status] /settings")
     expect(output).toContain("[Settings]")
     expect(output).toContain("● Model")
@@ -102,10 +102,11 @@ describe("tui renderer", () => {
 
     expect(output).toContain("Subagent scheduled id=1, role=summary")
     expect(output).toContain("Subagent #1 summary completed")
+    expect(output).toContain("cache_hit=0.0%")
     expect(output).toContain("Round Subagent Invocations: 1")
     expect(output).toContain("Round Subagent Detail: summary x1")
     expect(output).toContain("Round Subagent Turns: 1")
-    expect(output).toContain("Round Subagent Tokens: 160")
+    expect(output).toContain("Round Subagent Tokens: 160 (hit 0.0%)")
     expect(output).toContain("Execution Completed")
     expect(output).not.toContain("[status] completed")
   })
@@ -146,6 +147,37 @@ describe("tui renderer", () => {
     expect(new Set(visibleWidths).size).toBe(1)
   })
 
+  test("renders goal state in the live status panel and keeps widths aligned", () => {
+    const lines = generateStatusPanelLines({
+      context: {
+        root: "/tmp/project",
+        mode: "build",
+        provider: "fake",
+        session: "demo",
+        goal: {
+          status: "reviewing",
+          objective: "Implement goal mode acceptance and review loop",
+          iteration: 2,
+          activePlanId: "plan_goal_mode_review",
+          blocker: "Awaiting bounded verification result",
+        },
+      },
+      language: "en",
+      columns: 88,
+      spinnerFrame: 0,
+      elapsedMs: 1_250,
+      statusText: "Reviewing goal slice",
+    })
+
+    expect(lines.join("\n")).toContain("Goal: reviewing")
+    expect(lines.join("\n")).toContain("iter: 2")
+    expect(lines.join("\n")).toContain("plan_goal_mode_review")
+    expect(lines.join("\n")).toContain("Objective: Implement goal mode acceptance and review loop")
+    expect(lines.join("\n")).toContain("blocker: Awaiting")
+    const visibleWidths = lines.map((line) => displayWidth(line))
+    expect(new Set(visibleWidths).size).toBe(1)
+  })
+
   test("keeps zh card headers aligned for tty rendering", () => {
     const card = drawCard("实时状态", ["第一行", "第二行"], 88, { borderStyle: "round" })
     const visibleWidths = card.split("\n").map((line) => displayWidth(line))
@@ -163,8 +195,8 @@ describe("tui renderer", () => {
       "en",
       1,
       { provider: "fake", model: "fake", calls: 66, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, totalTokens: 0, reasoningTokens: 0, hitRate: 0, providerElapsedMs: 1, firstResponseMs: 1, outputTokensPerSecond: 0, effectiveCost: 0, rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 } },
-      { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, roleCounts: {} },
-      { inputTokens: 0, outputTokens: 0, calls: 0, subagentInputTokens: 0, subagentOutputTokens: 0, subagentCalls: 0 },
+      { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, cacheHitTokens: 0, cacheMissTokens: 0, roleCounts: {} },
+      { inputTokens: 0, outputTokens: 0, calls: 0, subagentInputTokens: 0, subagentOutputTokens: 0, subagentCalls: 0, subagentCacheHitTokens: 0, subagentCacheMissTokens: 0 },
       "Stopped after maxSteps (66).\nContinue with another message to keep going.",
       72,
     )
@@ -231,5 +263,40 @@ describe("tui renderer", () => {
     const secondKey = state.phaseKey
     expect(secondKey).toBe("provider:fake:deepseek:2")
     expect(secondKey).not.toBe(firstKey)
+  })
+
+  test("renders goal lifecycle events in the timeline", () => {
+    let output = ""
+    const renderer = new TuiRenderer({ write: (text) => { output += text }, isTTY: false, columns: 88 }, {
+      root: "/tmp/project",
+      mode: "build",
+      provider: "fake",
+      session: "demo",
+    })
+
+    renderer.event({
+      type: "goal",
+      phase: "planning",
+      goal: {
+        status: "planning",
+        objective: "Implement goal mode",
+        iteration: 1,
+        activePlanId: "none",
+      },
+    })
+    renderer.event({
+      type: "goal",
+      phase: "cleared",
+      goal: {
+        status: "completed",
+        objective: "Implement goal mode",
+        iteration: 1,
+      },
+    })
+    renderer.finish()
+
+    expect(output).toContain("Goal planning status=planning")
+    expect(output).toContain("\"Implement goal mode\"")
+    expect(output).toContain("Goal cleared status=completed")
   })
 })

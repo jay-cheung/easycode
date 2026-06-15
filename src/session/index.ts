@@ -1,7 +1,9 @@
 import path from "node:path"
 import { mkdir, readdir, rm, stat } from "node:fs/promises"
 import { easycodeDir } from "../easycode-path"
+import { stripPlanLedger } from "../agent/planner"
 import { ContextManager, type ContextLedger, type ContextManagerLike } from "../context"
+import { stripGoalLedger } from "../goal"
 import { ProjectMemoryStore } from "../memory"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "../message"
 import { planStoreDir } from "../plans"
@@ -15,6 +17,8 @@ export type SessionTokenUsage = {
   subagentInputTokens: number
   subagentOutputTokens: number
   subagentCalls: number
+  subagentCacheHitTokens: number
+  subagentCacheMissTokens: number
 }
 
 export type SessionData = {
@@ -112,7 +116,7 @@ export class SessionStore {
       : session.messages
     for (const message of truncateLargeMessageOutputs(redactProtectedMessages(messages))) context.add(message)
     context.state.summary = session.summary
-    context.setLedger(session.ledger)
+    context.setLedger(stripPlanLedger(stripGoalLedger(session.ledger)))
     return context
   }
 
@@ -155,6 +159,8 @@ export function normalizeSessionTokenUsage(input: Partial<SessionTokenUsage> | u
     subagentInputTokens: normalizeUsageNumber(input?.subagentInputTokens),
     subagentOutputTokens: normalizeUsageNumber(input?.subagentOutputTokens),
     subagentCalls: normalizeUsageNumber(input?.subagentCalls),
+    subagentCacheHitTokens: normalizeUsageNumber(input?.subagentCacheHitTokens),
+    subagentCacheMissTokens: normalizeUsageNumber(input?.subagentCacheMissTokens),
   }
 }
 
@@ -171,6 +177,8 @@ function sessionDeletePaths(root: string, id: string) {
     { path: path.join(base, "sessions", `${safe}.json`), directory: false },
     { path: path.join(base, "logs", "sessions", `${safe}.jsonl`), directory: false },
     { path: path.join(base, "logs", "sessions", `${safe}.txt`), directory: false },
+    { path: path.join(base, "logs", "sessions", `${safe}.subagents.jsonl`), directory: false },
+    { path: path.join(base, "logs", "sessions", `${safe}.subagents.txt`), directory: false },
     { path: planStoreDir(root, id), directory: true },
   ]
 }

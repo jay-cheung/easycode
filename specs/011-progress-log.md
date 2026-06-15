@@ -2,6 +2,122 @@
 
 Status: Draft
 
+## Step 53: Centralize Goal Phase Guards And Tighten Resume/Prompt Bounds
+
+- Scope: close review findings around goal lifecycle consistency by moving phase validation into the shared goal module, making paused-goal resume count as a new iteration, and bounding subagent prompt carry-over so prior delegated results do not expand indefinitely.
+- Implementation:
+  - Updated `src/goal.ts` with shared phase assertions plus a dedicated `GoalStateError`, and changed `activateGoalPlan(...)` so activation from `paused` advances the iteration the same way activation from `reviewing` already does.
+  - Updated `src/tool/builtins/retrieval-tools.ts` so `goal_set_acceptance` now reuses the shared goal-phase guard from `src/goal.ts` instead of keeping that lifecycle rule only in the tool implementation.
+  - Updated `src/agent/runner/helpers.ts` so subagent prompts include only the most recent bounded subset of prior subagent conclusions, each compacted aggressively, instead of appending every prior result in the run.
+  - Expanded `test/unit/goal.test.ts` and `test/unit/runner.test.ts` to cover paused-goal iteration advancement, shared phase assertions, and capped prior-subagent prompt injection.
+- Verification:
+  - Pending in this slice: rerun focused goal/runner/tool/permission tests and then verify the repo gate remains green.
+- Notes: this slice does not change the outer goal controller loop; it tightens lifecycle enforcement and context-size discipline inside the existing design.
+
+## Step 52: Force Plan Exit Back To Goal Review And Harden Goal Tool Gates
+
+- Scope: close the controller gap where a finished goal slice could keep running inside the same execution turn instead of returning to goal review, and harden goal-tool semantics so completion cannot bypass the recorded acceptance/review contract.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so a successful final `plan_step_complete` exits the current run immediately, returning control to the outer goal controller instead of relying on the model to stop voluntarily after plan completion.
+  - Updated `src/tool/builtins/retrieval-tools.ts` so `goal_set_acceptance` now fails outside the `defining` phase, and `goal_complete` fails closed while an active plan slice is still running and has not yet gone through the required review boundary.
+  - Expanded `test/integration/agent.test.ts` to lock the new runner contract: a plan that finishes on its final `plan_step_complete` no longer requires an extra assistant text turn, including the delegated-plan path used by goal-mode slices.
+  - Expanded `test/unit/tool.test.ts` with fail-closed coverage for out-of-phase acceptance recording and premature goal completion while a plan is still active.
+  - Updated `specs/016-goal-mode.md` so the design explicitly states that final plan completion must hand control back to goal review before completion or replanning.
+- Verification:
+  - Pending in this slice after the code/test alignment changes: rerun focused goal and runner suites, then `bun run gate`.
+- Notes: this is the execution-side enforcement of the stricter goal contract, not just a prompt preference; it removes the path where a goal could accidentally skip review because the same run kept going after the last plan step closed.
+
+## Step 51: Surface Goal Lifecycle In TUI And Live Status Panel
+
+- Scope: make goal mode observable while it is running by surfacing the active goal state in the live TUI status panel and timeline, instead of requiring users to inspect session logs after the fact.
+- Implementation:
+  - Updated `src/ui/tui/tui-types.ts`, `src/ui/tui/index.ts`, and `src/cli.ts` so goal lifecycle updates now flow through the same UI event path as provider/tool/subagent activity, with the TUI tracking the current goal status, objective, iteration, active plan, and blocker independently from the generic session configuration card.
+  - Updated `src/ui/timeline.ts` and `src/i18n.ts` so goal lifecycle events render as first-class timeline rows and the live monitor panel shows a dedicated goal summary/detail section during execution.
+  - Updated `src/ui/tui/tui-status-panel.ts` so the running panel now includes the active goal contract summary without breaking width alignment or truncation behavior.
+  - Fixed TUI goal-context cleanup on session switches so one session’s active goal state cannot leak visually into another session after `/session switch` or similar control-flow changes.
+  - Added coverage in `test/unit/tui.test.ts` for goal panel rendering, width alignment, and goal lifecycle timeline events, while keeping the existing goal CLI integration flow green.
+- Verification:
+  - `bun run typecheck`
+  - `bun test test/unit/tui.test.ts test/integration/cli.test.ts --test-name-pattern "goal|tui"`
+  - `bun run gate`
+- Notes: the goal runtime now has three aligned observability surfaces: durable session logs, timeline lifecycle events, and live status-panel context. The remaining work is now more about refining the goal controller contract than making the mode visible or auditable.
+
+## Step 50: Fix Goal Iteration Semantics And Add Goal Lifecycle Logs
+
+- Scope: fix the goal iteration counter so the first plan slice stays on iteration 1 and only a new post-review slice advances to the next iteration; add dedicated goal lifecycle log events so goal automation is auditable beyond plain stdout text.
+- Implementation:
+  - Updated `src/goal.ts` with an `activateGoalPlan(...)` helper so the transition into `executing` now follows state semantics instead of the old incidental `reason ? iteration + 1` rule.
+  - Updated `src/cli.ts` so the first planning round no longer skips directly to iteration 2, while a new plan activated from `reviewing` now advances to the next iteration as intended.
+  - Added explicit logger state events for `goal.started`, `goal.definition`, `goal.planning`, `goal.executing`, `goal.reviewing`, `goal.paused`, `goal.blocked`, `goal.completed`, and `goal.cleared`, each carrying goal id, objective, iteration, blocker, active plan, and acceptance-check counts.
+  - Updated `test/unit/goal.test.ts` and `test/integration/cli.test.ts` to lock the fixed iteration behavior and require the new lifecycle log events in the delegated goal end-to-end run.
+- Verification:
+  - `bun run typecheck`
+  - `bun test test/unit/goal.test.ts test/integration/cli.test.ts --test-name-pattern "goal"`
+- Notes: this keeps goal mode in-process and auto-running, but makes the state machine less misleading during multi-slice execution and gives session logs enough structure to audit how a goal actually progressed.
+
+## Step 48: Close Goal Planning And Delegated Subagent E2E Loop
+
+- Scope: fix the forced-planning path so plan mode can do bounded read-only inspection before submitting a proposal plan, while still blocking implementation/delegation until approval; add an end-to-end CLI regression for `/goal` auto-planning through delegated subagent execution and completion.
+- Implementation:
+  - Updated `src/prompt/agent.ts` and `src/goal.ts` so the initial planning gate permits bounded read-only inspection, then requires a proposal plan; implementation edits and delegation stay expressed as approved plan steps.
+  - Updated `src/plans.ts` and `src/agent/planner.ts` so delegation-oriented plan steps preserve or infer hidden `executorHint: "subagent"` and `subagentRole`, letting approved plans actually drive `delegate_subagent` execution.
+  - Increased foreground subagent budgets in `src/agent/subagent-runtime.ts` and `src/agent/subagent-routing.ts`, added role-specific compact subagent prompts, and passed recent successful subagent results into follow-up subagents so one main run can reuse delegated findings.
+  - Made `lowRisk` a required structured-plan boolean in prompts/parser output and added conservative fallback inference for missing `lowRisk`: read-only inspect/verify/document plans can auto-classify low-risk, while edits, gates, debugger/tester work, secrets/auth/payment/database/deploy keywords, or explicit `lowRisk: false` stay non-auto-approved.
+  - Fixed normal CLI sessions so `forcePlanning` applies only while a goal is actively planning, not to every build prompt; fixed the fake provider plan/summary/cache benchmark interactions exposed by the full gate.
+  - Fixed sandbox command timeout/cancel behavior by explicitly terminating the spawned process when the timeout or abort signal fires.
+  - Fixed the low-risk approval message in `src/cli.ts` to use `activeSettings.language` instead of a non-existent parsed `args.language` field.
+  - Added `test/unit/goal.test.ts`, expanded planning/prompt coverage, added a runner-level delegated-plan regression, and added a real CLI e2e test that starts `/goal goal-delegated-e2e`, auto-activates the plan, delegates to an explorer subagent, completes the plan step, and calls `goal_complete`.
+- Verification:
+  - `bun test test/unit/prompt.test.ts test/unit/goal.test.ts test/unit/runner.test.ts test/unit/planning-layer.test.ts test/unit/subagent-routing.test.ts test/unit/sandbox.test.ts test/unit/cache-benchmark.test.ts`
+  - `bun test test/integration/agent.test.ts --test-name-pattern "build-simple-edit|legacy plan alias can still request|summary compaction uses a derived subagent route|plan mode allows bounded readonly exploration|plan mode fails closed|forced planning can activate"`
+  - `bun test test/integration/cli.test.ts`
+  - `bun test test/integration/cli.test.ts --test-name-pattern "goal mode auto-plans"`
+  - `bun test test/integration/agent.test.ts --test-name-pattern "forced planning can activate a delegated inspect step and continue in the same session|delegate_subagent task packets include the active plan step assignment"`
+  - `bun run typecheck`
+- Notes: this slice keeps normal non-goal plan approval behavior unchanged; the bypass is only for active goal automation.
+
+## Step 49: Require Goal Acceptance Contracts And Post-Slice Review
+
+- Scope: tighten goal mode so each goal must define explicit acceptance criteria before the first plan, and every completed plan slice must pass a bounded review/verification stage before EasyCode either finishes the goal or creates the next plan.
+- Implementation:
+  - Updated `src/goal.ts`, `src/cli.ts`, `src/context/ledger.ts`, and `src/tool/builtins/retrieval-tools.ts` so goals now start in `defining`, persist `acceptanceCriteria` plus `completionChecks`, require the new `goal_set_acceptance` internal tool before planning, and move through a `reviewing` phase after each completed plan slice instead of jumping directly to `goal_complete` or another planning round.
+  - Updated `src/tool/builtins/common.ts` and `src/permission.ts` so `goal_set_acceptance` has a typed schema and is allowed only inside the dedicated goal/build automation path; `goal_complete` now fails closed when no acceptance contract was recorded.
+  - Updated `src/provider/fake.ts` so the fake provider drives the new goal lifecycle in tests: define acceptance, run a delegated execution slice, invoke a reviewer subagent after the slice, and only then call `goal_complete`.
+  - Updated `test/unit/goal.test.ts`, `test/unit/tool.test.ts`, `test/unit/permission.test.ts`, and `test/integration/cli.test.ts` to cover the definition prompt, assessment prompt, acceptance persistence, fail-closed completion semantics, and the end-to-end `define -> plan -> execute -> review -> complete` CLI loop.
+  - Updated `specs/016-goal-mode.md` so the design contract now matches runtime behavior: explicit goal acceptance definition, a `reviewing` state, `goal_set_acceptance`, and post-slice verification before completion or replanning.
+- Verification:
+  - `bun run typecheck`
+  - `bun test test/unit/goal.test.ts test/unit/tool.test.ts test/unit/permission.test.ts test/integration/cli.test.ts --test-name-pattern "goal|goal profile auto-allows goal tools and bounded verification bash"`
+- Notes: goal mode still bypasses manual plan approval only for bounded low-risk continuation, but completion is now stricter because every slice must survive an explicit review/verification gate before the controller can finish or continue the goal.
+
+## Step 47: Implement In-Process Goal Mode V1
+
+- Scope: turn the English goal-mode design into a working in-process v1 execution layer so `/goal` can start one long-lived objective, auto-approve its bounded plans, keep running through plan slices, and fail closed on high-risk tool requests instead of stopping for manual approval.
+- Implementation:
+  - Added `src/goal.ts` plus CLI wiring in `src/cli.ts` and `src/slash.ts` so EasyCode now supports `/goal <objective>`, `/goal status`, `/goal pause`, `/goal resume`, and `/goal clear`, tracks one transient goal in ledger state, auto-queues planning prompts, auto-activates proposed plans inside goal mode, and replans the next slice after a goal plan completes.
+  - Updated `src/tool/builtins/common.ts`, `src/tool/builtins/retrieval-tools.ts`, `src/permission.ts`, `src/context/ledger.ts`, `src/session/index.ts`, and `src/i18n.ts` so goal mode has explicit `goal_complete` / `goal_blocked` internal tools, a dedicated fail-closed permission profile with verification-bash allowlisting, goal ledger subjects carried through the current process but stripped on session restore, and CLI/TUI help text that exposes the new command surface.
+  - Added regression coverage in `test/unit/slash.test.ts`, `test/unit/session.test.ts`, `test/unit/permission.test.ts`, `test/unit/tool.test.ts`, `test/unit/tui.test.ts`, and `test/integration/cli.test.ts` for `/goal` parsing, transient goal-ledger cleanup, goal permission behavior, goal tool semantics, and the updated TUI welcome command list.
+- Verification:
+  - `bun run typecheck`
+  - `bun test test/unit/slash.test.ts test/unit/session.test.ts test/unit/permission.test.ts test/unit/tool.test.ts`
+  - `bun test test/unit/tui.test.ts test/integration/cli.test.ts -t "renders session context, command bar, timeline events, and status updates|tui session covers settings, sessions, and prompt rendering"`
+  - `bun run gate`
+- Notes: v1 keeps goal state in-process only, reuses the existing unified build/plan runtime, and deliberately auto-rejects non-allowlisted bash or other approval-gated requests during active goal automation so the controller can pause or block instead of surfacing a manual approval prompt.
+
+## Step 46: Tighten Subagent Shell Boundaries And Add Goal-Mode Design
+
+- Scope: close the gap where debugger/tester subagents could inherit build-mode shell auto-approval for arbitrary mutating commands, make session deletion clean up subagent transcript files too, and land an English goal-mode design doc for the next execution layer.
+- Implementation:
+  - Updated `src/permission.ts` and `src/agent/runner/index.ts` so subagents now use a dedicated permission profile: non-debug roles deny shell outright, debugger/tester roles only allow a bounded verification command allowlist, and unmatched subagent shell requests are rejected instead of being auto-approved through the main build profile.
+  - Updated `src/session/index.ts` so `/session delete` now removes `.subagents.jsonl` and `.subagents.txt` alongside the main session transcript and structured plan directory.
+  - Added regression coverage in `test/unit/permission.test.ts`, `test/unit/session.test.ts`, and `test/integration/agent.test.ts` for bounded debugger/tester shell permissions, subagent transcript cleanup on session deletion, and a debugger subagent attempting a mutating shell command.
+  - Added `specs/016-goal-mode.md` as the technical plan for v1 goal mode, covering GoalState, GoalController, goal-specific tools, layered permissions, state machines, TUI/logging, and phased rollout boundaries.
+- Verification:
+  - `bun test test/unit/permission.test.ts test/unit/session.test.ts test/integration/agent.test.ts -t "subagent|deletes session files and archives a summary to project memory|subagent permissions allow only bounded verification bash for debugger and tester roles"`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this slice keeps explicit subagent delegation and bounded verification bash, but removes the accidental path where goal-mode automation would otherwise inherit an unsafe mutating shell escape hatch through debugger/tester roles.
+
 ## Step 45: Narrow macOS Temp-Root Sandbox Allowlist
 
 - Scope: reduce repeated macOS native sandbox bypass prompts for ordinary HTTPS/toolchain commands without widening shell writes to the entire system temp tree.
@@ -181,7 +297,7 @@ Status: Draft
 - Scope: add an explicit promotion path for durable cross-session memory so the model can store stable lessons intentionally, instead of overloading generic `memory_add` for every long-term use case.
 - Implementation:
   - Updated `src/memory.ts` with `ProjectMemoryPromotableKind`, a `promote()` API, and concise-text guardrails that reject oversized narrative payloads for durable lessons.
-  - Added `memory_promote` in `src/tool/builtins/workspace-tools.ts` plus the corresponding schema in `src/tool/builtins/common.ts`, limiting promotion to `preference`, `repo_fact`, `failure_pattern`, `successful_workflow`, and `task_state`.
+  - Added `memory_promote` in `src/tool/builtins/workspace-tools.ts` plus the corresponding schema in `src/tool/builtins/common.ts`, limiting promotion to `preference`, `repo_fact`, `failure_pattern`, `successful_workflow`, and, at that time, `task_state`.
   - Tightened the build-mode prompt contract in `src/prompt/agent.ts` so the model is explicitly told when long-term memory promotion is appropriate and when it is not.
 - Verification:
   - `bun test test/unit/memory.test.ts test/unit/tool.test.ts test/unit/prompt.test.ts`
@@ -1266,7 +1382,7 @@ Status: Draft
 - Verification:
   - `bun test test/integration/agent.test.ts`: pass.
   - `bun run typecheck`: pass.
-  - `bun run cache:bench -- --provider simulated --suite real --quiet`: pass; recommendation remained `every-step` with `effective_input=34644`, so no benchmark-visible cost regression was introduced by this runner-only change.
+  - `bun run cache:bench -- --provider simulated --suite real --quiet`: pass; the default cache benchmark remained at `effective_input=34644`, so no benchmark-visible cost regression was introduced by this runner-only change.
   - `bun run gate`: local checks pass; remaining failure is the known external `provider_gate` for real `deepseek` connectivity only.
 
 ## Step 45: Global Code-Nav Cache And Session Lifecycle Controls
@@ -1378,3 +1494,42 @@ Status: Draft
   - Correctness: replaceable bash now fails before permission/execution, so the runtime finally enforces the existing prompt contract instead of only hoping the model follows it.
   - Maintainability: one shared bash-classification path now feeds result metadata, runtime blocking, and logger audit fields, which reduces policy drift across prompt, permission, and observability layers.
   - Verification: reran focused tool/permission/logger integration coverage and TypeScript checks for this slice because the behavior change is localized to bash policy and audit surfaces.
+
+## Step 54: Plan LowRisk Visibility And Subagent Review Discipline
+
+- Scope: close the ordinary plan approval observability gap while strengthening subagent execution quality for broad review workflows.
+- Implementation:
+  - Made `ExecutionPlan.lowRisk` a normalized runtime boolean that is visible in rendered plan markdown and preserved in structured JSON, including fallback parser and replan prompts.
+  - Kept `[A]` default approval semantics intact, but added structured `plan.approval` log events that distinguish `user_default`, `user_explicit`, and `low_risk_auto` approvals.
+  - Added a reviewer anti-pattern gate: broad review/repair/optimization outputs that can be decomposed into bounded scopes must delegate at least one reviewer task before final synthesis.
+  - Tightened subagent coordinator outputs to concise conclusions with `evidenceRefs`, while keeping detailed tool traces in subagent side logs.
+  - Added per-invocation and per-run subagent usage logs with role, status, turns, token, cache, and budget fields, and changed foreground subagent budgeting to reserve only available turns and release unused budget.
+- Code Complete review result:
+  - Correctness: plan approval and low-risk execution are now auditable from logs and rendered plans, and broad review work cannot silently bypass reviewer delegation.
+  - Maintainability: role-level subagent metrics provide the data needed to tune budgets, cache behavior, and routing without scraping transcripts.
+  - Verification: added focused unit/integration coverage for lowRisk rendering, approval source logging, reviewer gating, subagent summaries, and role usage logs.
+
+## Step 55: Remove Cross-Session Task Checkpoints
+
+- Scope: align runtime task semantics with session-local execution by removing manual `/task` checkpoints, stopping plan state from promoting cross-session `task_state` records, and ensuring active plans do not resume after exit or session switch.
+- Implementation:
+  - Removed `/task` parsing, CLI help text, and session-helper handling, plus the startup/session-switch injection path for `<active_task_checkpoints>`.
+  - Stopped plan activation from writing `task_state` memory checkpoints, but kept cleanup of legacy plan-tagged `task_state` records when clearing an active plan.
+  - Stripped plan ledger subjects on session restore so unfinished work does not automatically resume in a later session, matching the existing transient-goal behavior.
+  - Narrowed memory tooling and auto-recall guidance to durable preferences, repo facts, failure patterns, successful workflows, and session archives; legacy `task_state` records remain readable only for backward compatibility.
+- Code Complete review result:
+  - Correctness: exiting or switching sessions now drops transient task execution state instead of reviving stale work from memory or saved session ledgers.
+  - Maintainability: task semantics are simpler because plan execution now has one live-session state path instead of split session-memory and project-memory checkpoints.
+  - Verification: added focused slash/session coverage updates and reran targeted CLI/session/tool tests, plus TypeScript and the unified gate.
+
+## Step 56: Goal Review Fail-Closed And Active-Plan Checkpoint Suppression
+
+- Scope: fix two workflow gaps found in the `review` session by making goal review completion fail closed when the review still reports blockers, and by stopping the generic exploration checkpoint from interrupting active structured-plan execution near the end of long review runs.
+- Implementation:
+  - Updated `src/tool/builtins/retrieval-tools.ts` so `goal_complete` now inspects the review-phase completion summary plus the latest assistant review text and rejects completion when they still report blocking defects, critical issues, or “not committable” style outcomes.
+  - Updated `src/agent/runner/runner-turn-prep.ts` and `src/agent/runner/index.ts` so the exploration-summary checkpoint is suppressed whenever an active structured plan step is already driving execution, preserving the step-by-step controller contract through final review-plan slices.
+  - Added focused regression coverage in `test/unit/tool.test.ts` and `test/unit/runner.test.ts` for review-phase blocker rejection and active-plan checkpoint suppression, then reran the related logger/session/TUI/runner suites plus TypeScript checks.
+- Code Complete review result:
+  - Correctness: goal review can no longer silently report blockers and still transition to `completed`, and long-running structured review plans no longer receive a stray “ask the user whether to continue exploring” prompt mid-step.
+  - Maintainability: the exploration checkpoint logic now keys off explicit structured-plan state instead of only global step count, which better matches the controller architecture.
+  - Verification: reran `bun test test/unit/tool.test.ts test/unit/runner.test.ts test/unit/logger.test.ts test/unit/session.test.ts test/unit/tui.test.ts` and `bun run typecheck`.

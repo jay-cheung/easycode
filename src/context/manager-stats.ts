@@ -1,4 +1,5 @@
 import type { CachePricing } from "../cache-policy"
+import type { Message } from "../message"
 import { normalizedLedger, renderContextLedger, selectContextLedger, validateLedger } from "./ledger"
 import { estimateTextTokens } from "./tokens"
 import type { ContextBudgetStats, ContextCacheStats, ContextLedger, ContextLedgerStats } from "./types"
@@ -38,17 +39,17 @@ export function ledgerTokenBudget(maxTokens: number, responseReserveTokens: numb
   return Math.max(400, Math.floor(dynamicBudget * 0.15))
 }
 
-export function selectedLedger(ledger: ContextLedger | undefined, messages: { role: string; parts: unknown[] }[], tokenBudget: number) {
-  return selectContextLedger(ledger, messages as any, tokenBudget)
+export function selectedLedger(ledger: ContextLedger | undefined, messages: Message[], tokenBudget: number) {
+  return selectContextLedger(ledger, messages, tokenBudget)
 }
 
-export function renderSelectedLedgerText(ledger: ContextLedger | undefined, messages: { role: string; parts: unknown[] }[], tokenBudget: number) {
+export function renderSelectedLedgerText(ledger: ContextLedger | undefined, messages: Message[], tokenBudget: number) {
   return renderContextLedger(selectedLedger(ledger, messages, tokenBudget))
 }
 
-export function createLedgerStats(ledger: ContextLedger | undefined, messages: { role: string; parts: unknown[] }[], tokenBudget: number) {
+export function createLedgerStats(ledger: ContextLedger | undefined, messages: Message[], tokenBudget: number) {
   const normalized = normalizedLedger(ledger)
-  const selected = selectContextLedger(normalized, messages as any, tokenBudget)
+  const selected = selectContextLedger(normalized, messages, tokenBudget)
   return {
     currentRecords: normalized?.current.length ?? 0,
     historyRecords: normalized?.history.length ?? 0,

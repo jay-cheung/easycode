@@ -11,6 +11,13 @@ export type ProviderTurnResult = {
   reasoningText: string
   toolCalls: ToolCall[]
   failureText?: string
+  retryMessage?: string
+  validationFailureCount?: number
+  lastRejectedTurn?: {
+    text: string
+    reasoningText: string
+    toolNames: string[]
+  }
   cancelledOutput?: string
   replayEvents: Array<
     | { type: "reasoning_delta"; text: string }

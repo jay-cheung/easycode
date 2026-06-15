@@ -109,9 +109,13 @@ export function userMessage(text: string, images: ImagePart[] = [], id?: string)
   return createMessage("user", parts, id)
 }
 
-export function toolCallMessage(call: ToolCall | ToolCall[]): Message {
+export function toolCallMessage(call: ToolCall | ToolCall[], reasoningText?: string, text?: string): Message {
   const calls = Array.isArray(call) ? call : [call]
-  return createMessage("assistant", calls.map((item) => toolCallPart(item, "pending")))
+  const parts: MessagePart[] = []
+  if (reasoningText) parts.push(reasoningPart(reasoningText))
+  if (text) parts.push(textPart(text))
+  parts.push(...calls.map((item) => toolCallPart(item, "pending")))
+  return createMessage("assistant", parts)
 }
 
 export function toolResultMessage(input: {

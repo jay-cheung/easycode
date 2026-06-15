@@ -89,7 +89,7 @@ export function optimizationForCause(cause: string) {
     active_window_loss: "Increase activeWindowUserTurns or preserve a larger valid recent suffix; keep latest overrides outside summary compression.",
     summary_loss: "Use structured summaries with typed slots for latest facts, preferences, tasks, and entity graphs; preserve source turn numbers.",
     summary_hallucination: "Store contradictions as competing facts with timestamps instead of merging them into one synthesized statement.",
-    cache_instability: "Canonicalize and sort static context, keep dynamic/RAG content after the stable prefix, and inspect every-step cache hit behavior.",
+    cache_instability: "Canonicalize and sort static context, keep dynamic/RAG content after the stable prefix, and inspect cache hit behavior under the default benchmark path.",
     cache_not_eligible: "Increase the stable prefix beyond the provider prompt-cache minimum or exclude this case from cache-hit gates for that provider.",
     retrieval_noise: "Add retrieval filtering, source confidence, and explicit no-answer rules before composing RAG content into the prompt.",
     conflict_policy_error: "Resolve timestamp, priority, and scope conflicts before generation; pass only the winning fact plus audit trail.",

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { defaultPermissionAutoReviewer, defaultPermissionRules, evaluatePermission, PermissionService, type PermissionRule } from "../../src/permission"
+import { defaultPermissionAutoReviewer, defaultPermissionRules, defaultSubagentPermissionRules, evaluatePermission, PermissionService, type PermissionRule } from "../../src/permission"
 
 describe("permission", () => {
   test("deny beats ask and allow", () => {
@@ -115,10 +115,32 @@ describe("permission", () => {
     expect(evaluatePermission("plan_exit", "*", defaultPermissionRules("build"))).toBe("allow")
   })
 
+  test("goal profile auto-allows goal tools and bounded verification bash", () => {
+    const goalRules = defaultPermissionRules("goal")
+    expect(evaluatePermission("goal_set_acceptance", "*", goalRules)).toBe("allow")
+    expect(evaluatePermission("goal_complete", "*", goalRules)).toBe("allow")
+    expect(evaluatePermission("goal_blocked", "*", goalRules)).toBe("allow")
+    expect(evaluatePermission("plan_step_complete", "*", goalRules)).toBe("allow")
+    expect(evaluatePermission("bash", "bash:exact:bun run gate", goalRules)).toBe("allow")
+    expect(evaluatePermission("bash", "bash:exact:touch created.txt", goalRules)).toBe("ask")
+  })
+
   test("retrieval permissions separate local MCP from web search", () => {
     expect(evaluatePermission("mcp", ".easycode/mcp.json", defaultPermissionRules("plan"))).toBe("allow")
     expect(evaluatePermission("web_search", "web:Claude Code", defaultPermissionRules("plan"))).toBe("allow")
     expect(evaluatePermission("web_fetch", "web_fetch:https://example.com/docs", defaultPermissionRules("plan"))).toBe("allow")
+  })
+
+  test("subagent permissions allow only bounded verification bash for debugger and tester roles", () => {
+    const testerRules = defaultSubagentPermissionRules("tester")
+    const debuggerRules = defaultSubagentPermissionRules("debugger")
+    const explorerRules = defaultSubagentPermissionRules("explorer")
+
+    expect(evaluatePermission("bash", "bash:exact:bun test test/unit/session.test.ts", testerRules)).toBe("allow")
+    expect(evaluatePermission("bash", "bash:exact:bun run typecheck", debuggerRules)).toBe("allow")
+    expect(evaluatePermission("bash", "bash:exact:python write_file.py", testerRules)).toBe("ask")
+    expect(evaluatePermission("bash", "bash:exact:touch /tmp/mutated", debuggerRules)).toBe("ask")
+    expect(evaluatePermission("bash", "bash:exact:bun test test/unit/session.test.ts", explorerRules)).toBe("deny")
   })
 
   test("auto reviewer approves repeat-safe readonly bash scopes", async () => {

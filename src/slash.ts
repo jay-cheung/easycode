@@ -4,6 +4,8 @@ export type SlashCommand =
   | { type: "prompt"; text: string }
   | { type: "help" }
   | { type: "settings" }
+  | { type: "goal"; action: "start"; objective: string }
+  | { type: "goal"; action: "status" | "pause" | "resume" | "clear" }
   | { type: "sessions" }
   | { type: "session"; action: "switch" | "delete"; target: string }
   | { type: "image"; action: "add"; value: string }
@@ -12,9 +14,6 @@ export type SlashCommand =
   | { type: "skill"; action: "use"; name: string }
   | { type: "skill"; action: "remove"; name: string }
   | { type: "skill"; action: "clear" }
-  | { type: "task"; action: "list" }
-  | { type: "task"; action: "checkpoint"; text: string }
-  | { type: "task"; action: "resolve"; target: string }
   | { type: "model"; model: string }
   | { type: "provider"; name: string }
   | { type: "effort"; value: string }
@@ -32,6 +31,14 @@ export function parseSlashCommand(input: string): SlashCommand {
   if (!name) return { type: "help" }
   if (name === "help") return { type: "help" }
   if (name === "settings") return { type: "settings" }
+  if (name === "goal") {
+    const action = args[0]?.toLowerCase()
+    if (!action || action === "status" || action === "show" || action === "list") return { type: "goal", action: "status" }
+    if (action === "pause") return { type: "goal", action: "pause" }
+    if (action === "resume") return { type: "goal", action: "resume" }
+    if (action === "clear" || action === "stop" || action === "cancel" || action === "rm") return { type: "goal", action: "clear" }
+    return { type: "goal", action: "start", objective: args.join(" ") }
+  }
   if (name === "sessions") return { type: "sessions" }
   if (name === "session") {
     const action = args[0]?.toLowerCase()
@@ -63,19 +70,6 @@ export function parseSlashCommand(input: string): SlashCommand {
       return skillName ? { type: "skill", action: "use", name: skillName } : { type: "error", code: "skill_use_requires_name" }
     }
     return { type: "skill", action: "use", name: args.join(" ") }
-  }
-  if (name === "task") {
-    const action = args[0]?.toLowerCase()
-    if (!action || action === "list") return { type: "task", action: "list" }
-    if (action === "checkpoint" || action === "save" || action === "add") {
-      const text = args.slice(1).join(" ")
-      return text ? { type: "task", action: "checkpoint", text } : { type: "error", code: "task_checkpoint_requires_text" }
-    }
-    if (action === "resolve" || action === "done" || action === "remove" || action === "rm") {
-      const target = args.slice(1).join(" ")
-      return target ? { type: "task", action: "resolve", target } : { type: "error", code: "task_resolve_requires_id" }
-    }
-    return { type: "task", action: "checkpoint", text: args.join(" ") }
   }
   if (name === "model") {
     const model = args.join(" ")

@@ -60,10 +60,10 @@ describe("session store", () => {
     const store = new SessionStore(root)
     const context = new ContextManager()
     context.add(textMessage("user", "hello"))
-    await store.save("demo", context, undefined, { inputTokens: 1230, outputTokens: 456, calls: 5, subagentInputTokens: 80, subagentOutputTokens: 20, subagentCalls: 1 })
+    await store.save("demo", context, undefined, { inputTokens: 1230, outputTokens: 456, calls: 5, subagentInputTokens: 80, subagentOutputTokens: 20, subagentCalls: 1, subagentCacheHitTokens: 60, subagentCacheMissTokens: 20 })
 
     const saved = await store.load("demo")
-    expect(saved?.tokenUsage).toMatchObject({ inputTokens: 1230, outputTokens: 456, calls: 5, subagentInputTokens: 80, subagentOutputTokens: 20, subagentCalls: 1 })
+    expect(saved?.tokenUsage).toMatchObject({ inputTokens: 1230, outputTokens: 456, calls: 5, subagentInputTokens: 80, subagentOutputTokens: 20, subagentCalls: 1, subagentCacheHitTokens: 60, subagentCacheMissTokens: 20 })
     await rm(root, { recursive: true, force: true })
   })
 
@@ -83,6 +83,30 @@ describe("session store", () => {
     expect(restored.state.ledger?.current).toContainEqual(expect.objectContaining({ kind: "preference", value: "Avoid Brand Z.", status: "current" }))
     expect(restored.compose({ agent: { kind: "build", name: "test", mode: "build", tools: "enabled", systemPrompt: "test" }, skills: [], tools: [] }).map((message) => message.content).join("\n")).not.toContain("User lives in London.")
     expect(restored.selectedLedgerText()).toContain("User lives in London.")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("restoring a session drops transient goal and plan ledger state", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const context = new ContextManager()
+    context.setLedger({
+      current: [
+        ledgerRecord("checkpoint", "current_goal_id", "goal_123"),
+        ledgerRecord("checkpoint", "current_goal_objective", "Implement goal mode"),
+        ledgerRecord("checkpoint", "current_goal_status", "planning"),
+        ledgerRecord("checkpoint", "current_goal_iteration", "2"),
+        ledgerRecord("checkpoint", "current_goal_blocker", "none"),
+        ledgerRecord("checkpoint", "current_plan_id", "plan_123"),
+      ],
+    })
+    await store.save("demo", context)
+
+    const saved = await store.load("demo")
+    expect(saved?.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_id", value: "goal_123" }))
+
+    const restored = await store.context("demo")
+    expect(restored.state.ledger).toBeUndefined()
     await rm(root, { recursive: true, force: true })
   })
 
@@ -281,13 +305,15 @@ describe("session store", () => {
     context.add(textMessage("user", "Investigate payment retry loops"))
     context.add(textMessage("assistant", "Root cause is a stale retry flag."))
     context.state.summary = "payment retry investigation"
-    await store.save("archive/me", context, { provider: "openai", model: "gpt-5.5", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] }, { inputTokens: 120, outputTokens: 45, calls: 2, subagentInputTokens: 60, subagentOutputTokens: 10, subagentCalls: 1 })
+    await store.save("archive/me", context, { provider: "openai", model: "gpt-5.5", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] }, { inputTokens: 120, outputTokens: 45, calls: 2, subagentInputTokens: 60, subagentOutputTokens: 10, subagentCalls: 1, subagentCacheHitTokens: 30, subagentCacheMissTokens: 30 })
 
     const safe = safeSessionID("archive/me")
     const logsDir = path.join(root, ".easycode", "logs", "sessions")
     await mkdir(logsDir, { recursive: true })
     await Bun.write(path.join(logsDir, `${safe}.jsonl`), "{\"type\":\"data\"}\n")
     await Bun.write(path.join(logsDir, `${safe}.txt`), "transcript\n")
+    await Bun.write(path.join(logsDir, `${safe}.subagents.jsonl`), "{\"type\":\"state\"}\n")
+    await Bun.write(path.join(logsDir, `${safe}.subagents.txt`), "subagent transcript\n")
     const plansDir = planStoreDir(root, "archive/me")
     await mkdir(plansDir, { recursive: true })
     await Bun.write(path.join(plansDir, "1.md"), "plan")
@@ -300,11 +326,15 @@ describe("session store", () => {
       path.join(root, ".easycode", "sessions", `${safe}.json`),
       path.join(root, ".easycode", "logs", "sessions", `${safe}.jsonl`),
       path.join(root, ".easycode", "logs", "sessions", `${safe}.txt`),
+      path.join(root, ".easycode", "logs", "sessions", `${safe}.subagents.jsonl`),
+      path.join(root, ".easycode", "logs", "sessions", `${safe}.subagents.txt`),
       plansDir,
     ]))
     expect(await Bun.file(path.join(root, ".easycode", "sessions", `${safe}.json`)).exists()).toBe(false)
     expect(await Bun.file(path.join(logsDir, `${safe}.jsonl`)).exists()).toBe(false)
     expect(await Bun.file(path.join(logsDir, `${safe}.txt`)).exists()).toBe(false)
+    expect(await Bun.file(path.join(logsDir, `${safe}.subagents.jsonl`)).exists()).toBe(false)
+    expect(await Bun.file(path.join(logsDir, `${safe}.subagents.txt`)).exists()).toBe(false)
     expect(await Bun.file(path.join(plansDir, "1.md")).exists()).toBe(false)
     expect(records.at(-1)?.kind).toBe("session_archive")
     expect(records.at(-1)?.text).toContain("Deleted session \"archive/me\".")

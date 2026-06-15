@@ -214,14 +214,14 @@ async function apixCheck(name: "apix_subset", root: string, options: { ids?: str
 async function cacheBenchmarkCheck(root: string): Promise<QualityGateCheck> {
   try {
     const report = await runCacheBenchmark({ root, provider: "simulated", suite: "real", quiet: true })
-    const summary = report.summaries.find((item) => item.profile === "every-step")
+    const summary = report.summary
     const passed = Boolean(summary && summary.calls > 0)
     return {
       name: "cache_benchmark",
       status: passed ? "passed" : "failed",
       summary: summary
-        ? `every-step calls=${summary.calls} hit_rate=${percent(summary.hitRate)} effective_input=${Math.round(summary.effectiveTotalTokens)}`
-        : "every-step cache benchmark produced no summary",
+        ? `cache benchmark calls=${summary.calls} hit_rate=${percent(summary.hitRate)} effective_input=${Math.round(summary.effectiveTotalTokens)}`
+        : "cache benchmark produced no summary",
       details: summary ?? { summaries: report.summaries },
     }
   } catch (error) {

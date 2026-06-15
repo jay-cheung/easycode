@@ -1,6 +1,7 @@
 import type { ToolCall } from "../message"
 import type { SubagentRole } from "../agent/types"
 import type { ReasoningEffort } from "../settings"
+import type { TuiGoalContext } from "./tui/tui-types"
 import { languageLocale, uiText, type UiLanguage } from "../i18n"
 
 export type ProviderRunMetrics = {
@@ -44,6 +45,7 @@ export type SubagentUiInfo = {
 
 export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
+  | { type: "goal"; phase: "started" | "definition" | "planning" | "executing" | "reviewing" | "paused" | "blocked" | "completed" | "cleared"; goal?: TuiGoalContext }
   | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number; phase?: "waiting" | "thinking" | "answering" }
   | { type: "provider_metrics"; metrics: ProviderRunMetrics; interim?: boolean }
   | { type: "subagent"; status: "scheduled" | "completed" | "failed"; info: SubagentUiInfo; elapsedMs?: number; error?: string; metrics?: ProviderRunMetrics }
@@ -113,6 +115,13 @@ export class TimelineRenderer {
       this.output.write(copy.timelineWaitingFor(this.title("thought", `${event.provider}${model}`), formatDuration(event.elapsedMs)))
       return
     }
+    if (event.type === "goal") {
+      this.closeThought()
+      this.closeAnswer()
+      const goal = event.goal
+      this.output.write(`\n${this.title("tool", goal ? copy.timelineGoalLifecycle(event.phase, goal.status, goal.objective, goal.iteration, goal.activePlanId, goal.blocker) : copy.timelineGoalLifecycle(event.phase, "cleared", "(none)", 0))}\n`)
+      return
+    }
     if (event.type === "provider_metrics") {
       if (event.interim) return
       this.closeThought()
@@ -129,7 +138,7 @@ export class TimelineRenderer {
       } else if (event.status === "completed") {
         const elapsed = event.elapsedMs === undefined ? "" : ` (${formatDuration(event.elapsedMs)})`
         const metrics = event.metrics
-          ? `, calls=${event.metrics.calls}, input_tokens=${event.metrics.inputTokens}, output_tokens=${event.metrics.outputTokens}`
+          ? `, calls=${event.metrics.calls}, input_tokens=${event.metrics.inputTokens}, output_tokens=${event.metrics.outputTokens}, cache_hit=${(event.metrics.hitRate * 100).toFixed(1)}%`
           : ""
         this.output.write(copy.timelineSubagentCompleted(`#${event.info.id} ${event.info.role}`, elapsed, metrics))
       } else {

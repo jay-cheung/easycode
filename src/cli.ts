@@ -5,17 +5,18 @@ import { createRunner, hasProposedPlanText } from "./agent"
 import type { ContextManagerLike } from "./context"
 import { createLogger, emitLog } from "./logger"
 import { detectUiLanguage, uiText } from "./i18n"
-import type { AgentMode, ImagePart } from "./message"
-import { textMessage } from "./message"
-import { savePlan } from "./plans"
+import type { AgentMode, ImagePart, Message } from "./message"
+import { savePlan, loadStructuredPlanState } from "./plans"
 import { PlanTracker } from "./agent/planner"
+import { activateGoalPlan, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, clearGoalState, createGoalState, goalAcceptanceText, goalHasAcceptance, goalStateFromContext, goalStatusText, writeGoalState, type GoalState } from "./goal"
+import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService } from "./permission"
 import { hasProvider, listProviders } from "./provider"
 import { normalizeSessionTokenUsage, SessionStore, type SessionTokenUsage } from "./session"
 import { normalizeSessionSettings } from "./settings"
 import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { LineReader, eofPrompt } from "./cli/line-reader"
-import { activeTaskCheckpoints, collectRunInput, formatTaskCheckpointsBlock, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, writeCliText } from "./cli/session-helpers"
+import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, writeCliText } from "./cli/session-helpers"
 import { configuredUiLanguage, interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveLanguage, setupInteractiveWebSearchEnv } from "./cli/startup"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
@@ -117,8 +118,8 @@ async function main() {
     await setupInteractiveWebSearchEnv(args.root, process.env)
   }
 
-  const status = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
-  return status === "completed" ? 0 : 1
+  const result = args.once ? await runOnce(args, loadedEnvVars) : await runSession(args, loadedEnvVars)
+  return result.exitCode
 }
 
 function formatCliError(error: unknown) {
@@ -127,6 +128,11 @@ function formatCliError(error: unknown) {
   if (!trimmed) return "easycode failed. Please try again."
   if (trimmed.startsWith("Usage:")) return trimmed
   return `easycode failed: ${trimmed}`
+}
+
+type CliRunResult = {
+  status: "completed" | "failed" | "cancelled"
+  exitCode: number
 }
 
 async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
@@ -142,10 +148,11 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
   try {
     const controller = new AbortController()
     const permission = permissionService(args.mode, reader, () => controller.abort(), tui)
+    const isTest = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test"
     const runnerInstance = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent, sessionId: args.session ?? "once" })
     const result = await runnerInstance.run(args.prompt, args.mode, { signal: controller.signal })
     timeline.finish()
-    return result.status
+    return { status: result.status, exitCode: result.status === "completed" ? 0 : 1 } satisfies CliRunResult
   } finally {
     reader.close()
   }
@@ -157,10 +164,14 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
   const startupLanguage = configuredUiLanguage(process.env) ?? detectUiLanguage(process.env)
   const tui = args.tui ? new TuiRenderer(output, { root: args.root, mode: args.mode, provider: args.provider, model: args.model, language: startupLanguage, session: args.session, logger: args.logger }) : undefined
   let exitRequested = false
+  let exitCode = 0
   let activeAbort: AbortController | undefined
   const onSigint = () => {
     if (exitRequested) {
-      process.exit(130)
+      exitCode = 130
+      activeAbort?.abort()
+      reader.close()
+      return
     }
     exitRequested = true
     activeAbort?.abort()
@@ -169,7 +180,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
   process.on("SIGINT", onSigint)
   try {
     const selectedSession = await selectSession(args.session, store, reader, startupLanguage, tui)
-    if (!selectedSession) return "completed"
+    if (!selectedSession) return { status: "completed", exitCode } satisfies CliRunResult
     let session: string = selectedSession
     tui?.startSession(session)
     let logger = args.logger ? createLogger({ root: args.root, session }) : undefined
@@ -201,11 +212,11 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     let { context, settings: activeSettings, tokenUsage: sessionTokenUsage } = await loadSessionState(session)
     tui?.setSessionTokenUsage(sessionTokenUsage)
     await maybeShowWebSearchSetupHint(args.root, activeSettings.language, tui)
-    await showAndInjectTaskCheckpoints(args.root, activeSettings, context, tui)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
     let activeMode: AgentMode = "build"
+    let goalState: GoalState | undefined
     let runner: ReturnType<typeof createRunner> | undefined
     tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
     const timeline = tui ?? new TimelineRenderer(output, activeSettings.language)
@@ -226,6 +237,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           subagentInputTokens: runMetrics.subagent.subagentInputTokens + event.metrics.inputTokens,
           subagentOutputTokens: runMetrics.subagent.subagentOutputTokens + event.metrics.outputTokens,
           subagentCalls: runMetrics.subagent.subagentCalls + event.metrics.calls,
+          subagentCacheHitTokens: runMetrics.subagent.subagentCacheHitTokens + event.metrics.cacheHitTokens,
+          subagentCacheMissTokens: runMetrics.subagent.subagentCacheMissTokens + event.metrics.cacheMissTokens,
         }
       }
       timeline.event(event)
@@ -236,9 +249,126 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       saveChain = saveChain.then(() => store.save(session, contextToSave, activeSettings, sessionTokenUsage))
       return saveChain
     }
+    const activeGoalAutomation = () => Boolean(goalState && (goalState.status === "defining" || goalState.status === "planning" || goalState.status === "executing" || goalState.status === "reviewing"))
+    const syncGoalFromContext = () => {
+      goalState = goalStateFromContext(context, goalState)
+    }
+    const emitGoalLifecycle = (name: string, goal: GoalState | undefined, extra: Record<string, unknown> = {}) => {
+      if (!goal) return
+      const phase = name.startsWith("goal.") ? name.slice(5) : name
+      emitLog(logger, {
+        type: "state",
+        name,
+        detail: {
+          goalId: goal.id,
+          objective: goal.objective,
+          status: goal.status,
+          iteration: goal.iteration,
+          activePlanId: goal.activePlanId,
+          blocker: goal.blocker,
+          acceptanceCriteriaCount: goal.acceptanceCriteria.length,
+          completionChecksCount: goal.completionChecks.length,
+          ...extra,
+        },
+      })
+      onEvent({
+        type: "goal",
+        phase: phase as "started" | "definition" | "planning" | "executing" | "reviewing" | "paused" | "blocked" | "completed" | "cleared",
+        goal: {
+          status: goal.status,
+          objective: goal.objective,
+          iteration: goal.iteration,
+          activePlanId: goal.activePlanId,
+          blocker: goal.blocker,
+        },
+      })
+    }
+    const syncTuiGoal = (goal: GoalState | undefined) => {
+      tui?.setGoal(goal ? {
+        status: goal.status,
+        objective: goal.objective,
+        iteration: goal.iteration,
+        activePlanId: goal.activePlanId,
+        blocker: goal.blocker,
+      } : undefined)
+    }
+    const persistGoal = (next: GoalState | undefined) => {
+      goalState = next
+      if (goalState) {
+        goalState = { ...goalState, activePlanId: currentPlanID(context), updatedAt: Date.now() }
+        writeGoalState(context, goalState)
+      } else {
+        clearGoalState(context)
+      }
+      syncTuiGoal(goalState)
+      runner = undefined
+    }
+    const clearActivePlanIfPresent = async () => {
+      const planId = currentPlanID(context)
+      if (planId) await PlanTracker.clearActivePlan(context, args.root, planId)
+    }
+    const beginGoalDefinition = (goal: GoalState, reason?: string) => {
+      persistGoal({
+        ...goal,
+        status: "defining",
+        blocker: undefined,
+        activePlanId: undefined,
+      })
+      emitGoalLifecycle("goal.definition", goalState, reason ? { reason } : {})
+      queuedPrompts.push(buildGoalDefinitionPrompt(goalState ?? goal, reason))
+    }
+    const beginGoalPlanning = (goal: GoalState, reason?: string, advanceIteration = false) => {
+      persistGoal({
+        ...goal,
+        status: "planning",
+        blocker: undefined,
+        iteration: advanceIteration ? goal.iteration + 1 : goal.iteration,
+        activePlanId: undefined,
+      })
+      emitGoalLifecycle("goal.planning", goalState, {
+        ...(reason ? { reason } : {}),
+        advanceIteration,
+      })
+      queuedPrompts.push(buildGoalPlanningPrompt(goalState ?? goal, reason))
+    }
+    const beginGoalReview = (goal: GoalState, reason?: string) => {
+      persistGoal({
+        ...goal,
+        status: "reviewing",
+        blocker: undefined,
+        activePlanId: undefined,
+      })
+      emitGoalLifecycle("goal.reviewing", goalState, reason ? { reason } : {})
+      queuedPrompts.push(buildGoalAssessmentPrompt(goalState ?? goal, reason))
+    }
+    const pauseGoal = async (reason: string) => {
+      if (!goalState) return
+      await clearActivePlanIfPresent()
+      persistGoal({ ...goalState, status: "paused", blocker: reason, activePlanId: undefined })
+      emitGoalLifecycle("goal.paused", goalState, { reason })
+      writeSessionMessage(`Goal paused.\n${goalStatusText(goalState)}`)
+    }
+    const blockGoal = async (reason: string) => {
+      if (!goalState) return
+      await clearActivePlanIfPresent()
+      persistGoal({ ...goalState, status: "blocked", blocker: reason, activePlanId: undefined })
+      emitGoalLifecycle("goal.blocked", goalState, { reason })
+      writeSessionMessage(`Goal blocked.\n${goalStatusText(goalState)}`)
+    }
+    const completeGoal = (summary: string) => {
+      if (!goalState) return
+      persistGoal({ ...goalState, status: "completed", blocker: undefined, summary, activePlanId: undefined })
+      emitGoalLifecycle("goal.completed", goalState, { summary })
+      writeSessionMessage(`Goal completed.\n${goalAcceptanceText(goalState)}\n${summary}`)
+    }
+    const createSessionPermission = () => {
+      if (!activeGoalAutomation()) return permissionService(activeMode, reader, () => activeAbort?.abort(), tui)
+      return new PermissionService(defaultPermissionRules("goal"), async () => "reject" as const, defaultPermissionAutoReviewer)
+    }
     const getRunner = () => {
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: permissionService(activeMode, reader, () => activeAbort?.abort(), tui), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session })
+      const isTest = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test"
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: createSessionPermission(), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session, forcePlanning: goalState?.status === "planning" })
       return runner
     }
     const writeSessionMessage = (text: string) => writeCliText(tui, text, uiText(activeSettings.language).sessionTitle)
@@ -254,23 +384,28 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runMetrics.current = undefined
       runMetrics.subagent = normalizeSessionTokenUsage(undefined)
       runner = undefined
+      goalState = undefined
+      syncTuiGoal(undefined)
       queuedPrompts.length = 0
       tui?.setSessionTokenUsage(sessionTokenUsage)
       tui?.startSession(session)
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
       if (!tui) timeline.setLanguage?.(activeSettings.language)
-      await showAndInjectTaskCheckpoints(args.root, activeSettings, context, tui)
     }
 
     while (true) {
       const prompt = (queuedPrompts.shift() ?? await question(reader, tui)).trim()
       if (prompt === eofPrompt) {
-        await saveSession(runner?.context ?? context)
-        return "completed"
+        const sessionContext = runner?.context ?? context
+        await clearTransientSessionTaskState(sessionContext, args.root)
+        await saveSession(sessionContext)
+        return { status: "completed", exitCode } satisfies CliRunResult
       }
       if (["exit", ":exit", "quit", ":quit"].includes(prompt.toLowerCase())) {
-        await saveSession(runner?.context ?? context)
-        return "completed"
+        const sessionContext = runner?.context ?? context
+        await clearTransientSessionTaskState(sessionContext, args.root)
+        await saveSession(sessionContext)
+        return { status: "completed", exitCode } satisfies CliRunResult
       }
       if (!prompt) continue
       const command = parseSlashCommand(prompt)
@@ -278,11 +413,39 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session, tui })
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
-        if (changed.sessionAction?.type === "switch") {
+        if (changed.goalAction) {
+          if (changed.goalAction.action === "status") {
+            syncGoalFromContext()
+            writeSessionMessage(goalStatusText(goalState))
+          } else if (changed.goalAction.action === "clear") {
+            await clearActivePlanIfPresent()
+            emitGoalLifecycle("goal.cleared", goalState)
+            persistGoal(undefined)
+            queuedPrompts.length = 0
+            writeSessionMessage("Goal cleared.")
+          } else if (changed.goalAction.action === "pause") {
+            if (!goalState) writeSessionMessage("No active goal.")
+            else await pauseGoal(goalState.blocker ?? "Paused by user.")
+          } else if (changed.goalAction.action === "resume") {
+            if (!goalState) writeSessionMessage("No active goal.")
+            else if (!goalHasAcceptance(goalState)) beginGoalDefinition(goalState, "Goal resumed by user. Define acceptance before planning.")
+            else beginGoalPlanning(goalState, "Goal resumed by user.")
+          } else if (changed.goalAction.action === "start") {
+            await clearActivePlanIfPresent()
+            const nextGoal = createGoalState(changed.goalAction.objective)
+            queuedPrompts.length = 0
+            emitGoalLifecycle("goal.started", nextGoal)
+            beginGoalDefinition(nextGoal, "Goal started by user. Define acceptance before any plan.")
+            writeSessionMessage(`Goal started.\n${goalStatusText(goalState)}`)
+          }
+          await saveSession(runner?.context ?? context)
+        } else if (changed.sessionAction?.type === "switch") {
           if (changed.sessionAction.target === session) {
             writeSessionMessage(uiText(activeSettings.language).sessionSwitchCurrent(session))
           } else {
-            await saveSession(runner?.context ?? context)
+            const sessionContext = runner?.context ?? context
+            await clearTransientSessionTaskState(sessionContext, args.root)
+            await saveSession(sessionContext)
             await switchSession(changed.sessionAction.target)
             writeSessionMessage(uiText(activeSettings.language).sessionSwitched(session))
           }
@@ -307,13 +470,14 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           if (changed.resetRunner) runner = undefined
           await saveSession(runner?.context ?? context)
         }
-        if (exitRequested) return "completed"
+        if (exitRequested) return { status: "completed", exitCode } satisfies CliRunResult
         continue
       }
 
       const activeRunner = getRunner()
       const images = pendingImages
       pendingImages = []
+      const messageCountBeforeRun = activeRunner.context.state.messages.length
       activeAbort = new AbortController()
       const runInput = collectRunInput(reader, activeAbort, queuedPrompts, tui)
       const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
@@ -330,6 +494,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           subagentInputTokens: sessionTokenUsage.subagentInputTokens + subagentUsage.subagentInputTokens,
           subagentOutputTokens: sessionTokenUsage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
           subagentCalls: sessionTokenUsage.subagentCalls + subagentUsage.subagentCalls,
+          subagentCacheHitTokens: sessionTokenUsage.subagentCacheHitTokens + subagentUsage.subagentCacheHitTokens,
+          subagentCacheMissTokens: sessionTokenUsage.subagentCacheMissTokens + subagentUsage.subagentCacheMissTokens,
         }
         tui?.setSessionTokenUsage(sessionTokenUsage)
       } else if (subagentUsage.subagentCalls > 0) {
@@ -338,25 +504,81 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           subagentInputTokens: sessionTokenUsage.subagentInputTokens + subagentUsage.subagentInputTokens,
           subagentOutputTokens: sessionTokenUsage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
           subagentCalls: sessionTokenUsage.subagentCalls + subagentUsage.subagentCalls,
+          subagentCacheHitTokens: sessionTokenUsage.subagentCacheHitTokens + subagentUsage.subagentCacheHitTokens,
+          subagentCacheMissTokens: sessionTokenUsage.subagentCacheMissTokens + subagentUsage.subagentCacheMissTokens,
         }
         tui?.setSessionTokenUsage(sessionTokenUsage)
       }
       runMetrics.current = undefined
       runMetrics.subagent = normalizeSessionTokenUsage(undefined)
       await saveSession(activeRunner.context)
-      if (exitRequested) return "completed"
+      syncGoalFromContext()
+      const recentToolResults = toolResultsSince(activeRunner.context.state.messages, messageCountBeforeRun)
+      const goalAcceptanceResult = latestGoalAcceptanceResult(recentToolResults)
+      const goalToolResult = latestGoalToolResult(recentToolResults)
+      const deniedToolResult = firstDeniedToolResult(recentToolResults)
+      const activePlanId = currentPlanID(activeRunner.context)
+      const planStatus = currentPlanStatus(activeRunner.context)
+      const planBlocker = currentPlanBlocker(activeRunner.context)
+      if (exitRequested) return { status: "completed", exitCode } satisfies CliRunResult
       if (result.status === "completed" && hasProposedPlanText(result.text)) {
         savePlan(args.root, session, result.text).catch((err) => {
           emitLog(logger, { type: "error", name: "plan.save_failed", detail: { error: String(err) } })
           console.error("Failed to save plan file:", err)
         })
-        
-        const planIdRecord = activeRunner.context.state.ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
-        const planId = planIdRecord?.value
-        const choice = (await reader.question(
-          tui?.planApprovalPrompt() ?? "[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: "
-        )).trim().toLowerCase() || "a"
-        tui?.resumeAfterPrompt()
+
+        const planId = activePlanId
+        if (goalState?.status === "planning" || goalState?.status === "reviewing") {
+          if (!planId) {
+            await blockGoal("Goal planning returned a proposed plan, but no structured active plan was created.")
+            await saveSession(activeRunner.context)
+            continue
+          }
+          persistGoal(activateGoalPlan(goalState, planId))
+          emitGoalLifecycle("goal.executing", goalState, { planId })
+          await saveSession(activeRunner.context)
+          queuedPrompts.push("Proceed with the approved plan.")
+          continue
+        }
+
+        let choice = "a"
+        let isLowRisk = false
+        if (planId) {
+          try {
+            const planState = await loadStructuredPlanState(args.root, session, planId)
+            if (planState?.plan?.lowRisk) {
+              isLowRisk = true
+            }
+          } catch {
+            // ignore
+          }
+        }
+
+        if (isLowRisk) {
+          const autoApprovedMsg = uiText(tui?.getLanguage() ?? activeSettings.language ?? "en").planAutoApproved
+          emitLog(logger, { type: "state", name: "plan.approval", detail: { planId, approval_source: "low_risk_auto", lowRisk: true } })
+          if (tui) {
+            tui.message(autoApprovedMsg)
+          } else {
+            console.log(autoApprovedMsg)
+          }
+        } else {
+          const rawChoice = await reader.question(
+            tui?.planApprovalPrompt() ?? "[A]pprove & execute  [R]eject (stay in plan)  [E]dit plan  [N]ew prompt [A]: "
+          )
+          choice = rawChoice.trim().toLowerCase() || "a"
+          emitLog(logger, {
+            type: "state",
+            name: "plan.approval",
+            detail: {
+              planId,
+              approval_source: rawChoice.trim() ? "user_explicit" : "user_default",
+              choice,
+              lowRisk: false,
+            },
+          })
+          tui?.resumeAfterPrompt()
+        }
         
         if (choice === "r" || choice.startsWith("reject")) {
           if (planId) {
@@ -381,6 +603,60 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         
         runner = undefined
         queuedPrompts.push(planId ? "Proceed with the approved plan." : command.text)
+        continue
+      }
+      if (goalState) {
+        if (goalAcceptanceResult) {
+          syncGoalFromContext()
+          if (!goalHasAcceptance(goalState)) {
+            await blockGoal("Goal acceptance recording finished without durable acceptance criteria.")
+            await saveSession(activeRunner.context)
+            continue
+          }
+          beginGoalPlanning(goalState, "Goal acceptance criteria were recorded. Plan the first bounded slice.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (goalToolResult?.toolName === "goal_complete") {
+          completeGoal(String(goalToolResult.metadata.summary ?? goalToolResult.output).trim() || "Goal completed.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (goalToolResult?.toolName === "goal_blocked") {
+          await blockGoal(String(goalToolResult.metadata.reason ?? goalToolResult.output).trim() || "Goal blocked.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (deniedToolResult && activeGoalAutomation()) {
+          await pauseGoal(`Permission denied for ${deniedToolResult.toolName}. Resume after user intervention or revise the goal plan.`)
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (planStatus === "blocked" && (goalState.status === "planning" || goalState.status === "executing" || goalState.status === "reviewing")) {
+          await blockGoal(planBlocker ?? "The active goal plan became blocked.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (result.status === "completed" && goalState.status === "defining") {
+          await blockGoal("Goal definition ended without recording acceptance criteria or an explicit blocked state.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (result.status === "completed" && goalState.status === "planning") {
+          await blockGoal("Goal planning ended without a proposed plan or an explicit goal resolution.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (result.status === "completed" && goalState.status === "executing" && !activePlanId) {
+          beginGoalReview(goalState, "The previous goal slice completed. Review and verify the goal before deciding whether to complete it or plan the next slice.")
+          await saveSession(activeRunner.context)
+          continue
+        }
+        if (result.status === "completed" && goalState.status === "reviewing") {
+          await blockGoal("Goal review ended without a completion decision or a next bounded plan.")
+          await saveSession(activeRunner.context)
+          continue
+        }
       }
       if (result.status !== "completed") continue
     }
@@ -396,24 +672,58 @@ function timelineEventHandler(timeline: { event(event: RunUiEvent): void }) {
   }
 }
 
-async function showAndInjectTaskCheckpoints(root: string, settings: { language: import("./settings").SessionSettings["language"] }, context: ContextManagerLike, tui?: TuiRenderer) {
-  const records = await activeTaskCheckpoints(root)
-  if (records.length === 0) return
-  const copy = uiText(settings.language)
-  const lines = [copy.activeTaskCheckpoints, ...records.map((record) => `  ${record.id} [${record.kind}]: ${record.text}`)]
-  writeCliText(tui, lines.join("\n"), copy.taskTitle)
-  const block = formatTaskCheckpointsBlock(records)
-  if (!block) return
-  if (context.state.messages.some((message) => message.role === "system" && message.parts.some((part) => part.type === "text" && part.text.includes("<active_task_checkpoints>")))) return
-  context.add(textMessage("system", block))
+function currentPlanID(context: ContextManagerLike) {
+  return currentLedgerValue(context, "current_plan_id")
+}
+
+function currentPlanStatus(context: ContextManagerLike) {
+  return currentLedgerValue(context, "plan_lifecycle_status")
+}
+
+function currentPlanBlocker(context: ContextManagerLike) {
+  const blocker = currentLedgerValue(context, "plan_blocker")
+  return blocker && blocker !== "none" ? blocker : undefined
+}
+
+function currentLedgerValue(context: ContextManagerLike, subject: string) {
+  return context.state.ledger?.current.find((record) => record.subject === subject && record.status === "current")?.value
+}
+
+function toolResultsSince(messages: Message[], startIndex: number) {
+  const results: Array<{ toolName: string; output: string; metadata: Record<string, unknown>; status: string }> = []
+  for (const message of messages.slice(startIndex)) {
+    for (const part of message.parts) {
+      if (part.type !== "tool_result") continue
+      results.push({ toolName: part.toolName, output: part.output, metadata: part.metadata, status: part.status })
+    }
+  }
+  return results
+}
+
+function firstDeniedToolResult(results: ReturnType<typeof toolResultsSince>) {
+  return results.find((result) => result.status === "denied")
+}
+
+function latestGoalToolResult(results: ReturnType<typeof toolResultsSince>) {
+  return [...results].reverse().find((result) => result.toolName === "goal_complete" || result.toolName === "goal_blocked")
+}
+
+function latestGoalAcceptanceResult(results: ReturnType<typeof toolResultsSince>) {
+  return [...results].reverse().find((result) => result.toolName === "goal_set_acceptance" && result.status === "succeeded")
+}
+
+async function clearTransientSessionTaskState(context: ContextManagerLike, root: string) {
+  const planId = currentPlanID(context)
+  if (planId) await PlanTracker.clearActivePlan(context, root, planId)
+  const goal = goalStateFromContext(context)
+  if (goal && goal.status !== "completed") clearGoalState(context)
 }
 
 if (import.meta.main) {
-  const exitCode = await main().catch((error: unknown) => {
+  process.exitCode = await main().catch((error: unknown) => {
     console.error(formatCliError(error))
     return 1
   })
-  process.exit(exitCode)
 }
 
 export { parseArgs }

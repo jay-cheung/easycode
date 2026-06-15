@@ -8,6 +8,9 @@ import type { ProjectMemoryRecord } from "../../memory"
 import type { SubagentTaskPacket } from "../subagent-runtime"
 import { maxAutoSkillArtifactInspections, autoInspectFileExtensions, autoInspectFileBasenames, autoInspectIgnoredBasenames, autoInspectIgnoredDirectories } from "./constants"
 
+const maxPriorSubagentResultsInPrompt = 3
+const maxPriorSubagentResultChars = 240
+
 export function createSubagentLogger(root: string, sessionId: string | undefined, logger: Logger | undefined) {
   if (!logger) return undefined
   if (!logger.filePath || !logger.transcriptFilePath) return logger
@@ -37,19 +40,50 @@ export function withSubagentLogContext(
   return createRunAspect(contextualLogger).instrumentProvider(provider)
 }
 
-export function buildSubagentTaskPrompt(request: SubagentTaskPacket, ledgerText: string, summary: string | undefined) {
-  const sections = [
+export function buildSubagentTaskPrompt(request: SubagentTaskPacket, ledgerText: string, summary: string | undefined, priorSubagentResults: string[] = []) {
+  const compactPriorResults = priorSubagentResults
+    .slice(-maxPriorSubagentResultsInPrompt)
+    .map((result, index) => `${index + 1}. ${compactForPrompt(result, maxPriorSubagentResultChars)}`)
+  const stableSections = [
     `Role: ${request.role}`,
+    roleContract(request.role),
+    "Execution Contract:\nUse the allowed tools internally, but return only a coordinator-facing conclusion. Prefer completing the task in this single delegation. Do not ask for follow-up unless the task is under-specified or blocked by permissions.",
+    "Output Contract:\nReturn a concise structured summary with: status, summary, findings, evidenceRefs, artifacts, nextAction. evidenceRefs must be short file/command/symbol/log references, not full tool logs.",
+    "Do not answer the user directly. Do not repeat the full prompt. Do not include generic process narration.",
+  ]
+  const dynamicSections = [
     `Task:\n${request.task}`,
     request.successCriteria ? `Success Criteria:\n${request.successCriteria}` : "",
-    `Turn Budget:\nYou have at most ${request.maxProviderCalls} model turns for this task. If you cannot fully complete the task, return a concise stage summary for the coordinator before the budget is exhausted.`,
+    `Execution Budget:\nUse at most ${request.maxProviderCalls} model turns.`,
     request.assignedStep ? `Assigned Plan Step:\n${request.assignedStep.stepId}: ${request.assignedStep.goal}${request.assignedStep.doneWhen ? `\nDone When: ${request.assignedStep.doneWhen}` : ""}` : "",
-    ledgerText ? `Relevant Context Ledger:\n${ledgerText}` : "",
-    summary ? `Compacted Conversation Summary:\n${summary}` : "",
-    "Return only the result for the coordinator. Do not answer the user directly.",
-    "If the task remains incomplete near the budget limit, stop exploring and return a stage handoff with findings, artifacts, and the next narrow follow-up.",
+    compactPriorResults.length > 0 ? `Prior Subagent Conclusions In This Run:\n${compactPriorResults.join("\n")}` : "",
+    ledgerText ? `Relevant Ledger:\n${compactForPrompt(ledgerText, 1200)}` : "",
+    summary ? `Conversation Summary:\n${compactForPrompt(summary, 900)}` : "",
   ].filter(Boolean)
-  return sections.join("\n\n")
+  return [...stableSections, ...dynamicSections].join("\n\n")
+}
+
+function roleContract(role: SubagentTaskPacket["role"]) {
+  switch (role) {
+    case "summary":
+      return "Role Contract:\nCompress context aggressively. Preserve only decisions, constraints, current state, files, commands, and unresolved blockers."
+    case "explorer":
+      return "Role Contract:\nFind facts quickly with read/search tools. Return exact files, symbols, and evidence snippets. Do not propose code changes unless asked."
+    case "reviewer":
+      return "Role Contract:\nReview for concrete bugs, regressions, missing tests, and risk. Lead with findings and file references."
+    case "debugger":
+      return "Role Contract:\nDiagnose failures using bounded read/search and allowed verification commands. Return root cause, evidence, and minimal recovery."
+    case "tester":
+      return "Role Contract:\nRun or design bounded verification. Return commands, pass/fail status, and the smallest failing signal."
+    case "docs_researcher":
+      return "Role Contract:\nResearch external or MCP-backed docs. Return source-backed facts and links/paths. Avoid broad summaries."
+  }
+}
+
+function compactForPrompt(text: string, maxChars: number) {
+  const compact = text.replace(/\s+/g, " ").trim()
+  if (compact.length <= maxChars) return compact
+  return `${compact.slice(0, Math.max(0, maxChars - 20)).trim()}... [truncated]`
 }
 
 export function autoSkillArtifactCalls(value: unknown, root: string): ToolCall[] {

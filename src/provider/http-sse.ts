@@ -60,7 +60,7 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
       throw new ProviderError(`${this.errorPrefix}: ${detail}`, { output: detail })
     }
     if (!response.ok || !response.body) {
-      const output = await response.text().catch(() => "")
+      const output = await safeReadResponseText(response, "error response body")
       yield { type: "response", response: { url: this.url, status: response.status, ok: response.ok, headers: responseHeaders(response), body: output } }
       throw new ProviderError(`${this.errorPrefix}: ${response.status} ${output}`, { status: response.status, output })
     }
@@ -100,7 +100,7 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
 
   private async successfulResponseBody(response: Response) {
     if (!this.includeSuccessfulResponseBody()) return {}
-    return { body: await response.clone().text().catch(() => "") }
+    return { body: await safeReadResponseText(response.clone(), "successful response body") }
   }
 }
 
@@ -142,4 +142,13 @@ function uniqueNonEmpty(values: string[]) {
     result.push(value)
   }
   return result
+}
+
+async function safeReadResponseText(response: Response, label: string) {
+  try {
+    return await response.text()
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    return `[failed to read ${label}: ${detail}]`
+  }
 }

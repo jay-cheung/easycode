@@ -270,6 +270,38 @@ describe("provider", () => {
     }
   })
 
+  test("surfaces response body read failures in provider errors", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 502,
+      body: null,
+      headers: new Headers(),
+      text: async () => {
+        throw new Error("socket closed")
+      },
+    })) as unknown as typeof fetch
+    try {
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
+      const stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      await stream.next()
+      const response = await stream.next()
+      expect(response.value).toMatchObject({
+        type: "response",
+        response: {
+          status: 502,
+          body: "[failed to read error response body: socket closed]",
+        },
+      })
+      await expect(stream.next()).rejects.toThrow("502 [failed to read error response body: socket closed]")
+    } finally {
+      globalThis.fetch = originalFetch
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
   test("adds DeepSeek JSON response format when requested", async () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"
@@ -401,6 +433,39 @@ describe("provider", () => {
           body: {
             messages: [
               { role: "assistant", content: "Need intraday data first.", reasoning_content: reasoning },
+              { role: "user", content: "继续" },
+            ],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
+  test("provides empty reasoning_content when thinking is enabled but reasoning is empty", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
+      const history = messagesToProviderInput([
+        toolCallMessage({ id: "call_1", name: "list", input: {}, rawArguments: "{\"dirPath\": .}" }),
+        toolResultMessage({ callID: "call_1", toolName: "list", status: "succeeded", output: "README.md" }),
+        createMessage("assistant", [textPart("done")]),
+        textMessage("user", "继续"),
+      ])
+      const stream = provider.stream({ mode: "build", prompt: "继续", messages: [], providerMessages: history, tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            messages: [
+              { role: "assistant", content: null, reasoning_content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\": .}" } }] },
+              { role: "tool", tool_call_id: "call_1", content: "README.md" },
+              { role: "assistant", content: "done", reasoning_content: "" },
               { role: "user", content: "继续" },
             ],
           },

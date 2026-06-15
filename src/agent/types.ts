@@ -57,4 +57,5 @@ export type AgentRunnerOptions = {
   providerProgressIntervalMs?: number
   settings?: SessionSettings
   sessionId?: string
+  forcePlanning?: boolean
 }

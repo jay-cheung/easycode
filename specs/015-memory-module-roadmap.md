@@ -57,7 +57,6 @@ Initial record kinds:
 - `repo_fact`: repeatedly useful repository fact.
 - `failure_pattern`: recurring failure and its diagnosis.
 - `successful_workflow`: reusable workflow that repeatedly succeeds.
-- `task_state`: durable cross-session task continuation state.
 
 ## Write Policy
 
@@ -137,7 +136,7 @@ Embeddings or vector retrieval are explicitly out of scope until structured loca
 
 ### Phase 2: Promotion Paths For Durable Lessons
 
-- Add explicit promotion helpers for `preference`, `repo_fact`, `failure_pattern`, `successful_workflow`, and `task_state`.
+- Add explicit promotion helpers for `preference`, `repo_fact`, `failure_pattern`, and `successful_workflow`.
 - Add guardrails so only concise structured records are promoted.
 - Add prompt/tool guidance for when promotion is appropriate.
 - Add fake-provider eval coverage for continuation recall and durable promotion.
@@ -145,10 +144,9 @@ Embeddings or vector retrieval are explicitly out of scope until structured loca
 
 ### Phase 3: Session And Task Checkpoint Memory
 
-- Add explicit cross-session task checkpointing.
-- Support session-start/session-switch recall for active unfinished work.
-- Distinguish durable task state from transient session summaries.
-- Status: implemented through `task_state` records, `/task` checkpoint commands, planner checkpoint persistence, and startup/switch injection of `<active_task_checkpoints>`.
+- Keep active plans and goals session-local instead of resuming them after exit or session switch.
+- Distinguish durable project memory from transient execution state.
+- Status: cross-session task checkpointing was removed. `task_state` remains readable only for backward compatibility with older memory files, while runtime continuation relies on live session state plus session archives for long-term retention.
 
 ### Phase 4: Memory Evals
 

@@ -7,6 +7,8 @@ export type PermissionRule = {
   action: PermissionAction
 }
 
+export type SubagentPermissionRole = "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher"
+
 export type PermissionReply = "once" | "always" | "reject"
 export type PermissionAutoReviewer = (request: PermissionRequest) => PermissionReply | undefined | Promise<PermissionReply | undefined>
 
@@ -275,7 +277,7 @@ function containsSensitivePath(value: string) {
   return /(^|[/\s"'=])\.env(?:[^/\s"'=]*)?(?:[/\s"'=]|$)/.test(normalized) || /(^|[/\s"'=])secrets?(?:[/\s"'=]|$)/.test(normalized)
 }
 
-export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[] {
+export function defaultPermissionRules(mode: "build" | "plan" | "goal"): PermissionRule[] {
   const base: PermissionRule[] = [
     { permission: "read", pattern: "*", action: "allow" },
     { permission: "read", pattern: "*.env", action: "ask" },
@@ -285,7 +287,6 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "grep", pattern: "*", action: "allow" },
     { permission: "write", pattern: "*", action: "ask" },
     { permission: "edit", pattern: "*", action: "ask" },
-    { permission: "bash", pattern: "*", action: "ask" },
     { permission: "bash", pattern: "rm -rf*", action: "deny" },
     { permission: "bash", pattern: "sudo*", action: "deny" },
     { permission: "bash", pattern: "git push*", action: "deny" },
@@ -295,10 +296,103 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "mcp", pattern: "*", action: "allow" },
     { permission: "web_search", pattern: "*", action: "allow" },
     { permission: "web_fetch", pattern: "*", action: "allow" },
-    { permission: "delegate_subagent", pattern: "*", action: mode === "build" ? "allow" : "deny" },
+    { permission: "delegate_subagent", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
     { permission: "plan_exit", pattern: "*", action: "allow" },
-    { permission: "plan_step_complete", pattern: "*", action: mode === "build" ? "allow" : "deny" },
-    { permission: "plan_step_fail", pattern: "*", action: mode === "build" ? "allow" : "deny" },
+    { permission: "plan_step_complete", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
+    { permission: "plan_step_fail", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
+    { permission: "goal_set_acceptance", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
+    { permission: "goal_complete", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
+    { permission: "goal_blocked", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
   ]
+  if (mode !== "goal") base.push({ permission: "bash", pattern: "*", action: "ask" })
+  if (mode === "goal") {
+    base.push(...verificationBashAllowPatterns.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })))
+  }
   return base
+}
+
+const verificationBashAllowPatterns = [
+  "bash:exact:bun test*",
+  "bash:exact:bun run test*",
+  "bash:exact:bun run build*",
+  "bash:exact:bun run typecheck*",
+  "bash:exact:bun run verify*",
+  "bash:exact:bun run gate*",
+  "bash:exact:npm test*",
+  "bash:exact:npm run test*",
+  "bash:exact:npm run build*",
+  "bash:exact:npm run typecheck*",
+  "bash:exact:npm run verify*",
+  "bash:exact:pnpm test*",
+  "bash:exact:pnpm run test*",
+  "bash:exact:pnpm run build*",
+  "bash:exact:pnpm run typecheck*",
+  "bash:exact:pnpm run verify*",
+  "bash:exact:pnpm exec tsc*",
+  "bash:exact:npx tsc*",
+  "bash:exact:go test*",
+  "bash:exact:cargo test*",
+  "bash:exact:pytest*",
+  "bash:exact:python -m pytest*",
+  "bash:exact:node --test*",
+] as const
+
+export function defaultSubagentPermissionRules(role: SubagentPermissionRole): PermissionRule[] {
+  const base: PermissionRule[] = [
+    { permission: "read", pattern: "*", action: "allow" },
+    { permission: "read", pattern: "*.env", action: "ask" },
+    { permission: "read", pattern: "*.env.*", action: "ask" },
+    { permission: "read", pattern: "secrets/*", action: "deny" },
+    { permission: "list", pattern: "*", action: "allow" },
+    { permission: "grep", pattern: "*", action: "allow" },
+    { permission: "write", pattern: "*", action: "deny" },
+    { permission: "edit", pattern: "*", action: "deny" },
+    { permission: "sandbox_bypass", pattern: "*", action: "deny" },
+    { permission: "skill", pattern: "*", action: "allow" },
+    { permission: "mcp", pattern: "*", action: "allow" },
+    { permission: "web_search", pattern: "*", action: "allow" },
+    { permission: "web_fetch", pattern: "*", action: "allow" },
+    { permission: "delegate_subagent", pattern: "*", action: "deny" },
+    { permission: "plan_exit", pattern: "*", action: "deny" },
+    { permission: "plan_step_complete", pattern: "*", action: "deny" },
+    { permission: "plan_step_fail", pattern: "*", action: "deny" },
+  ]
+  const bashRules: PermissionRule[] = [
+    { permission: "bash", pattern: "rm -rf*", action: "deny" },
+    { permission: "bash", pattern: "sudo*", action: "deny" },
+    { permission: "bash", pattern: "git push*", action: "deny" },
+    { permission: "bash", pattern: "docker*", action: "deny" },
+  ]
+  if (role === "explorer" || role === "reviewer") {
+    bashRules.push(
+      { permission: "bash", pattern: "bash:exact:*", action: "deny" },
+      { permission: "bash", pattern: "bash:scoped:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:pwd:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:ls:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:find:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:wc:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:cat:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:rg:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:grep:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:sed:*", action: "deny" },
+      { permission: "bash", pattern: "bash:readonly:curl:*", action: "deny" },
+    )
+    return [
+      ...base,
+      { permission: "bash", pattern: "bash:readonly:git:diff:project", action: "allow" },
+      { permission: "bash", pattern: "bash:readonly:git:status:project", action: "allow" },
+      { permission: "bash", pattern: "bash:readonly:git:log:project", action: "allow" },
+      { permission: "bash", pattern: "bash:readonly:git:branch:project", action: "allow" },
+      ...bashRules,
+    ]
+  }
+  if (role !== "debugger" && role !== "tester") {
+    bashRules.push({ permission: "bash", pattern: "*", action: "deny" })
+    return [...base, ...bashRules]
+  }
+  return [
+    ...base,
+    ...verificationBashAllowPatterns.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })),
+    ...bashRules,
+  ]
 }

@@ -6,6 +6,14 @@ export type Writable = {
   columns?: number
 }
 
+export type TuiGoalContext = {
+  status: string
+  objective: string
+  iteration: number
+  activePlanId?: string
+  blocker?: string
+}
+
 export type TuiContext = {
   root: string
   mode: string
@@ -14,4 +22,5 @@ export type TuiContext = {
   language?: UiLanguage
   session?: string
   logger?: boolean
+  goal?: TuiGoalContext
 }

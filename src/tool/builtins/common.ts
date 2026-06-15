@@ -11,7 +11,7 @@ export const LedgerInput = z.object({ query: z.string().optional() })
 export const MemoryQueryInput = z.object({ query: z.string(), maxResults: z.number().nullish().transform((value) => value ?? 5) })
 export const MemoryAddInput = z.object({
   text: z.string(),
-  kind: z.enum(["note", "session_archive", "preference", "repo_fact", "failure_pattern", "successful_workflow", "task_state"]).nullish().transform((value) => value ?? "note"),
+  kind: z.enum(["note", "session_archive", "preference", "repo_fact", "failure_pattern", "successful_workflow"]).nullish().transform((value) => value ?? "note"),
   tags: z.array(z.string()).nullish().transform((value) => value ?? []),
   scope: z.object({
     files: z.array(z.string()).optional(),
@@ -21,7 +21,7 @@ export const MemoryAddInput = z.object({
 })
 export const MemoryPromoteInput = z.object({
   text: z.string(),
-  kind: z.enum(["preference", "repo_fact", "failure_pattern", "successful_workflow", "task_state"]),
+  kind: z.enum(["preference", "repo_fact", "failure_pattern", "successful_workflow"]),
   tags: z.array(z.string()).nullish().transform((value) => value ?? []),
   scope: z.object({
     files: z.array(z.string()).optional(),
@@ -53,6 +53,19 @@ export const PlanStepCompleteInput = z.object({
 
 export const PlanStepFailInput = z.object({
   reason: z.string(),
+})
+
+export const GoalCompleteInput = z.object({
+  summary: z.string(),
+})
+
+export const GoalBlockedInput = z.object({
+  reason: z.string(),
+})
+
+export const GoalSetAcceptanceInput = z.object({
+  acceptanceCriteria: z.array(z.string()).min(1),
+  completionChecks: z.array(z.string()).min(1),
 })
 
 export const DelegateSubagentInput = z.object({

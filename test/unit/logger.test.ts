@@ -44,8 +44,21 @@ describe("logger", () => {
           ].join("\n"),
           cachedInput: "cached",
           uncachedInput: "miss",
+          reasoningContent: "inspect first",
           output: "answer",
           usage: { inputTokens: 10, cacheHitTokens: 4, cacheMissTokens: 6, outputTokens: 2 },
+        },
+      })
+      logger({
+        at: 2,
+        type: "provider",
+        name: "provider.validation_rejected",
+        detail: {
+          attempt: 1,
+          maxAttempts: 3,
+          shouldRetry: true,
+          failureText: "Planning mode hard gate failed.",
+          correction: "Return a proposed plan.",
         },
       })
       logger({
@@ -77,10 +90,11 @@ describe("logger", () => {
     expect(infoLines).toHaveLength(0)
     expect(errorLines).toHaveLength(0)
     const lines = (await Bun.file(path.join(root, ".easycode", "logs", "sessions", "demo_session.jsonl")).text()).trim().split("\n")
-    expect(lines).toHaveLength(5)
+    expect(lines).toHaveLength(6)
     expect(JSON.parse(lines[2])).toMatchObject({ type: "error", name: "error.event" })
     const transcript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "demo_session.txt")).text()
-    expect(transcript).toContain("Turn 1\n\nInput\n\nSystem\n\ncached\n\nUser\n\nmiss\n\nTool\n\n<tool_result name=\"read\" id=\"call_1\" status=\"succeeded\">\nok\n</tool_result>\n\nOutput\n\nAssistant\n\nanswer\n\nCache\n\n40.0%, cache hit: yes, input=10, cached=4, miss=6, output=2\nprovider reported cached tokens: 4\nexact cached text span: unavailable from provider")
+    expect(transcript).toContain("Turn 1\n\nInput\n\nSystem\n\ncached\n\nUser\n\nmiss\n\nTool\n\n<tool_result name=\"read\" id=\"call_1\" status=\"succeeded\">\nok\n</tool_result>\n\nReasoning\n\ninspect first\n\nOutput\n\nAssistant\n\nanswer\n\nCache\n\n40.0%, cache hit: yes, input=10, cached=4, miss=6, output=2\nprovider reported cached tokens: 4\nexact cached text span: unavailable from provider")
+    expect(transcript).toContain("Validation\n\nrejected, retrying (1/3)\nPlanning mode hard gate failed.\n\nCorrection\n\nReturn a proposed plan.")
     expect(transcript).toContain("Turn 2")
     expect(transcript).toContain("common prefix with previous turn: chars=89, estimated_tokens=27")
     await rm(root, { recursive: true, force: true })

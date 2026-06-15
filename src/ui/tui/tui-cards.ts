@@ -71,8 +71,8 @@ export function buildSuccessSummaryCard(
   language: UiLanguage,
   elapsedMs: number,
   metrics: ProviderRunMetrics | undefined,
-  subagentUsage: { inputTokens: number; outputTokens: number; calls: number; invocations: number; roleCounts: Record<string, number> | Partial<Record<string, number>> },
-  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number },
+  subagentUsage: { inputTokens: number; outputTokens: number; calls: number; invocations: number; cacheHitTokens: number; cacheMissTokens: number; roleCounts: Record<string, number> | Partial<Record<string, number>> },
+  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number; subagentCacheHitTokens: number; subagentCacheMissTokens: number },
   columns: number,
 ) {
   const copy = uiText(language)
@@ -101,14 +101,23 @@ export function buildSuccessSummaryCard(
     const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
     const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
     const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
+    const roundSubagentHitRate = formatCacheHitRate(subagentUsage.cacheHitTokens, subagentUsage.cacheMissTokens)
+    const cumSubagentHitRate = formatCacheHitRate(
+      sessionTokenUsage.subagentCacheHitTokens + subagentUsage.cacheHitTokens,
+      sessionTokenUsage.subagentCacheMissTokens + subagentUsage.cacheMissTokens,
+    )
     const roundBreakdown = formatSubagentBreakdown(subagentUsage.roleCounts)
     lines.push(
       copy.roundSubagentInvocationsLine(String(subagentUsage.invocations)),
       ...(roundBreakdown ? [copy.roundSubagentDetailLine(roundBreakdown)] : []),
       copy.roundSubagentCallsLine(String(subagentUsage.calls)),
-      copy.roundSubagentTokensLine(roundSubagentTotal.toLocaleString()),
+      copy.roundSubagentTokensLine(formatTokenTotal(roundSubagentTotal, roundSubagentHitRate)),
       copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
-      copy.sessionSubagentTokensLine(cumSubagentTotal.toLocaleString(), cumSubagentInput.toLocaleString(), cumSubagentOutput.toLocaleString()),
+      copy.sessionSubagentTokensLine(
+        formatTokenTotal(cumSubagentTotal, cumSubagentHitRate),
+        cumSubagentInput.toLocaleString(),
+        cumSubagentOutput.toLocaleString(),
+      ),
     )
   }
 
@@ -122,8 +131,8 @@ export function buildFailureSummaryCard(
   language: UiLanguage,
   elapsedMs: number,
   metrics: ProviderRunMetrics | undefined,
-  subagentUsage: { inputTokens: number; outputTokens: number; calls: number; invocations: number; roleCounts: Record<string, number> | Partial<Record<string, number>> },
-  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number },
+  subagentUsage: { inputTokens: number; outputTokens: number; calls: number; invocations: number; cacheHitTokens: number; cacheMissTokens: number; roleCounts: Record<string, number> | Partial<Record<string, number>> },
+  sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number; subagentCacheHitTokens: number; subagentCacheMissTokens: number },
   reason: string,
   columns: number,
 ) {
@@ -159,14 +168,23 @@ export function buildFailureSummaryCard(
     const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
     const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
     const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
+    const roundSubagentHitRate = formatCacheHitRate(subagentUsage.cacheHitTokens, subagentUsage.cacheMissTokens)
+    const cumSubagentHitRate = formatCacheHitRate(
+      sessionTokenUsage.subagentCacheHitTokens + subagentUsage.cacheHitTokens,
+      sessionTokenUsage.subagentCacheMissTokens + subagentUsage.cacheMissTokens,
+    )
     const roundBreakdown = formatSubagentBreakdown(subagentUsage.roleCounts)
     lines.push(
       copy.roundSubagentInvocationsLine(String(subagentUsage.invocations)),
       ...(roundBreakdown ? [copy.roundSubagentDetailLine(roundBreakdown)] : []),
       copy.roundSubagentCallsLine(String(subagentUsage.calls)),
-      copy.roundSubagentTokensLine(roundSubagentTotal.toLocaleString()),
+      copy.roundSubagentTokensLine(formatTokenTotal(roundSubagentTotal, roundSubagentHitRate)),
       copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
-      copy.sessionSubagentTokensLine(cumSubagentTotal.toLocaleString(), cumSubagentInput.toLocaleString(), cumSubagentOutput.toLocaleString()),
+      copy.sessionSubagentTokensLine(
+        formatTokenTotal(cumSubagentTotal, cumSubagentHitRate),
+        cumSubagentInput.toLocaleString(),
+        cumSubagentOutput.toLocaleString(),
+      ),
     )
   }
 
@@ -213,4 +231,14 @@ function formatSubagentBreakdown(roleCounts: Record<string, number> | Partial<Re
     .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
   if (entries.length === 0) return ""
   return entries.map(([role, count]) => `${role} x${count}`).join(", ")
+}
+
+function formatCacheHitRate(cacheHitTokens: number, cacheMissTokens: number) {
+  const total = cacheHitTokens + cacheMissTokens
+  if (total <= 0) return "0.0%"
+  return `${((cacheHitTokens / total) * 100).toFixed(1)}%`
+}
+
+function formatTokenTotal(totalTokens: number, hitRate: string) {
+  return `${totalTokens.toLocaleString()} (hit ${hitRate})`
 }

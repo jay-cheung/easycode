@@ -17,6 +17,7 @@ export function prepareProviderTurnRequest(input: {
   tools: ToolDef[]
   usedTools: string[]
   activeHypothesisMessages: Array<{ role: "system"; content: string }>
+  activePlanStepId?: string
 }) {
   const plan = input.context.planRequest({
     step: input.step,
@@ -27,7 +28,7 @@ export function prepareProviderTurnRequest(input: {
     pendingSkillLoads: input.pendingSkillLoads,
     tools: input.tools,
   })
-  const shouldCheckSummaryReadiness = input.usedTools.length > 0 && input.step >= explorationSummaryStep(input.maxSteps)
+  const shouldCheckSummaryReadiness = !input.activePlanStepId && input.usedTools.length > 0 && input.step >= explorationSummaryStep(input.maxSteps)
   return {
     providerMessages: shouldCheckSummaryReadiness
       ? [...plan.providerMessages, ...input.activeHypothesisMessages, explorationSummaryReadinessMessage(input.step + 1, input.maxSteps)]

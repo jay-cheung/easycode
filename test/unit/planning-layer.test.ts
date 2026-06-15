@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { ContextManager } from "../../src/context"
-import { InvalidExecutionPlanError, loadStructuredPlan, loadStructuredPlanState, isComplexPlan } from "../../src/plans"
+import { InvalidExecutionPlanError, loadStructuredPlan, loadStructuredPlanState, isComplexPlan, renderPlanToMarkdown } from "../../src/plans"
 import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../../src/agent/planner"
 import type { Provider, ProviderEvent } from "../../src/provider/types"
 
@@ -80,6 +80,7 @@ describe("Planning Layer & Executable Plans", () => {
   test("isComplexPlan correctly detects if plan contains edit steps", () => {
     const complexPlan = {
       id: "plan_1",
+      lowRisk: false,
       steps: [
         { id: "step_1", goal: "inspect files", kind: "inspect" as const },
         { id: "step_2", goal: "change constant", kind: "edit" as const }
@@ -87,6 +88,7 @@ describe("Planning Layer & Executable Plans", () => {
     }
     const simplePlan = {
       id: "plan_2",
+      lowRisk: true,
       steps: [
         { id: "step_1", goal: "inspect files", kind: "inspect" as const },
         { id: "step_2", goal: "verify output", kind: "verify" as const }
@@ -105,10 +107,75 @@ describe("Planning Layer & Executable Plans", () => {
     expect(plan.steps[1].kind).toBe("edit")
   })
 
+  test("normalizeExecutionPlan infers subagent metadata from delegation-oriented steps", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_delegate",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Delegate explorer to inspect src/add.ts and capture the current behavior",
+          kind: "inspect",
+          doneWhen: "The explorer has identified the exported function and incorrect operator.",
+        },
+      ],
+    }))
+
+    expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
+  })
+
+  test("normalizeExecutionPlan conservatively infers missing lowRisk", () => {
+    const readonlyPlan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_readonly",
+      steps: [
+        { id: "step_1", goal: "Inspect src/add.ts and report current behavior", kind: "inspect" },
+      ],
+    }))
+    const editPlan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_edit",
+      steps: [
+        { id: "step_1", goal: "Edit src/add.ts", kind: "edit" },
+      ],
+    }))
+    const explicitFalse = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_explicit",
+      lowRisk: false,
+      steps: [
+        { id: "step_1", goal: "Inspect src/add.ts", kind: "inspect" },
+      ],
+    }))
+
+    expect(readonlyPlan.lowRisk).toBe(true)
+    expect(editPlan.lowRisk).toBe(false)
+    expect(explicitFalse.lowRisk).toBe(false)
+  })
+
+  test("renderPlanToMarkdown makes lowRisk visible and preserves it in JSON", () => {
+    const markdown = renderPlanToMarkdown({
+      id: "plan_visible_lowrisk",
+      title: "Visible low risk",
+      lowRisk: true,
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect src/add.ts",
+          kind: "inspect",
+          executorHint: "subagent",
+          subagentRole: "explorer",
+        },
+      ],
+    })
+
+    expect(markdown).toContain("- **Low Risk**: true")
+    expect(markdown).toContain('"lowRisk": true')
+    expect(markdown).not.toContain("executorHint")
+    expect(markdown).not.toContain("subagentRole")
+  })
+
   test("Replanner rewrites remaining steps of plan", async () => {
     const currentPlan = {
       id: "plan_12345",
       title: "Mock Plan",
+      lowRisk: false,
       steps: [
         { id: "step_1", goal: "Inspect code", kind: "inspect" as const },
         { id: "step_2", goal: "Edit code", kind: "edit" as const }
@@ -155,6 +222,7 @@ describe("Planning Layer & Executable Plans", () => {
       const plan = {
         id: "plan_tracker_test",
         title: "Tracker Test",
+        lowRisk: true,
         steps: [
           { id: "step_1", goal: "Goal 1", kind: "inspect" as const }
         ]
@@ -188,6 +256,7 @@ describe("Planning Layer & Executable Plans", () => {
       const plan = {
         id: "plan_tracker_test",
         title: "Tracker Test",
+        lowRisk: true,
         steps: [
           { id: "step_1", goal: "Goal 1", kind: "inspect" as const }
         ]

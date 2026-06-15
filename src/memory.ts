@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises"
 import { easycodeDir } from "./easycode-path"
 
 export type ProjectMemoryKind = "note" | "session_archive" | "preference" | "repo_fact" | "failure_pattern" | "successful_workflow" | "task_state"
-export type ProjectMemoryPromotableKind = Exclude<ProjectMemoryKind, "note" | "session_archive">
+export type ProjectMemoryPromotableKind = Exclude<ProjectMemoryKind, "note" | "session_archive" | "task_state">
 
 export type ProjectMemoryScope = {
   files?: string[]
@@ -224,6 +224,5 @@ export function isPromotableMemoryKind(value: unknown): value is ProjectMemoryPr
   return value === "preference" ||
     value === "repo_fact" ||
     value === "failure_pattern" ||
-    value === "successful_workflow" ||
-    value === "task_state"
+    value === "successful_workflow"
 }

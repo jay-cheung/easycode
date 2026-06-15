@@ -20,7 +20,7 @@ export const hardPlanGateCorrection = [
   "- Your next assistant turn must return a proposal plan.",
   "- Return either a final <proposed_plan>...</proposed_plan> block or call plan_exit.",
   "- Do not return status chat, execution updates, or any non-plan final message.",
-  "- If you already inspected the code, fold those findings into the proposal plan itself.",
+  "- Read-only planning tools are allowed before the final plan; if you already inspected the code, fold those findings into the proposal plan itself.",
 ].join("\n")
 
 export const hardPlanGateFailureText = "Planning mode hard gate failed: the model must return a <proposed_plan>...</proposed_plan> response or call plan_exit."
