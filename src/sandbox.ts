@@ -1,4 +1,5 @@
 import path from "node:path"
+import os from "node:os"
 import { mkdir, readdir, rename, rm } from "node:fs/promises"
 import type { AgentMode } from "./message"
 
@@ -96,12 +97,36 @@ function escapeSandboxString(input: string) {
   return input.replaceAll("\\", "\\\\").replaceAll('"', '\\"')
 }
 
+function normalizeSandboxProfilePath(input: string) {
+  const normalized = path.posix.normalize(input.replaceAll("\\", "/"))
+  return normalized.length > 1 && normalized.endsWith("/") ? normalized.slice(0, -1) : normalized
+}
+
+function sandboxProfilePathVariants(input: string) {
+  const normalized = normalizeSandboxProfilePath(input)
+  const variants = new Set<string>([normalized])
+  if (normalized.startsWith("/private/")) variants.add(normalized.slice("/private".length))
+  else if (normalized.startsWith("/")) variants.add(`/private${normalized}`)
+  return [...variants]
+}
+
+function macosSessionTempWriteRoots() {
+  const tmpdir = normalizeSandboxProfilePath(os.tmpdir())
+  const parent = path.posix.dirname(tmpdir)
+  if (!/^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+$/.test(parent)) return []
+  return sandboxProfilePathVariants(parent)
+}
+
 export function macosSandboxProfile(root: string) {
+  const writableRoots = [
+    ...sandboxProfilePathVariants(root).map((value) => `(subpath "${escapeSandboxString(value)}")`),
+    ...macosSessionTempWriteRoots().map((value) => `(subpath "${escapeSandboxString(value)}")`),
+  ]
   return `(version 1)
 (allow default)
 (deny file-write*
   (require-all
-    (require-not (subpath "${escapeSandboxString(root)}"))
+${writableRoots.map((rule) => `    (require-not ${rule})`).join("\n")}
     (require-not (literal "/dev/null"))
     (require-not (literal "/private/dev/null"))))`
 }

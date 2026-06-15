@@ -2,6 +2,19 @@
 
 Status: Draft
 
+## Step 45: Narrow macOS Temp-Root Sandbox Allowlist
+
+- Scope: reduce repeated macOS native sandbox bypass prompts for ordinary HTTPS/toolchain commands without widening shell writes to the entire system temp tree.
+- Implementation:
+  - Updated `src/sandbox.ts` so the native macOS write sandbox still defaults to project-root-only writes, but now also allows the current session's per-user temp/cache root under `var/folders`, including `/private` path variants, to cover implicit TLS and runtime scratch writes.
+  - Kept the broader project-root path boundary and explicit `sandbox_bypass` approval flow unchanged, so direct references to outside paths like `/tmp/...` still require an explicit bypass instead of being silently opened up.
+  - Added regression coverage in `test/unit/sandbox.test.ts` to lock the new per-session temp-root allowlist and ensure the profile does not expand to the whole `/private/var/folders` tree; updated `specs/005-boundary-conditions.md` and `specs/acceptance.md` to document the refined contract.
+- Verification:
+  - `bun test test/unit/sandbox.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this slice is intentionally narrower than allowing `/tmp` or the full `var/folders` subtree; it targets only the current macOS session's scratch area to reduce prompt fatigue without giving arbitrary global temp writes a free pass.
+
 ## Step 44: Restore Separate Summary-Compaction Budgeting
 
 - Scope: fix the regression where background `summary` compaction accidentally started consuming the same per-run budget line as foreground `delegate_subagent` tasks, which surfaced bogus `Subagent summary failed` timeline errors.

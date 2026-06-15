@@ -50,7 +50,8 @@
 - LSP/AST indexing demonstrates an advantage over text search by resolving definitions/references and constraining edits to symbols rather than same-name text matches.
 
 ## Safety
-- Writes outside the project root fail.
+- Workspace writes outside the project root fail.
+- macOS native bash writes may still use the current session's per-user temp/cache root under `var/folders` without triggering a sandbox-bypass prompt.
 - EasyCode never edits files before a proposed plan is explicitly approved.
 - Dangerous bash commands fail.
 - Replaceable bash inspections that already have internal tool coverage fail fast with a structured hint to use the matching internal tool instead.

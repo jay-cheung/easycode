@@ -6,10 +6,11 @@
 - `build` mode may modify files only after permission and sandbox checks.
 
 ## Filesystem
-- Writes must stay inside the project root.
+- Workspace file writes must stay inside the project root.
 - Relative paths resolve against the project root.
 - `.env*` defaults to ask.
 - `secrets/**` defaults to deny.
+- The macOS native write sandbox may also allow the current session's per-user temp/cache root under `var/folders` so implicit TLS/toolchain scratch writes do not force a bypass prompt for ordinary networked commands.
 
 ## Bash
 - Default timeout is 120 seconds.

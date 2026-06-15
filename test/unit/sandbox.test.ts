@@ -9,9 +9,15 @@ async function tmpdir() {
 }
 
 describe("sandbox", () => {
-  test("native write sandbox permits dev null while blocking external writes", () => {
+  test("native write sandbox permits dev null and current macOS temp roots while blocking broad external writes", () => {
     const profile = macosSandboxProfile("/tmp/easycode-root")
     expect(profile).toContain('(require-not (subpath "/tmp/easycode-root"))')
+    expect(profile).toContain('(require-not (subpath "/private/tmp/easycode-root"))')
+    const sessionTempRoot = path.dirname(os.tmpdir())
+    if (/^\/(?:private\/)?var\/folders\/[^/]+\/[^/]+$/.test(sessionTempRoot)) {
+      expect(profile).toContain(`(require-not (subpath "${sessionTempRoot}"))`)
+    }
+    expect(profile).not.toContain('(require-not (subpath "/private/var/folders"))')
     expect(profile).toContain('(require-not (literal "/dev/null"))')
     expect(profile).toContain('(require-not (literal "/private/dev/null"))')
   })
