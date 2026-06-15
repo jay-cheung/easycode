@@ -2,14 +2,75 @@
 
 Status: Draft
 
+## Step 44: Restore Separate Summary-Compaction Budgeting
+
+- Scope: fix the regression where background `summary` compaction accidentally started consuming the same per-run budget line as foreground `delegate_subagent` tasks, which surfaced bogus `Subagent summary failed` timeline errors.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so background summary compaction no longer calls `reserveSubagentBudget()` and instead runs on its own lifecycle again: one background summary at a time, with its own route-level `maxProviderCalls`, but without sharing the foreground subagent invocation/role counters.
+  - Kept `delegate_subagent` budgeting unchanged for explicit foreground roles, restored the original `summary` role cap in `src/agent/subagent-runtime.ts`, and kept the TUI invocation accounting change so only actually scheduled subagents affect visible per-role counts.
+  - Added regression coverage in `test/integration/agent.test.ts` proving that summary compaction still runs even when the foreground subagent counters are already exhausted, and that no fake summary failure event is emitted.
+- Verification:
+  - `bun test test/integration/agent.test.ts -t "summary compaction is budgeted separately from foreground subagents"`
+  - `bun test test/integration/agent.test.ts -t "context compaction"`
+  - `bun test test/unit/tui.test.ts test/unit/timeline.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: the intended contract is that background context compaction is an internal maintenance path, not a consumer of the foreground subagent budget pool.
+
+## Step 43: Subagent Detail Visibility And Delegation Gate
+
+- Scope: make subagent usage readable enough to diagnose whether work was actually delegated, and add a narrow coordinator retry gate for obvious pure-search turns so the model stops doing all bounded exploration itself.
+- Implementation:
+  - Updated `src/ui/timeline.ts`, `src/ui/tui/index.ts`, `src/ui/tui/tui-state.ts`, `src/ui/tui/tui-cards.ts`, and `src/i18n.ts` so timeline rows now include the subagent request id, closeout cards distinguish subagent invocation count from internal turns, and round summaries show a per-role breakdown such as `explorer x2`.
+  - Kept persisted session accounting backward-compatible, but relabeled the existing cumulative `subagentCalls` display as internal turns instead of user-facing invocation count so the TUI no longer implies that provider turns equal `delegate_subagent` calls.
+  - Updated `src/agent/subagent-runtime.ts`, `src/agent/runner/index.ts`, `src/agent/runner/validated-provider-turn.ts`, `src/prompt/agent.ts`, and `src/tool/builtins/retrieval-tools.ts` so the coordinator now retries a turn when it proposes an obvious pure bounded search/navigation burst (`repo_map` / semantic search style tools) without delegating first, while preserving the old hypothesis-drift retry budget and leaving normal read-before-edit flows alone.
+  - Added regression coverage in `test/unit/timeline.test.ts`, `test/unit/tui.test.ts`, and `test/integration/agent.test.ts` for subagent detail rendering and the new delegation-gate retry path.
+- Verification:
+  - `bun test test/unit/timeline.test.ts`
+  - `bun test test/unit/tui.test.ts`
+  - `bun test test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this slice intentionally gates only obvious pure exploration bursts and external research turns; single-file reads and normal coordinator edit flows still stay local to avoid forcing subagents into every trivial patch.
+
+## Step 42: Web Fetch Tool And Curl Interception
+
+- Scope: replace readonly `curl` shell usage with a first-class internal `web_fetch` tool, so common HTTP fetches stop consuming bash approvals and can be audited/compacted like other retrieval tools.
+- Implementation:
+  - Added `web_fetch` in `src/retrieval/index.ts`, `src/retrieval/retrieval-format.ts`, `src/tool/builtins/common.ts`, and `src/tool/builtins/retrieval-tools.ts` with bounded GET/HEAD fetch support, safe-header validation, redirects/retries/timeouts, TLS override, structured citations, and compactable tool output.
+  - Updated `src/tool/bash.ts` and `src/tool/registry.ts` so `curl` is now classified as replaceable `http_fetch`, blocked before sandbox execution, and when possible translated into a suggested `web_fetch` input payload for the next model turn.
+  - Updated `src/permission.ts`, `src/message.ts`, `src/agent/subagent-runtime.ts`, and `src/tool/utils/duplicate-inspection.ts` so `web_fetch` is default-allowed, subagent-safe, history-compacted, and participates in duplicate-inspection suppression, while fallback bash auto-review no longer treats `curl` as an allowed readonly path.
+  - Added regression coverage in `test/unit/retrieval.test.ts`, `test/unit/tool.test.ts`, and `test/unit/permission.test.ts` for bounded fetch output, safe-header enforcement, default permission behavior, and `curl -> web_fetch` interception with translated suggestions.
+  - Followed up on review findings by aligning `web_fetch` defaults with plain `curl` semantics (`followRedirects=false` unless explicitly requested), narrowing bash interception to only the `curl` shapes that can be safely translated into readonly `web_fetch`, and expanding the coordinator delegation gate so even a single pure fact-finding tool call or `web_fetch` docs lookup is redirected through `delegate_subagent`.
+- Verification:
+  - `bun test test/unit/retrieval.test.ts test/unit/tool.test.ts test/unit/permission.test.ts`
+  - `bun run typecheck`
+  - `bun test`
+  - `bun run gate`
+- Notes: this slice intentionally keeps `web_fetch` readonly. Auth-bearing headers, request bodies, and file-output curl patterns are not rewritten into `web_fetch`; they fall back to ordinary bash review/approval instead of losing capability.
+
+## Step 41: Planning Hard Gate And Auto-Continue Execution
+
+- Scope: make planning-stage assistant responses fail closed unless the model actually returns a proposal plan, and make approved plans continue across steps in the same run instead of asking the user whether to proceed after each completed step.
+- Implementation:
+  - Updated `src/agent/protocol.ts`, `src/agent/runner/validated-provider-turn.ts`, and `src/agent/runner/index.ts` so planning-stage turns now run through an explicit hard validator: if the final turn has no tool calls and is neither a `<proposed_plan>...</proposed_plan>` response nor a `plan_exit` call, EasyCode injects a correction prompt and retries; repeated non-compliance now fails the run closed.
+  - Updated `src/prompt/agent.ts`, the active-step reminder in `src/agent/runner/index.ts`, and `src/tool/builtins/retrieval-tools.ts` so approved plans explicitly continue to the next step after `plan_step_complete` without re-asking the user, and the tool result itself nudges the next-turn model call to keep going.
+  - Updated `test/integration/agent.test.ts` to cover retry-on-invalid-plan, fail-closed refusal, the draft-plan status path without reopening the replan branch, and same-run multi-step auto-continuation.
+- Verification:
+  - `bun test test/integration/agent.test.ts`
+  - `bun run typecheck`
+- Notes: exploratory read/search turns remain allowed before the final plan; the hard gate only applies when the model tries to finish a planning-stage turn without returning a proposal plan, while execution-mode auto-continue only affects approved running plans.
+
 ## Step 40: Live Subagent Runtime, Hidden Delegation Metadata, And Isolated Logs
 
 - Scope: ship the first live multi-role subagent runtime where the coordinator can explicitly delegate bounded tasks, the runner intercepts and executes them internally, plan-mode executor hints stay hidden from user-facing plans, and subagent logs/transcripts are isolated from the main agent.
 - Implementation:
   - Added `delegate_subagent` as a coordinator-only internal action plus `src/agent/subagent-runtime.ts`, expanded `src/agent/subagent-routing.ts`, and updated `src/agent/runner/index.ts` / `src/agent/runner/summary-subagent.ts` so six roles now resolve deterministic routes, enforce hard invocation/turn caps, block nested delegation and coordinator-only actions inside subagents, and run with derived provider instances including the DeepSeek `deepseek-v4-flash` override for all subagents.
+  - Extended the live runtime with subagent task packets and task-state tracking, so delegated work now carries `task`, `successCriteria`, `maxProviderCalls`, and any active plan-step assignment into the subagent prompt instead of relying on an ad hoc one-line request.
+  - Changed subagent budget exhaustion from a hard failure into a structured `handoff` result that returns staged findings, artifacts, and the next narrow follow-up for the coordinator; the main agent receives that handoff as a successful tool result and can decide whether to re-scope and delegate again.
   - Updated `src/agent/protocol.ts`, `src/agent/types.ts`, `src/prompt/agent.ts`, `src/plans.ts`, and `src/agent/planner.ts` so internal subagent roles exist as distinct agent metadata, structured plans can carry hidden `executorHint` / `subagentRole` fields, and rendered user-visible plan markdown strips those internal delegation details.
   - Updated logging, metrics, session/TUI/timeline surfaces, and failure rendering across `src/logger.ts`, `src/agent/metrics.ts`, `src/instrumentation/index.ts`, `src/session/index.ts`, `src/cli.ts`, `src/ui/timeline.ts`, `src/ui/tui/*`, and related provider wrappers so subagent lifecycle events, routed model/thinking/effort, separate transcript files, and subagent token usage are visible without mixing provider turns into the main transcript; the closeout failure card now wraps full follow-up guidance instead of truncating it.
-  - Added regression coverage across `test/integration/agent.test.ts`, `test/integration/cli.test.ts`, `test/unit/subagent-routing.test.ts`, `test/unit/agent.test.ts`, `test/unit/timeline.test.ts`, `test/unit/tui.test.ts`, `test/unit/context.test.ts`, and `test/unit/session.test.ts` for route resolution, runner interception, nesting blocks, separate log files, hidden plan metadata, TUI visibility, and max-step continuation output.
+  - Added regression coverage across `test/integration/agent.test.ts`, `test/integration/cli.test.ts`, `test/unit/subagent-routing.test.ts`, `test/unit/agent.test.ts`, `test/unit/timeline.test.ts`, `test/unit/tui.test.ts`, `test/unit/context.test.ts`, and `test/unit/session.test.ts` for route resolution, runner interception, nesting blocks, separate log files, hidden plan metadata, task-packet plan-step assignment, stage handoff behavior, TUI visibility, and max-step continuation output.
 - Verification:
   - `bun run typecheck`
   - `bun test test/unit/subagent-routing.test.ts test/unit/agent.test.ts test/unit/logger.test.ts test/integration/agent.test.ts`
@@ -18,7 +79,7 @@ Status: Draft
   - `bun test`
   - `bun run cache:bench -- --provider simulated --suite real --quiet`
   - `bun run gate`
-- Notes: v1 keeps subagent spawning explicit for non-summary roles, allows only one background `summary` task at a time, and still keeps the coordinator on the user-selected main-session model.
+- Notes: v1 keeps subagent spawning explicit for non-summary roles, allows only one background `summary` task at a time, keeps the coordinator on the user-selected main-session model, and now treats subagent turn exhaustion as a coordinator handoff rather than a hard failure.
 
 ## Step 39: TUI Closeout Ordering And No-Op Compaction Guard
 
@@ -1290,3 +1351,17 @@ Status: Draft
   - Correctness: active unfinished work is now proven to reach the model at the two session lifecycle boundaries called out by the roadmap, not only rendered as CLI text.
   - Maintainability: roadmap status now matches the implemented runtime surface, reducing drift between spec and the current project-memory behavior.
   - Verification: reran focused CLI/memory coverage plus the unified gate because this slice changes provider-visible fake behavior and closes the remaining roadmap evidence gap.
+
+## Step 53: Replaceable Bash Guardrails And Structured Audit Fields
+
+- Scope: stop the model from taking low-value `bash` paths when an internal inspection tool already covers the job, while making session logs directly auditable from `.jsonl` without scraping replay-heavy transcript text.
+- Implementation:
+  - Updated `src/tool/bash.ts` to classify bash commands into stable audit classes, attach `command` / `normalizedCommand` / `commandClass` / `replaceableBy` metadata to bash tool results, and stop treating replaceable inspection shapes as readonly auto-approval candidates.
+  - Updated `src/tool/registry.ts` to fail fast on replaceable bash inspection commands with a structured `bash_replaced_by_internal_tool` result that points the model at the matching internal tool.
+  - Updated `src/permission.ts` so readonly auto-approval now distinguishes the actual `bash` fallback tool from internal bash-permission tools: only non-replaceable fallback scopes (`pwd`, `ls`, `find`, `wc`, safe readonly `curl`) auto-approve, while internal `git_*` tools stay frictionless.
+  - Updated `src/instrumentation/instrumentation-context.ts` so `provider -> tool_call_message` and `tool_result -> context` log entries now carry bash audit fields, making session-log analysis possible from structured `.jsonl` events instead of transcript-only scraping.
+  - Synchronized `specs/acceptance.md` and `specs/005-boundary-conditions.md` with the new guardrail contract and added focused regression coverage in `test/unit/tool.test.ts`, `test/unit/permission.test.ts`, and `test/integration/agent.test.ts`.
+- Code Complete review result:
+  - Correctness: replaceable bash now fails before permission/execution, so the runtime finally enforces the existing prompt contract instead of only hoping the model follows it.
+  - Maintainability: one shared bash-classification path now feeds result metadata, runtime blocking, and logger audit fields, which reduces policy drift across prompt, permission, and observability layers.
+  - Verification: reran focused tool/permission/logger integration coverage and TypeScript checks for this slice because the behavior change is localized to bash policy and audit surfaces.

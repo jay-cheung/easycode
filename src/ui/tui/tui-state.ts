@@ -1,9 +1,12 @@
+import type { SubagentRole } from "../../agent/types"
 import type { ProviderRunMetrics } from "../timeline"
 
 export type TuiUsageTotals = {
   inputTokens: number
   outputTokens: number
   calls: number
+  invocations: number
+  roleCounts: Partial<Record<SubagentRole, number>>
 }
 
 type SpinnerTick = {
@@ -28,7 +31,7 @@ export class TuiState {
   panelDrawnLines = 0
   panelDirty = false
   metrics: ProviderRunMetrics | undefined = undefined
-  subagentUsage: TuiUsageTotals = { inputTokens: 0, outputTokens: 0, calls: 0 }
+  subagentUsage: TuiUsageTotals = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, roleCounts: {} }
   queuedPrompt: string | undefined = undefined
 
   beginRun(statusText: string) {
@@ -38,7 +41,7 @@ export class TuiState {
     this.pausedForPrompt = false
     this.queuedPrompt = undefined
     this.metrics = undefined
-    this.subagentUsage = { inputTokens: 0, outputTokens: 0, calls: 0 }
+    this.subagentUsage = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, roleCounts: {} }
     this.statusText = statusText
     this.runElapsedStart = now
     this.runElapsedMs = 0

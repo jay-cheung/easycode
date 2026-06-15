@@ -15,24 +15,80 @@ export type BashApproval = {
   repeatSafe: boolean
 }
 
+export type BashCommandClass =
+  | "git_inspect"
+  | "file_read"
+  | "text_search"
+  | "line_read"
+  | "working_dir"
+  | "directory_list"
+  | "file_find"
+  | "file_count"
+  | "http_fetch"
+  | "verify_or_test"
+  | "other"
+
+export type BashCommandAnalysis = {
+  command: string
+  normalizedCommand: string
+  commandClass: BashCommandClass
+  replaceableBy: string[]
+  shouldBlock: boolean
+}
+
 const exactBashApprovalPrefix = "bash:exact:"
 const autoApprovedFileReadBytes = 256 * 1024
-const curlScopePrefix = "curl:"
+
+export function analyzeBashCommand(command: string): BashCommandAnalysis {
+  const normalizedCommand = normalizeBashCommand(command)
+  const trimmed = normalizedCommand.trim()
+  if (!trimmed) return { command, normalizedCommand, commandClass: "other", replaceableBy: [], shouldBlock: false }
+  if (/^git status(?:\s+--short|\s+--branch|\s+-s|\s+-sb)*\s*$/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "git_inspect", replaceableBy: ["git_status"], shouldBlock: true }
+  }
+  if (/^git diff(?:\s+--stat|\s+--name-only|\s+--name-status)?\s*$/i.test(trimmed) || /^git diff\s+--\s+\S+\s*$/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "git_inspect", replaceableBy: ["git_diff"], shouldBlock: true }
+  }
+  if (/^git log(?:\s+--oneline)?(?:\s+-\d+|\s+-n\s+\d+|\s+--max-count(?:=\d+|\s+\d+))?\s*$/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "git_inspect", replaceableBy: ["git_log"], shouldBlock: true }
+  }
+  if (/^cat\s+\S+\s*$/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "file_read", replaceableBy: ["read", "read_lines"], shouldBlock: true }
+  }
+  if (/^(rg|grep)\b/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "text_search", replaceableBy: ["rg_search", "grep"], shouldBlock: true }
+  }
+  if (/^sed\s+-n\b/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "line_read", replaceableBy: ["read_lines"], shouldBlock: true }
+  }
+  if (/^pwd\s*$/i.test(trimmed)) return { command, normalizedCommand, commandClass: "working_dir", replaceableBy: [], shouldBlock: false }
+  if (/^ls\b/i.test(trimmed)) return { command, normalizedCommand, commandClass: "directory_list", replaceableBy: [], shouldBlock: false }
+  if (/^find\b/i.test(trimmed)) return { command, normalizedCommand, commandClass: "file_find", replaceableBy: [], shouldBlock: false }
+  if (/^wc\b/i.test(trimmed)) return { command, normalizedCommand, commandClass: "file_count", replaceableBy: [], shouldBlock: false }
+  if (/^curl\b/i.test(trimmed)) {
+    const supported = suggestedWebFetchInputForCommand(trimmed)
+    return { command, normalizedCommand, commandClass: "http_fetch", replaceableBy: supported ? ["web_fetch"] : [], shouldBlock: Boolean(supported) }
+  }
+  if (/^(bun\s+test|bun\s+run|npm\s+test|npx\s+tsc)\b/i.test(trimmed)) {
+    return { command, normalizedCommand, commandClass: "verify_or_test", replaceableBy: [], shouldBlock: false }
+  }
+  return { command, normalizedCommand, commandClass: "other", replaceableBy: [], shouldBlock: false }
+}
 
 export function bashApprovalForCommand(command: string, cwd = process.cwd()): BashApproval {
   const trimmed = command.trim()
   if (!trimmed) return exactBashApproval(trimmed)
   if (isDangerousCommand(trimmed)) return rawBashApproval(trimmed, false)
+  const analysis = analyzeBashCommand(trimmed)
+  if (analysis.commandClass === "git_inspect" || analysis.commandClass === "file_read" || analysis.commandClass === "text_search" || analysis.commandClass === "line_read") {
+    return exactBashApproval(trimmed)
+  }
   const words = shellWords(trimmed)
   if (!words || words.length === 0) return exactBashApproval(trimmed)
   const [program = "", ...args] = words
   const normalizedProgram = path.basename(program)
-  if (normalizedProgram === "git") return gitBashApproval(trimmed, args)
+  if (normalizedProgram === "git") return exactBashApproval(trimmed)
   if (normalizedProgram === "pwd") return scopedBashApproval("pwd", "project", [])
-  if (normalizedProgram === "curl") {
-    const curlScope = curlReadonlyScope(args)
-    return curlScope ? scopedBashApproval(`${curlScopePrefix}${curlScope.kind}`, curlScope.scope, []) : exactBashApproval(trimmed)
-  }
   if (normalizedProgram === "cat") {
     const fileScope = readonlySingleFileScope(normalizedProgram, args, cwd)
     return fileScope ? scopedBashApproval(normalizedProgram, fileScope, pathRememberPatterns(normalizedProgram, fileScope)) : exactBashApproval(trimmed)
@@ -51,12 +107,6 @@ export function bashApprovalForCommand(command: string, cwd = process.cwd()): Ba
   const rawPath = pathArgs[0] ?? "."
   const resolved = path.resolve(cwd, rawPath)
   return scopedBashApproval(normalizedProgram, normalizedPath(resolved), pathRememberPatterns(normalizedProgram, resolved))
-}
-
-function gitBashApproval(command: string, args: string[]) {
-  const subcommand = args.find((arg) => !arg.startsWith("-"))
-  if (!subcommand || !["status", "diff", "log"].includes(subcommand)) return exactBashApproval(command)
-  return scopedBashApproval(`git:${subcommand}`, "project", [])
 }
 
 function exactBashApproval(command: string): BashApproval {
@@ -198,8 +248,15 @@ function collectNonOptionArgs(args: string[]) {
   return values
 }
 
-function curlReadonlyScope(args: string[]) {
+function curlToWebFetchInput(args: string[]) {
   let method: "get" | "head" = "get"
+  let followRedirects = false
+  let includeHeaders = false
+  let insecureTLS = false
+  let timeoutMs: number | undefined
+  let retries: number | undefined
+  let retryDelayMs: number | undefined
+  const headers: Record<string, string> = {}
   const urls: string[] = []
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index] ?? ""
@@ -214,7 +271,19 @@ function curlReadonlyScope(args: string[]) {
     if (arg.startsWith("--")) {
       const longFlag = arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : arg
       const inlineValue = arg.includes("=") ? arg.slice(arg.indexOf("=") + 1) : undefined
-      if (["--location", "--silent", "--show-error", "--fail", "--compressed", "--include", "--insecure", "--globoff", "--http1.1", "--http2", "--http2-prior-knowledge", "--ipv4", "--ipv6", "--path-as-is", "--no-progress-meter"].includes(longFlag)) continue
+      if (["--silent", "--show-error", "--fail", "--compressed", "--globoff", "--http1.1", "--http2", "--http2-prior-knowledge", "--ipv4", "--ipv6", "--path-as-is", "--no-progress-meter", "--retry-max-time"].includes(longFlag)) continue
+      if (longFlag === "--location") {
+        followRedirects = true
+        continue
+      }
+      if (longFlag === "--include") {
+        includeHeaders = true
+        continue
+      }
+      if (longFlag === "--insecure") {
+        insecureTLS = true
+        continue
+      }
       if (longFlag === "--head") {
         method = "head"
         continue
@@ -234,47 +303,85 @@ function curlReadonlyScope(args: string[]) {
         continue
       }
       if (["--max-time", "--connect-timeout", "--retry", "--retry-delay", "--retry-max-time"].includes(longFlag)) {
+        const rawValue = inlineValue ?? args[index + 1]
         if (!inlineValue) index += 1
+        if (longFlag === "--retry") retries = parseCurlCount(rawValue)
+        if (longFlag === "--retry-delay") retryDelayMs = parseCurlSeconds(rawValue)
+        if (longFlag === "--max-time" || longFlag === "--connect-timeout") {
+          const parsed = parseCurlSeconds(rawValue)
+          if (parsed !== undefined) timeoutMs = Math.max(timeoutMs ?? 0, parsed)
+        }
         continue
       }
       if (longFlag === "--user-agent") {
+        const value = inlineValue ?? args[index + 1]
         if (!inlineValue) index += 1
+        if (!value) return undefined
+        headers["user-agent"] = value
         continue
       }
       if (longFlag === "--header") {
         const value = inlineValue ?? args[index + 1]
         if (!inlineValue) index += 1
-        if (!isSafeCurlHeader(value)) return undefined
+        const parsedHeader = parseSafeCurlHeader(value)
+        if (!parsedHeader) return undefined
+        headers[parsedHeader.name] = parsedHeader.value
         continue
       }
       return undefined
     }
     const shortFlags = arg.slice(1)
     if (shortFlags === "m" || shortFlags === "X" || shortFlags === "A" || shortFlags === "H") {
-      const value = (args[index + 1] ?? "").toUpperCase()
       const rawValue = args[index + 1] ?? ""
+      const value = rawValue.toUpperCase()
       index += 1
       if (shortFlags === "X") {
         if (value === "HEAD") method = "head"
         else if (value !== "GET") return undefined
       }
-      if (shortFlags === "H" && !isSafeCurlHeader(rawValue)) return undefined
+      if (shortFlags === "m") {
+        const parsed = parseCurlSeconds(rawValue)
+        if (parsed !== undefined) timeoutMs = Math.max(timeoutMs ?? 0, parsed)
+      }
+      if (shortFlags === "A") {
+        if (!rawValue) return undefined
+        headers["user-agent"] = rawValue
+      }
+      if (shortFlags === "H") {
+        const parsedHeader = parseSafeCurlHeader(rawValue)
+        if (!parsedHeader) return undefined
+        headers[parsedHeader.name] = parsedHeader.value
+      }
       continue
     }
-    if (shortFlags.startsWith("m")) continue
+    if (shortFlags.startsWith("m")) {
+      const parsed = parseCurlSeconds(shortFlags.slice(1))
+      if (parsed !== undefined) timeoutMs = Math.max(timeoutMs ?? 0, parsed)
+      continue
+    }
     if (shortFlags.startsWith("X")) {
       const value = shortFlags.slice(1).toUpperCase()
       if (value === "HEAD") method = "head"
       else if (value !== "GET") return undefined
       continue
     }
-    if (shortFlags.startsWith("A")) continue
+    if (shortFlags.startsWith("A")) {
+      const value = shortFlags.slice(1)
+      if (!value) return undefined
+      headers["user-agent"] = value
+      continue
+    }
     if (shortFlags.startsWith("H")) {
-      if (!isSafeCurlHeader(shortFlags.slice(1))) return undefined
+      const parsedHeader = parseSafeCurlHeader(shortFlags.slice(1))
+      if (!parsedHeader) return undefined
+      headers[parsedHeader.name] = parsedHeader.value
       continue
     }
     if ([...shortFlags].every((flag) => ["L", "s", "S", "f", "I", "i", "k", "g", "4", "6"].includes(flag))) {
       if (shortFlags.includes("I")) method = "head"
+      if (shortFlags.includes("L")) followRedirects = true
+      if (shortFlags.includes("i")) includeHeaders = true
+      if (shortFlags.includes("k")) insecureTLS = true
       continue
     }
     return undefined
@@ -283,20 +390,30 @@ function curlReadonlyScope(args: string[]) {
   try {
     const url = new URL(urls[0] ?? "")
     if (!["http:", "https:"].includes(url.protocol)) return undefined
-    return { kind: method, scope: `${url.protocol}//${url.host}` }
+    return {
+      url: url.toString(),
+      method: method.toUpperCase() as "GET" | "HEAD",
+      ...(Object.keys(headers).length > 0 ? { headers } : {}),
+      ...(followRedirects ? { followRedirects: true } : {}),
+      ...(includeHeaders ? { includeHeaders: true } : {}),
+      ...(insecureTLS ? { insecureTLS: true } : {}),
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+      ...(retries !== undefined ? { retries } : {}),
+      ...(retryDelayMs !== undefined ? { retryDelayMs } : {}),
+    }
   } catch {
     return undefined
   }
 }
 
-function isSafeCurlHeader(value: string | undefined) {
-  if (!value) return false
+function parseSafeCurlHeader(value: string | undefined) {
+  if (!value) return undefined
   const trimmed = value.trim()
-  if (!trimmed || trimmed.startsWith("@")) return false
+  if (!trimmed || trimmed.startsWith("@")) return undefined
   const separator = trimmed.indexOf(":")
-  if (separator <= 0) return false
+  if (separator <= 0) return undefined
   const name = trimmed.slice(0, separator).trim().toLowerCase()
-  return [
+  if (![
     "accept",
     "accept-language",
     "cache-control",
@@ -305,7 +422,32 @@ function isSafeCurlHeader(value: string | undefined) {
     "referer",
     "range",
     "user-agent",
-  ].includes(name)
+  ].includes(name)) return undefined
+  const headerValue = trimmed.slice(separator + 1).trim()
+  if (!headerValue) return undefined
+  return { name, value: headerValue }
+}
+
+function parseCurlSeconds(value: string | undefined) {
+  if (!value) return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined
+  return Math.round(parsed * 1000)
+}
+
+function parseCurlCount(value: string | undefined) {
+  if (!value) return undefined
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined
+  return Math.round(parsed)
+}
+
+export function suggestedWebFetchInputForCommand(command: string) {
+  const words = shellWords(normalizeBashCommand(command))
+  if (!words || words.length === 0) return undefined
+  const [program = "", ...args] = words
+  if (path.basename(program) !== "curl") return undefined
+  return curlToWebFetchInput(args)
 }
 
 
@@ -395,9 +537,21 @@ function sandboxBypassApproval(reason: string, command: string, cwd: string): Ba
 }
 
 export function bashResultToToolResult(command: string, result: BashResult): ToolResult {
-  const { stdout, stderr, ...metadata } = result
+  const { stdout, stderr, command: _resultCommand, ...metadata } = result
   const output = [stdout, stderr, result.cancelled && !stdout && !stderr ? "Command cancelled by user." : ""].filter(Boolean).join("\n")
-  return { title: command, output, metadata: { status: result.exitCode === 0 ? "succeeded" : "failed", ...metadata } }
+  const analysis = analyzeBashCommand(command)
+  return {
+    title: command,
+    output,
+    metadata: {
+      status: result.exitCode === 0 ? "succeeded" : "failed",
+      command,
+      normalizedCommand: analysis.normalizedCommand,
+      commandClass: analysis.commandClass,
+      replaceableBy: analysis.replaceableBy,
+      ...metadata,
+    },
+  }
 }
 
 
@@ -408,4 +562,18 @@ function sandboxFailureSummary(result: BashResult) {
 
 function appendLine(text: string, line: string) {
   return text ? `${text}\n${line}` : line
+}
+
+function normalizeBashCommand(command: string) {
+  let normalized = command.trim()
+  let changed = true
+  while (changed) {
+    changed = false
+    const match = normalized.match(/^cd\s+.+?\s+&&\s+([\s\S]+)$/)
+    if (match && match[1]) {
+      normalized = match[1].trim()
+      changed = true
+    }
+  }
+  return normalized.replace(/\s+/g, " ").trim()
 }

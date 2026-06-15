@@ -108,8 +108,8 @@ describe("timeline renderer", () => {
       },
     })
 
-    expect(output).toContain("● Subagent scheduled role=summary, provider=openai gpt-5-mini, thinking=on, effort=low, max_calls=1, max_output_tokens=900")
-    expect(output).toContain("✓ Subagent summary completed (1.5s), calls=1, input_tokens=120, output_tokens=40")
+    expect(output).toContain("● Subagent scheduled id=1, role=summary, provider=openai gpt-5-mini, thinking=on, effort=low, max_calls=1, max_output_tokens=900")
+    expect(output).toContain("✓ Subagent #1 summary completed (1.5s), calls=1, input_tokens=120, output_tokens=40")
   })
 
   test("renders provider metrics with APIx usage and latency labels", () => {

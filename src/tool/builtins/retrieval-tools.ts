@@ -1,5 +1,5 @@
-import { McpSourceService, WebSearchService, formatMcpResource, formatMcpResources, formatWebResults, mcpCitation, webCitation } from "../../retrieval"
-import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, PlanStepCompleteInput, PlanStepFailInput, DelegateSubagentInput, objectSchema } from "./common"
+import { McpSourceService, WebFetchService, WebSearchService, formatMcpResource, formatMcpResources, formatWebFetchResult, formatWebResults, mcpCitation, webCitation, webFetchCitation } from "../../retrieval"
+import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, WebFetchInput, PlanStepCompleteInput, PlanStepFailInput, DelegateSubagentInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
 import { loadStructuredPlanState, nextIncompletePlanStep } from "../../plans"
@@ -100,6 +100,53 @@ export function registerRetrievalTools(registry: ToolRegistry) {
   })
 
   registry.register({
+    name: "web_fetch",
+    description: "Fetch one HTTP/HTTPS URL with bounded output. Use instead of bash curl for readonly web requests. Supports GET/HEAD, safe headers, redirects, retries, TLS override, and structured citations.",
+    inputSchema: WebFetchInput,
+    jsonSchema: objectSchema({
+      url: { type: "string" },
+      method: { type: "string", enum: ["GET", "HEAD"] },
+      headers: { type: "object", additionalProperties: { type: "string" } },
+      followRedirects: { type: "boolean" },
+      includeHeaders: { type: "boolean" },
+      insecureTLS: { type: "boolean" },
+      timeoutMs: { type: "number" },
+      maxBytes: { type: "number" },
+      retries: { type: "number" },
+      retryDelayMs: { type: "number" },
+    }, ["url"]),
+    permission: "web_fetch",
+    modes: ["build", "plan"],
+    patterns: (input) => [`web_fetch:${WebFetchInput.parse(input).url}`],
+    execute: async (input, ctx) => {
+      const startedAt = Date.now()
+      const params = WebFetchInput.parse(input)
+      const result = await new WebFetchService().fetch(params, { signal: ctx.signal })
+      const citation = webFetchCitation(result)
+      return {
+        title: result.title,
+        output: formatWebFetchResult(result),
+        metadata: {
+          status: result.ok ? "succeeded" : "failed",
+          method: result.method,
+          url: result.url,
+          finalUrl: result.finalUrl,
+          httpStatus: result.status,
+          statusText: result.statusText,
+          contentType: result.contentType,
+          contentLength: result.contentLength,
+          bytesRead: result.bytesRead,
+          truncated: result.truncated,
+          redirected: result.redirected,
+          elapsedMs: Date.now() - startedAt,
+          source: citation,
+          sources: [citation],
+        },
+      }
+    },
+  })
+
+  registry.register({
     name: "skill",
     description: "Load the full content of a named skill.",
     inputSchema: SkillInput,
@@ -128,7 +175,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
 
   registry.register({
     name: "delegate_subagent",
-    description: "Coordinator-only internal action. Delegate a bounded internal task to a subagent role and consume its structured result in the next model turn. USE THIS FOR: finding all X in codebase (explorer), reviewing a file/plan (reviewer), debugging a test failure (debugger), running tests (tester), researching docs (docs_researcher), summarizing history (summary). Do NOT delegate: write operations, or work that depends on session history.",
+    description: "Coordinator-only internal action. Delegate a bounded internal task to a subagent role and consume its structured result in the next model turn. Prefer this over direct repo/search/read/bash tools when the work is pure fact-finding, review, debugging, testing, or docs research. USE THIS FOR: finding all X in codebase (explorer), reviewing a file/plan (reviewer), debugging a test failure (debugger), running tests (tester), researching docs (docs_researcher), summarizing history (summary). Do NOT delegate: write operations, or work that depends on session history.",
     inputSchema: DelegateSubagentInput,
     jsonSchema: objectSchema({
       role: { type: "string", enum: ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"] },
@@ -195,7 +242,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
         })
         return {
           title: "Plan Step Completed",
-          output: `Step ${currentStepId} completed successfully. Proceeding to Step ${nextStep.id}: ${nextStep.goal}`,
+          output: `Step ${currentStepId} completed successfully. Proceeding to Step ${nextStep.id}: ${nextStep.goal}. Continue immediately with that step and do not ask the user whether to continue.`,
           metadata: { status: "succeeded", nextStepId: nextStep.id }
         }
       } else {

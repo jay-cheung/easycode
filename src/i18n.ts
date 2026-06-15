@@ -193,6 +193,8 @@ type UiCopy = {
   reasonLine: (reason: string) => string
   roundCallsLine: (value: string) => string
   roundTokensLine: (value: string, hitRate?: string) => string
+  roundSubagentInvocationsLine: (value: string) => string
+  roundSubagentDetailLine: (value: string) => string
   roundSubagentCallsLine: (value: string) => string
   roundSubagentTokensLine: (value: string) => string
   sessionCallsLine: (value: string) => string
@@ -402,11 +404,13 @@ function buildEnglishCopy(): UiCopy {
     reasonLine: (reason) => `Reason: ${reason}`,
     roundCallsLine: (value) => `Round Calls: ${value}`,
     roundTokensLine: (value, hitRate) => `Round Tokens: ${value}${hitRate ? ` (cache hit: ${hitRate})` : ""}`,
-    roundSubagentCallsLine: (value) => `Round Subagent Calls: ${value}`,
+    roundSubagentInvocationsLine: (value) => `Round Subagent Invocations: ${value}`,
+    roundSubagentDetailLine: (value) => `Round Subagent Detail: ${value}`,
+    roundSubagentCallsLine: (value) => `Round Subagent Turns: ${value}`,
     roundSubagentTokensLine: (value) => `Round Subagent Tokens: ${value}`,
     sessionCallsLine: (value) => `Session Calls: ${value}`,
     sessionTokensLine: (value, input, output) => `Session Tokens: ${value} (in: ${input}, out: ${output})`,
-    sessionSubagentCallsLine: (value) => `Session Subagent Calls: ${value}`,
+    sessionSubagentCallsLine: (value) => `Session Subagent Turns: ${value}`,
     sessionSubagentTokensLine: (value, input, output) => `Session Subagent Tokens: ${value} (in: ${input}, out: ${output})`,
     statusReady: "ready",
     statusSessionSelected: "session selected",
@@ -603,11 +607,13 @@ const copies: Record<UiLanguage, UiCopy> = {
     reasonLine: (reason) => `原因：${reason}`,
     roundCallsLine: (value) => `本轮调用：${value}`,
     roundTokensLine: (value, hitRate) => `本轮 Tokens：${value}${hitRate ? `（缓存命中：${hitRate}）` : ""}`,
-    roundSubagentCallsLine: (value) => `本轮 Subagent 调用：${value}`,
+    roundSubagentInvocationsLine: (value) => `本轮 Subagent 调用次数：${value}`,
+    roundSubagentDetailLine: (value) => `本轮 Subagent 明细：${value}`,
+    roundSubagentCallsLine: (value) => `本轮 Subagent 内部轮次：${value}`,
     roundSubagentTokensLine: (value) => `本轮 Subagent Tokens：${value}`,
     sessionCallsLine: (value) => `会话累计调用：${value}`,
     sessionTokensLine: (value, input, output) => `会话累计 Tokens：${value}（输入：${input}，输出：${output}）`,
-    sessionSubagentCallsLine: (value) => `会话累计 Subagent 调用：${value}`,
+    sessionSubagentCallsLine: (value) => `会话累计 Subagent 内部轮次：${value}`,
     sessionSubagentTokensLine: (value, input, output) => `会话累计 Subagent Tokens：${value}（输入：${input}，输出：${output}）`,
     statusReady: "ready",
     statusSessionSelected: "会话已选定",

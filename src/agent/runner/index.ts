@@ -20,7 +20,7 @@ import { evaluateHypothesisTurn, type ActiveHypothesis, type HypothesisViolation
 import { emitProviderTurnEvents, runProviderTurnStream, type ProviderTurnInput, type ProviderTurnResult } from "./provider-turn"
 import { createSummaryTask, runSummarySubagentTask, type BackgroundAgentTask } from "./summary-subagent"
 import { createDerivedSubagentProvider, resolveSubagentRoute } from "../subagent-routing"
-import { blockedInternalActionToolResult, budgetDeniedToolResult, filterToolsForAgent, formatSubagentResult, isCoordinatorOnlyTool, maxSubagentInvocationsPerRun, maxSubagentTurnsPerRun, parseSubagentRequest, roleInvocationLimit, type SubagentBudgetSnapshot, type SubagentExecutionResult, type SubagentRequest } from "../subagent-runtime"
+import { blockedInternalActionToolResult, buildSubagentHandoffResult, budgetDeniedToolResult, createSubagentTaskState, filterToolsForAgent, formatSubagentResult, isCoordinatorOnlyTool, maxSubagentInvocationsPerRun, maxSubagentTurnsPerRun, noteSubagentBlockedAction, noteSubagentToolResult, noteSubagentTurn, parseSubagentRequest, roleInvocationLimit, suggestedCoordinatorSubagentRole, type SubagentAssignedStep, type SubagentBudgetSnapshot, type SubagentExecutionResult, type SubagentRequest, type SubagentTaskState } from "../subagent-runtime"
 import { refreshRepoMapCache } from "./repo-map-refresh"
 import { emitToolResultEvent, recordToolOutcome as recordToolOutcomeSideEffect, runToolCall } from "./tool-execution"
 import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypothesisCorrectionMessage, recordActiveSkillState, recordHypothesisViolationState, recordRunIntentState, truncateForLedger, updateActiveHypothesisState } from "./hypothesis-state"
@@ -34,42 +34,15 @@ import { runFailureText } from "./failure-policy"
 import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
 import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState, renderPlanToMarkdown, type ExecutionPlan } from "../../plans"
 import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../planner"
+import { defaultToolProgressIntervalMs, defaultProviderProgressIntervalMs, maxAutoSkillArtifactInspections, autoInspectFileExtensions, autoInspectFileBasenames, autoInspectIgnoredBasenames, autoInspectIgnoredDirectories, autoRecallMemoryKinds, maxAutoRecalledMemoryRecords } from "./constants"
+import { createSubagentLogger, withSubagentLogContext, buildSubagentTaskPrompt, autoSkillArtifactCalls, memoryLedgerValue, memoryScopeToLedger } from "./helpers"
+import type { AgentRunState } from "../types"
 
-const defaultToolProgressIntervalMs = 10_000
-const defaultProviderProgressIntervalMs = 10_000
-const maxAutoSkillArtifactInspections = 3
-const autoInspectFileExtensions = new Set([
-  ".bash",
-  ".cjs",
-  ".conf",
-  ".cts",
-  ".ini",
-  ".js",
-  ".json",
-  ".jsx",
-  ".md",
-  ".mdx",
-  ".mjs",
-  ".mts",
-  ".prompt",
-  ".py",
-  ".sh",
-  ".sql",
-  ".tmpl",
-  ".toml",
-  ".tpl",
-  ".ts",
-  ".tsx",
-  ".txt",
-  ".yaml",
-  ".yml",
-  ".zsh",
-])
-const autoInspectFileBasenames = new Set(["Dockerfile", "Makefile", "justfile"])
-const autoInspectIgnoredBasenames = new Set(["Cargo.lock", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "bun.lockb"])
-const autoInspectIgnoredDirectories = new Set([".git", ".next", ".turbo", "build", "coverage", "dist", "node_modules"])
-const autoRecallMemoryKinds = ["session_archive", "preference", "repo_fact", "failure_pattern", "successful_workflow", "task_state"] as const
-const maxAutoRecalledMemoryRecords = 3
+const coordinatorDelegationGateBypassProviders = new Set(["fake", "test-provider"])
+
+function shouldEnforceCoordinatorDelegation(provider: Provider) {
+  return !coordinatorDelegationGateBypassProviders.has(provider.name)
+}
 
 export class AgentRunner {
   readonly root: string
@@ -174,6 +147,7 @@ export class AgentRunner {
         step,
         prompt,
         prep.effectiveMode,
+        prep.requiresProposedPlan,
         prep.agent,
         prep.tools,
         prep.instructions,
@@ -259,10 +233,11 @@ export class AgentRunner {
     aborted: boolean
     earlyExitResult?: AgentRunResult
     effectiveMode: AgentMode
+    requiresProposedPlan: boolean
     agent: Agent
     usedTools: string[]
     providerMetrics: ProviderMetricsAccumulator
-    state: any
+    state: AgentRunState
     tools: ToolDef[]
     instructions: InstructionInfo[]
     skills: SkillInfo[]
@@ -351,6 +326,7 @@ export class AgentRunner {
     }
 
     const effectiveMode = this.effectiveMode(prompt, resolvedMode)
+    const requiresProposedPlan = resolvedMode === "plan"
     const agent = createAgent(effectiveMode)
     const state = this.aspect.transition("preparing", { mode: effectiveMode, requestedMode: mode, provider: this.provider.name })
     this.onEvent?.({ type: "run_start", mode: effectiveMode, provider: this.provider.name, model: this.provider.model })
@@ -361,7 +337,7 @@ export class AgentRunner {
     await this.refreshRepoMap(input.signal, prompt)
     
     if (input.signal?.aborted) {
-      return { aborted: true, earlyExitResult, effectiveMode, agent, usedTools, providerMetrics, state, tools: [], instructions: [], skills: [], selectedSkills: [] }
+      return { aborted: true, earlyExitResult, effectiveMode, requiresProposedPlan, agent, usedTools, providerMetrics, state, tools: [], instructions: [], skills: [], selectedSkills: [] }
     }
     
     const tools = filterToolsForAgent(this.registry.list(effectiveMode), { role: agent.role, depth: agent.depth ?? 0 })
@@ -374,6 +350,7 @@ export class AgentRunner {
       aborted: false,
       earlyExitResult,
       effectiveMode,
+      requiresProposedPlan,
       agent,
       usedTools,
       providerMetrics,
@@ -394,7 +371,7 @@ export class AgentRunner {
     selectedSkills: SkillInfo[],
     reasoningTranscript: string,
     providerMetrics: ProviderMetricsAccumulator,
-  ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel" } | { action: "continue"; state: any }> {
+  ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel" } | { action: "continue"; state: AgentRunState }> {
     usedTools.push(toolCall.name)
     let state = this.aspect.transition("tool_running", { tool: toolCall.name, callID: toolCall.id })
     const result = toolCall.name === "delegate_subagent"
@@ -517,6 +494,7 @@ export class AgentRunner {
     step: number,
     prompt: string,
     effectiveMode: AgentMode,
+    requiresProposedPlan: boolean,
     agent: Agent,
     tools: ToolDef[],
     instructions: InstructionInfo[],
@@ -525,10 +503,10 @@ export class AgentRunner {
     usedTools: string[],
     reasoningTranscript: string,
     latestAssistantText: string,
-    state: any,
+    state: AgentRunState,
     providerMetrics: ProviderMetricsAccumulator,
     input: { images?: ImagePart[]; signal?: AbortSignal },
-  ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel"; output?: string; reasoningTranscript?: string } | { action: "continue"; reasoningTranscript: string; latestAssistantText: string; state: any }> {
+  ): Promise<{ action: "exit"; result: AgentRunResult } | { action: "cancel"; output?: string; reasoningTranscript?: string } | { action: "continue"; reasoningTranscript: string; latestAssistantText: string; state: AgentRunState }> {
     if (input.signal?.aborted) return { action: "cancel", reasoningTranscript }
     this.aspect.step(step + 1, this.maxSteps)
     try {
@@ -565,6 +543,7 @@ Executor Hint: ${s.executorHint ?? "main"}${s.subagentRole ? ` (${s.subagentRole
 
 Focus ONLY on achieving the goal of this step. Do not deviate.
 When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' to proceed.
+After a step is completed, continue immediately with the next plan step in the same run. Do not ask the user whether to continue between steps.
 ${s.executorHint === "subagent" && s.subagentRole ? `For this step, prefer the internal action 'delegate_subagent' with role='${s.subagentRole}' unless direct execution is clearly simpler and equally safe.` : ""}
 If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear explanation.`
             }
@@ -596,7 +575,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       tools: preparedTurn.availableTools,
       signal: input.signal,
       providerMetrics,
-    })
+    }, requiresProposedPlan)
 
     const currentReasoningTranscript = appendOutput(reasoningTranscript, turn.reasoningText)
     if (turn.cancelledOutput) {
@@ -685,7 +664,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     )
   }
 
-  private async runValidatedProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
+  private async runValidatedProviderTurn(input: ProviderTurnInput, requiresProposedPlan: boolean): Promise<ProviderTurnResult> {
     return runValidatedProviderTurnLoop(
       {
         runProviderTurn: (nextInput) => this.runProviderTurn(nextInput),
@@ -693,6 +672,29 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         updateActiveHypothesis: (summary, normalized) => this.updateActiveHypothesis(summary, normalized),
         recordHypothesisViolation: (violation) => this.recordHypothesisViolation(violation),
         hypothesisCorrectionMessage,
+        validateTurn: (turn) => {
+          if (requiresProposedPlan) {
+            if (turn.toolCalls.length > 0 || protocol.isProposalPlanTurn(turn)) return undefined
+            return {
+              correction: protocol.hardPlanGateCorrection,
+              failureText: protocol.hardPlanGateFailureText,
+            }
+          }
+          if (!shouldEnforceCoordinatorDelegation(input.provider ?? this.provider)) return undefined
+          const suggestedRole = suggestedCoordinatorSubagentRole(turn.toolCalls)
+          if (!suggestedRole) return undefined
+          const toolNames = [...new Set(turn.toolCalls.map((call) => call.name))].join(", ")
+          return {
+            correction: [
+              "Coordinator delegation gate:",
+              `- The current tool plan is pure bounded retrieval or verification (${toolNames}).`,
+              `- Do not run those tools directly from the coordinator in this turn.`,
+              `- Call delegate_subagent with role='${suggestedRole}' and a narrow task instead.`,
+              "- Include explicit success_criteria so the coordinator receives a concrete bounded result.",
+            ].join("\n"),
+            failureText: `Coordinator delegation gate failed: pure bounded retrieval or verification must use delegate_subagent role='${suggestedRole}' instead of direct coordinator tools (${toolNames}).`,
+          }
+        },
         activeHypothesis: this.activeHypothesis,
         evidenceRevision: this.evidenceRevision,
       },
@@ -736,26 +738,6 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       settings: this.settings,
       maxOutputTokens: this.context.strategyState.dynamicSummaryTokenBudget,
     })
-    const budgetReservation = this.reserveSubagentBudget(route.role, route.maxProviderCalls)
-    if (!budgetReservation.ok) {
-      this.onEvent?.({
-        type: "subagent",
-        status: "failed",
-        info: {
-          id: this.nextSummarySubagentID,
-          role: route.role,
-          provider: route.provider,
-          model: route.model,
-          thinking: route.thinking,
-          effort: route.effort,
-          maxProviderCalls: route.maxProviderCalls,
-          maxOutputTokens: route.maxOutputTokens,
-        },
-        error: budgetReservation.reason,
-      })
-      emitLog(this.subagentLogger, { type: "state", name: "subagent.budget_denied", detail: { requestId: this.nextSummarySubagentID, role: route.role, reason: budgetReservation.reason, budget: budgetReservation.snapshot } })
-      return
-    }
     const requestId = this.nextSummarySubagentID++
     const provider = createDerivedSubagentProvider(this.provider, route, (nextProvider) => withSubagentLogContext(nextProvider, this.subagentLogger, { requestId, role: route.role, task: "Context compaction summary" }))
     const task = createSummaryTask(requestId, createAgent("summary"), route, provider, snapshot)
@@ -772,7 +754,6 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         effort: route.effort,
         maxProviderCalls: route.maxProviderCalls,
         maxOutputTokens: route.maxOutputTokens,
-        budget: budgetReservation.snapshot,
       },
     })
     emitLog(this.subagentLogger, {
@@ -804,11 +785,11 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       },
     })
     this.onEvent?.({ type: "context_compaction", status: "started", inputMessages: snapshot.providerMessages.length })
-    task.promise = this.runSummarySubagent(task, budgetReservation.reservedTurns)
+    task.promise = this.runSummarySubagent(task)
     void task.promise
   }
 
-  private async runSummarySubagent(task: BackgroundAgentTask, reservedTurns: number) {
+  private async runSummarySubagent(task: BackgroundAgentTask) {
     const providerMetrics = createProviderMetrics(task.provider.name, task.provider.model, {
       source: "subagent",
       subagentRole: task.route.role,
@@ -833,7 +814,6 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           tools: [],
         }),
       }, task, providerMetrics)
-      this.finishReservedSubagentTurns(reservedTurns, providerMetrics.calls)
     } finally {
       this.finishForegroundSubagent(task.id)
       if (this.summarySubagent?.id === task.id) this.summarySubagent = undefined
@@ -922,10 +902,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       maxProviderCalls: route.maxProviderCalls,
     })
     try {
-      const result = await this.runGenericSubagent(requestId, request, route.maxProviderCalls, provider, providerMetrics, signal)
+      const taskState = createSubagentTaskState({
+        requestId,
+        role: request.role,
+        task: request.task,
+        successCriteria: request.successCriteria,
+        maxProviderCalls: route.maxProviderCalls,
+        assignedStep: await this.currentAssignedSubagentStep(),
+      })
+      const result = await this.runGenericSubagent(requestId, taskState, provider, providerMetrics, signal)
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
       const metrics = providerMetrics.calls > 0 ? finalizeProviderMetrics(providerMetrics) : undefined
-      this.onEvent?.({ type: "subagent", status: result.status === "succeeded" ? "completed" : "failed", info, elapsedMs: metrics?.providerElapsedMs, error: result.status === "failed" ? result.summary : undefined, metrics })
+      this.onEvent?.({ type: "subagent", status: result.status === "failed" ? "failed" : "completed", info, elapsedMs: metrics?.providerElapsedMs, error: result.status === "failed" ? result.summary : undefined, metrics })
       emitLog(this.subagentLogger, {
         type: "state",
         name: "subagent.result",
@@ -945,7 +933,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       return {
         title: `subagent ${request.role}`,
         output: formatSubagentResult(result),
-        metadata: { status: result.status === "succeeded" ? "succeeded" : "failed", subagentRole: request.role, subagentRequestId: requestId, provider: route.provider, model: route.model, thinking: route.thinking, effort: route.effort, turnsUsed: providerMetrics.calls },
+        metadata: { status: result.status === "failed" ? "failed" : "succeeded", subagentStatus: result.status, subagentRole: request.role, subagentRequestId: requestId, provider: route.provider, model: route.model, thinking: route.thinking, effort: route.effort, turnsUsed: providerMetrics.calls, nextAction: result.nextAction },
       }
     } catch (error) {
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
@@ -964,19 +952,19 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
   private async runGenericSubagent(
     requestId: number,
-    request: SubagentRequest,
-    maxProviderCalls: number,
+    taskState: SubagentTaskState,
     provider: Provider,
     providerMetrics: ProviderMetricsAccumulator,
     signal: AbortSignal | undefined,
   ): Promise<SubagentExecutionResult> {
-    const agent = createAgent(request.role)
+    const { packet } = taskState
+    const agent = createAgent(packet.role)
     const context = new ContextManager({ maxTokens: this.settings.maxTokens, contextWindowTokens: this.provider.capabilities?.contextWindowTokens ?? this.settings.maxTokens })
-    context.add(userMessage(buildSubagentTaskPrompt(request, this.context.selectedLedgerText(), this.context.state.summary), []))
-    const tools = filterToolsForAgent(this.subagentRegistry.list("build"), { role: request.role, depth: agent.depth ?? 1 })
+    context.add(userMessage(buildSubagentTaskPrompt(packet, this.context.selectedLedgerText(), this.context.state.summary), []))
+    const tools = filterToolsForAgent(this.subagentRegistry.list("build"), { role: packet.role, depth: agent.depth ?? 1 })
     const reasoningChunks: string[] = []
 
-    for (let callIndex = 0; callIndex < maxProviderCalls; callIndex += 1) {
+    for (let callIndex = 0; callIndex < packet.maxProviderCalls; callIndex += 1) {
       const providerMessages = context.compose({ agent, instructions: [], skills: [], selectedSkills: [], pendingSkillLoads: [], tools })
       const turn = await runProviderTurnStream(
         {
@@ -986,7 +974,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         },
         {
           agent,
-          prompt: request.task,
+          prompt: packet.task,
           messages: context.state.messages,
           providerMessages,
           tools,
@@ -1000,21 +988,45 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       )
 
       if (turn.failureText) {
-        return { role: request.role, status: "failed", summary: turn.failureText }
+        return { role: packet.role, status: "failed", summary: turn.failureText }
       }
       if (turn.cancelledOutput) {
-        return { role: request.role, status: "failed", summary: "Subagent cancelled." }
+        return { role: packet.role, status: "failed", summary: "Subagent cancelled." }
       }
       if (turn.reasoningText) reasoningChunks.push(turn.reasoningText)
+      noteSubagentTurn(taskState, turn.text)
+      emitLog(this.subagentLogger, {
+        type: "state",
+        name: "subagent.task_progress",
+        detail: {
+          requestId,
+          role: packet.role,
+          turnsUsed: taskState.turnsUsed,
+          turnsRemaining: Math.max(0, packet.maxProviderCalls - taskState.turnsUsed),
+          lastAssistantText: taskState.lastAssistantText,
+        },
+      })
       if (turn.toolCalls.length === 0) {
         const summary = turn.text.trim() || "Subagent completed without a final text summary."
         context.add(assistantMessage(reasoningChunks.join("\n"), summary))
-        return { role: request.role, status: "succeeded", summary }
+        return {
+          role: packet.role,
+          status: "succeeded",
+          summary,
+          ...(taskState.findings.length > 0 ? { findings: taskState.findings.slice(0, 6) } : {}),
+          ...(taskState.artifacts.length > 0 ? { artifacts: taskState.artifacts.slice(0, 6) } : {}),
+        }
       }
 
       context.add(toolCallMessage(turn.toolCalls))
       for (const call of turn.toolCalls) {
-        const result = await this.executeSubagentInnerToolCall(requestId, request, context, call, signal)
+        const result = await this.executeSubagentInnerToolCall(requestId, taskState, context, call, signal)
+        noteSubagentToolResult(taskState, {
+          toolName: call.name,
+          title: result.title,
+          status: String(result.metadata.status ?? "failed"),
+          output: result.output,
+        })
         context.add(toolResultMessage({
           callID: call.id,
           toolName: call.name,
@@ -1025,24 +1037,26 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       }
     }
 
-    return { role: request.role, status: "failed", summary: `Subagent ${request.role} exhausted its ${maxProviderCalls}-turn budget without producing a final result.` }
+    return buildSubagentHandoffResult(taskState)
   }
 
   private async executeSubagentInnerToolCall(
     requestId: number,
-    request: SubagentRequest,
+    taskState: SubagentTaskState,
     context: ContextManagerLike,
     call: ToolCall,
     signal: AbortSignal | undefined,
   ) {
-    if (call.name === "nan") {
+    if (call.name === "delegate_subagent") {
       const detail = "Current subagent cannot create or delegate another subagent. Use the available tools and return your result directly."
-      emitLog(this.subagentLogger, { type: "state", name: "subagent.nesting_blocked", detail: { requestId, role: request.role, tool: call.name } })
+      noteSubagentBlockedAction(taskState, call.name)
+      emitLog(this.subagentLogger, { type: "state", name: "subagent.nesting_blocked", detail: { requestId, role: taskState.packet.role, tool: call.name } })
       return blockedInternalActionToolResult(call.name, "subagent_nesting_blocked", detail)
     }
     if (isCoordinatorOnlyTool(call.name)) {
       const detail = "Current subagent cannot use coordinator-only internal actions. Return your result directly instead."
-      emitLog(this.subagentLogger, { type: "state", name: "subagent.internal_action_blocked", detail: { requestId, role: request.role, tool: call.name } })
+      noteSubagentBlockedAction(taskState, call.name)
+      emitLog(this.subagentLogger, { type: "state", name: "subagent.internal_action_blocked", detail: { requestId, role: taskState.packet.role, tool: call.name } })
       return blockedInternalActionToolResult(call.name, "subagent_internal_action_blocked", detail)
     }
     return runToolCall({
@@ -1228,113 +1242,26 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
   private recordHypothesisViolation(violation: HypothesisViolation) {
     recordHypothesisViolationState(this.context, this.activeHypothesis, violation)
   }
+
+  private async currentAssignedSubagentStep(): Promise<SubagentAssignedStep | undefined> {
+    const activePlanIdRec = this.context.state.ledger?.current.find((record) => record.subject === "current_plan_id" && record.status === "current")
+    if (!activePlanIdRec) return undefined
+    const sessionId = this.sessionId || "default"
+    const currentPlanState = await loadStructuredPlanState(this.root, sessionId, activePlanIdRec.value)
+    const stepId = currentPlanState?.checkpoint.currentStepId
+    if (!currentPlanState || !stepId) return undefined
+    const step = currentPlanState.plan.steps.find((candidate) => candidate.id === stepId)
+    if (!step) return undefined
+    return {
+      planId: currentPlanState.plan.id,
+      stepId: step.id,
+      goal: step.goal,
+      ...(step.doneWhen ? { doneWhen: step.doneWhen } : {}),
+    }
+  }
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
   return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId })
-}
-
-function createSubagentLogger(root: string, sessionId: string | undefined, logger: Logger | undefined) {
-  if (!logger) return undefined
-  if (!logger.filePath || !logger.transcriptFilePath) return logger
-  return createLogger({ root, session: `${sessionId ?? "default"}.subagents` })
-}
-
-function withSubagentLogContext(
-  provider: Provider,
-  logger: Logger | undefined,
-  input: { requestId: number; role: SubagentRequest["role"]; task: string },
-) {
-  if (!logger) return provider
-  const contextualLogger = ((event) => {
-    const detail = event.detail && typeof event.detail === "object" ? event.detail : undefined
-    logger({
-      ...event,
-      detail: {
-        ...(detail ?? {}),
-        subagentRequestId: input.requestId,
-        subagentRole: input.role,
-        subagentTask: input.task,
-      },
-    })
-  }) as Logger
-  contextualLogger.filePath = logger.filePath
-  contextualLogger.transcriptFilePath = logger.transcriptFilePath
-  return createRunAspect(contextualLogger).instrumentProvider(provider)
-}
-
-function buildSubagentTaskPrompt(request: SubagentRequest, ledgerText: string, summary: string | undefined) {
-  const sections = [
-    `Role: ${request.role}`,
-    `Task:\n${request.task}`,
-    request.successCriteria ? `Success Criteria:\n${request.successCriteria}` : "",
-    ledgerText ? `Relevant Context Ledger:\n${ledgerText}` : "",
-    summary ? `Compacted Conversation Summary:\n${summary}` : "",
-    "Return only the result for the coordinator. Do not answer the user directly.",
-  ].filter(Boolean)
-  return sections.join("\n\n")
-}
-
-function autoSkillArtifactCalls(value: unknown, root: string): ToolCall[] {
-  if (!Array.isArray(value)) return []
-  const normalizedArtifacts = value
-    .map((artifact) => normalizeSkillArtifact(artifact, root))
-    .filter((artifact): artifact is NonNullable<typeof artifact> => Boolean(artifact))
-  const prioritizedArtifacts = [
-    ...normalizedArtifacts.filter((artifact) => artifact.kind === "file" && shouldAutoInspectFile(artifact.projectPath)),
-    ...normalizedArtifacts.filter((artifact) => artifact.kind === "directory" && shouldAutoInspectDirectory(artifact.projectPath)),
-  ]
-  const calls: ToolCall[] = []
-  for (const normalized of prioritizedArtifacts) {
-    if (normalized.kind === "file") {
-      calls.push({
-        id: createID("call_skill_artifact_read"),
-        name: "read",
-        input: { filePath: normalized.projectPath },
-      })
-    } else {
-      calls.push({
-        id: createID("call_skill_artifact_list"),
-        name: "list",
-        input: { dirPath: normalized.projectPath },
-      })
-    }
-    if (calls.length >= maxAutoSkillArtifactInspections) break
-  }
-  return calls
-}
-
-function normalizeSkillArtifact(value: unknown, root: string): Pick<SkillArtifact, "kind"> & { projectPath: string } | undefined {
-  if (!value || typeof value !== "object") return undefined
-  const resolvedPath = (value as { resolvedPath?: unknown }).resolvedPath
-  const kindValue = (value as { kind?: unknown }).kind
-  if (typeof resolvedPath !== "string" || (kindValue !== "file" && kindValue !== "directory")) return undefined
-  const projectPath = path.relative(root, resolvedPath).replace(/\\/g, "/")
-  if (!projectPath || projectPath.startsWith("../") || path.isAbsolute(projectPath)) return undefined
-  return { projectPath, kind: kindValue }
-}
-
-function shouldAutoInspectFile(projectPath: string) {
-  const basename = path.basename(projectPath)
-  if (autoInspectIgnoredBasenames.has(basename)) return false
-  if (autoInspectFileBasenames.has(basename)) return true
-  return autoInspectFileExtensions.has(path.extname(projectPath).toLowerCase())
-}
-
-function shouldAutoInspectDirectory(projectPath: string) {
-  const basename = path.basename(projectPath)
-  return !autoInspectIgnoredDirectories.has(basename)
-}
-
-function memoryLedgerValue(record: ProjectMemoryRecord) {
-  const tags = record.tags.length > 0 ? ` tags=${record.tags.join(",")}` : ""
-  return `[${record.kind}]${tags} ${record.text}`
-}
-
-function memoryScopeToLedger(record: ProjectMemoryRecord) {
-  const files = record.scope?.files
-  const symbols = record.scope?.symbols
-  const topics = [...(record.scope?.topics ?? []), record.kind, ...record.tags]
-  return files || symbols || topics.length > 0 ? { files, symbols, topics } : undefined
 }

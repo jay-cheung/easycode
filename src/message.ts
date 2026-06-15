@@ -229,7 +229,7 @@ export function canonicalizeHistoryMessage(message: Message): Message {
 
 export function canonicalizeAssistantHistory(reasoningText: string, text: string) {
   const parts: MessagePart[] = []
-  if (reasoningText) parts.push(reasoningPart(reasoningText))
+  if (reasoningText) parts.push(reasoningPart(truncateLargeOutput(reasoningText, true, historyReasoningTextLimit)))
   if (text) parts.push(textPart(text))
   const canonical = canonicalizeHistoryMessage(createMessage("assistant", parts.length > 0 ? parts : [textPart("")], "history_preview"))
   return {
@@ -245,10 +245,8 @@ function canonicalizeHistoryPart(role: MessageRole, part: MessagePart): MessageP
     const text = truncateLargeOutput(part.text, true, limit)
     return text === part.text ? part : { ...part, text }
   }
-  if (role === "assistant" && part.type === "reasoning") {
-    const text = truncateLargeOutput(part.text, true, historyReasoningTextLimit)
-    return text === part.text ? part : { ...part, text }
-  }
+  // DeepSeek thinking mode requires exact reasoning_content replay across turns.
+  if (role === "assistant" && part.type === "reasoning") return part
   return part
 }
 
@@ -274,6 +272,7 @@ function canonicalizeToolResultPart(part: ToolResultPart): ToolResultPart {
 function compactToolResultOutput(part: ToolResultPart, rawOutput: string): { output: string; compacted: boolean; kind: string } {
   if (part.toolName === "skill") return { output: compactSkillOutput(part, rawOutput), compacted: true, kind: "skill_compact" }
   if (part.toolName === "web_search") return { output: compactWebSearchOutput(part, rawOutput), compacted: true, kind: "web_search_compact" }
+  if (part.toolName === "web_fetch") return { output: compactWebFetchOutput(part, rawOutput), compacted: true, kind: "web_fetch_compact" }
   if (part.toolName === "bash") return { output: compactBashOutput(part, rawOutput), compacted: true, kind: "bash_compact" }
   if (part.toolName === "read" || part.toolName === "read_lines") return { output: compactReadOutput(part, rawOutput), compacted: true, kind: `${part.toolName}_compact` }
   if (part.toolName === "git_diff") return { output: compactGitDiffOutput(part, rawOutput), compacted: true, kind: "git_diff_compact" }
@@ -321,6 +320,21 @@ function compactWebSearchOutput(part: ToolResultPart, rawOutput: string) {
   }
   const omitted = Math.max(0, (count ?? results.length) - shown.length)
   if (omitted > 0) lines.push(`+${omitted} more search results omitted from persistent history`)
+  return lines.join("\n")
+}
+
+function compactWebFetchOutput(part: ToolResultPart, rawOutput: string) {
+  const method = stringMetadata(part.metadata, "method") ?? "GET"
+  const url = stringMetadata(part.metadata, "url") ?? "unknown url"
+  const finalUrl = stringMetadata(part.metadata, "finalUrl")
+  const httpStatus = numberMetadata(part.metadata, "httpStatus")
+  const contentType = stringMetadata(part.metadata, "contentType")
+  const lines = [`Web fetch: ${method} ${url}`]
+  if (finalUrl && finalUrl !== url) lines.push(`finalUrl: ${finalUrl}`)
+  if (httpStatus !== undefined) lines.push(`status: ${httpStatus}`)
+  if (contentType) lines.push(`contentType: ${contentType}`)
+  lines.push("excerpt:")
+  lines.push(compactExcerpt(rawOutput, { head: 1_100, tail: 700, limit: 2_600 }))
   return lines.join("\n")
 }
 

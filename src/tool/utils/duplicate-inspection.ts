@@ -21,6 +21,7 @@ const duplicateValidatedTools = new Set([
   "mcp_list_resources",
   "mcp_read_resource",
   "web_search",
+  "web_fetch",
 ])
 const invalidatingTools = new Set(["edit", "write", "patch", "bash", "connector_call", "git_restore_guarded"])
 

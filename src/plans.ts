@@ -323,6 +323,7 @@ export function isPlanApprovalPrompt(prompt: string) {
     normalized === "Proceed." ||
     normalized === "确认" ||
     normalized === "执行" ||
+    normalized === "执行吧" ||
     /^(y|yes|ok|approve|approved)$/i.test(normalized)
 }
 

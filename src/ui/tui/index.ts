@@ -157,8 +157,17 @@ export class TuiRenderer {
           this.state.setStatus(copy.statusProviderMetrics, "provider_metrics:final")
         }
       }
-    } else if (event.type === "subagent" && event.status === "completed" && event.metrics) {
+    } else if (event.type === "subagent" && event.status === "scheduled") {
+      const nextRoleCounts = { ...this.state.subagentUsage.roleCounts }
+      nextRoleCounts[event.info.role] = (nextRoleCounts[event.info.role] ?? 0) + 1
       this.state.subagentUsage = {
+        ...this.state.subagentUsage,
+        invocations: this.state.subagentUsage.invocations + 1,
+        roleCounts: nextRoleCounts,
+      }
+    } else if (event.type === "subagent" && event.metrics) {
+      this.state.subagentUsage = {
+        ...this.state.subagentUsage,
         inputTokens: this.state.subagentUsage.inputTokens + event.metrics.inputTokens,
         outputTokens: this.state.subagentUsage.outputTokens + event.metrics.outputTokens,
         calls: this.state.subagentUsage.calls + event.metrics.calls,

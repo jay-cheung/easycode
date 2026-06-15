@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { WebSearchService } from "../../src/retrieval"
+import { WebFetchService, WebSearchService } from "../../src/retrieval"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-retrieval-"))
@@ -135,5 +135,67 @@ describe("web retrieval", () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  test("web_fetch enforces safe headers and bounds large bodies", async () => {
+    const payload = "1234567890".repeat(70)
+    const service = new WebFetchService({
+      fetch: async (_input, init) => {
+        expect(init?.method).toBe("GET")
+        expect(init?.redirect).toBe("manual")
+        const headers = new Headers(init?.headers)
+        expect(headers.get("accept")).toBe("application/json")
+        return new Response(payload, {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "content-length": String(payload.length),
+          },
+        })
+      },
+    })
+
+    const result = await service.fetch({
+      url: "https://example.com/data",
+      headers: { accept: "application/json" },
+      maxBytes: 10,
+    })
+
+    expect(result).toMatchObject({
+      method: "GET",
+      status: 200,
+      contentType: "application/json",
+      truncated: true,
+      bytesRead: 512,
+    })
+    expect(result.excerpt).toBe(payload.slice(0, 512))
+  })
+
+  test("web_fetch follows redirects only when explicitly requested", async () => {
+    const redirects: RequestRedirect[] = []
+    const service = new WebFetchService({
+      fetch: async (_input, init) => {
+        redirects.push((init?.redirect ?? "follow") as RequestRedirect)
+        return new Response("ok", { status: 200, headers: { "content-type": "text/plain" } })
+      },
+    })
+
+    await service.fetch({ url: "https://example.com/manual" })
+    await service.fetch({ url: "https://example.com/follow", followRedirects: true })
+
+    expect(redirects).toEqual(["manual", "follow"])
+  })
+
+  test("web_fetch rejects unsafe headers", async () => {
+    const service = new WebFetchService({
+      fetch: async () => {
+        throw new Error("fetch should not run")
+      },
+    })
+
+    await expect(service.fetch({
+      url: "https://example.com/data",
+      headers: { authorization: "secret" },
+    })).rejects.toThrow("web fetch header not allowed: authorization")
   })
 })

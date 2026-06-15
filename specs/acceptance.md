@@ -12,6 +12,8 @@
 - `easycode "..."` runs a single task and exits; `--once` is no longer required.
 - Multi-step, risky, or symbol-affecting unified runs can return `<proposed_plan>` before any edit occurs.
 - A returned `<proposed_plan>` does not auto-execute in the same turn; execution continues only after explicit approval.
+- Planning-stage responses fail closed unless the final assistant message is a `<proposed_plan>...</proposed_plan>` block or a `plan_exit` tool call that produces one.
+- Once an approved plan is executing, step completion advances automatically to the next step in the same run without asking the user whether to continue.
 - Unified-mode plans include symbol-aware edit planning details for symbol-affecting code changes: target symbols, owning definitions, affected references/callers, excluded same-name matches, and edit boundaries.
 - Structured plan extraction from a markdown plan fails closed: invalid JSON or invalid step shape does not activate an executable plan.
 - `easycode "..." --provider fake` can complete read -> edit -> bash.
@@ -44,13 +46,16 @@
 - Active structured plans persist their current step, step-status map, lifecycle status, and task checkpoint without requiring raw message-history reconstruction.
 - Active structured plans replan only on explicit revision/scope-change prompts; ordinary status or progress questions do not rewrite the saved plan.
 - MCP stays default-allowed, and WebSearch is default-allowed with structured citations, logger events, eval fixtures, and Tavily-only live search when configured.
+- `web_fetch` stays default-allowed for bounded readonly HTTP/HTTPS fetches with structured citation metadata, and supported readonly `curl` usage is redirected to that internal tool instead of bash.
 - LSP/AST indexing demonstrates an advantage over text search by resolving definitions/references and constraining edits to symbols rather than same-name text matches.
 
 ## Safety
 - Writes outside the project root fail.
 - EasyCode never edits files before a proposed plan is explicitly approved.
 - Dangerous bash commands fail.
-- Safe readonly bash scopes can auto-approve without a manual prompt, but unsafe or side-effectful bash commands still require review or fail.
+- Replaceable bash inspections that already have internal tool coverage fail fast with a structured hint to use the matching internal tool instead.
+- Replaceable bash `curl` fetches fail fast only when they are safely representable as readonly `web_fetch` calls, including a translated suggestion for the supported flags.
+- Only non-replaceable readonly bash fallback scopes can auto-approve without a manual prompt; unsafe, side-effectful, or replaceable bash commands still require review or fail.
 - Native write-sandbox bypass and explicit outside-path bypass require a risk prompt and user approval.
 - Repeated approved bash commands reuse the current session approval and do not prompt again.
 - Bash timeout returns structured metadata.

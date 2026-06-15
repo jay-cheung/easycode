@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { canonicalizeAssistantHistory, canonicalizeHistoryMessage, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, validProviderMessageSuffix } from "../../src/message"
+import { canonicalizeAssistantHistory, canonicalizeHistoryMessage, createMessage, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, validProviderMessageSuffix } from "../../src/message"
 
 describe("message", () => {
   test("converts text and tool parts", () => {
@@ -80,5 +80,12 @@ describe("message", () => {
     expect(canonical.reasoningText).toContain("[truncated")
     expect(canonical.text).toContain("<proposed_plan>")
     expect(canonical.text).toContain("[truncated")
+  })
+
+  test("preserves full assistant reasoning in stored history", () => {
+    const reasoning = "r".repeat(3_000)
+    const message = canonicalizeHistoryMessage(createMessage("assistant", [reasoningPart(reasoning), textPart("done")]))
+    const reasoningText = message.parts.find((part) => part.type === "reasoning")
+    expect(reasoningText).toMatchObject({ type: "reasoning", text: reasoning })
   })
 })

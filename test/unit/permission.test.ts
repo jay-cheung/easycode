@@ -118,6 +118,7 @@ describe("permission", () => {
   test("retrieval permissions separate local MCP from web search", () => {
     expect(evaluatePermission("mcp", ".easycode/mcp.json", defaultPermissionRules("plan"))).toBe("allow")
     expect(evaluatePermission("web_search", "web:Claude Code", defaultPermissionRules("plan"))).toBe("allow")
+    expect(evaluatePermission("web_fetch", "web_fetch:https://example.com/docs", defaultPermissionRules("plan"))).toBe("allow")
   })
 
   test("auto reviewer approves repeat-safe readonly bash scopes", async () => {
@@ -129,48 +130,27 @@ describe("permission", () => {
       permission: "bash",
       patterns: ["bash:readonly:git:status:project"],
       always: ["bash:readonly:git:status:project"],
-      metadata: { command: "git status --short", rememberOnApprove: true, rememberPatterns: ["bash:readonly:git:status:project"] },
+      metadata: { tool: "git_status", command: "git status --short", rememberOnApprove: true, rememberPatterns: ["bash:readonly:git:status:project"] },
     })
 
     expect(service.evaluate("bash", "bash:readonly:git:status:project")).toBe("allow")
   })
 
-  test("auto reviewer approves readonly curl fetch scopes", async () => {
-    const service = new PermissionService(defaultPermissionRules("build"), () => {
-      throw new Error("manual prompt should not be reached")
+  test("auto reviewer does not auto-approve replaceable readonly bash fallback commands", async () => {
+    const requested: string[] = []
+    const service = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(`${request.permission}:${request.patterns.join(",")}`)
+      return "reject"
     }, defaultPermissionAutoReviewer)
 
-    await service.authorize({
+    await expect(service.authorize({
       permission: "bash",
-      patterns: ["bash:readonly:curl:get:https://example.com"],
-      always: ["bash:readonly:curl:get:https://example.com"],
-      metadata: {
-        command: "curl -sSL https://example.com/docs",
-        rememberOnApprove: true,
-        rememberPatterns: ["bash:readonly:curl:get:https://example.com"],
-      },
-    })
+      patterns: ["bash:readonly:git:status:project"],
+      always: ["bash:readonly:git:status:project"],
+      metadata: { tool: "bash", command: "git status --short", rememberOnApprove: true, rememberPatterns: ["bash:readonly:git:status:project"] },
+    })).rejects.toThrow("Permission rejected")
 
-    expect(service.evaluate("bash", "bash:readonly:curl:get:https://example.com")).toBe("allow")
-  })
-
-  test("auto reviewer approves broader readonly curl flags when headers stay safe", async () => {
-    const service = new PermissionService(defaultPermissionRules("build"), () => {
-      throw new Error("manual prompt should not be reached")
-    }, defaultPermissionAutoReviewer)
-
-    await service.authorize({
-      permission: "bash",
-      patterns: ["bash:readonly:curl:get:https://example.com"],
-      always: ["bash:readonly:curl:get:https://example.com"],
-      metadata: {
-        command: "curl --retry 2 --connect-timeout 5 --http2 --url https://example.com/api -H 'Accept: application/json' -A easycode/1.0",
-        rememberOnApprove: true,
-        rememberPatterns: ["bash:readonly:curl:get:https://example.com"],
-      },
-    })
-
-    expect(service.evaluate("bash", "bash:readonly:curl:get:https://example.com")).toBe("allow")
+    expect(requested).toEqual(["bash:bash:readonly:git:status:project"])
   })
 
   test("auto reviewer leaves sensitive and mutating requests for manual review", async () => {
@@ -184,14 +164,14 @@ describe("permission", () => {
       permission: "bash",
       patterns: ["bash:readonly:cat:/repo/.env"],
       always: ["bash:readonly:cat:/repo/.env"],
-      metadata: { command: "cat .env", rememberOnApprove: true, rememberPatterns: ["bash:readonly:cat:/repo/.env"] },
+      metadata: { tool: "bash", command: "cat .env", rememberOnApprove: true, rememberPatterns: ["bash:readonly:cat:/repo/.env"] },
     })).rejects.toThrow("Permission rejected")
 
     await expect(service.authorize({
       permission: "bash",
       patterns: ["bash:readonly:cat:/repo/.envrc"],
       always: ["bash:readonly:cat:/repo/.envrc"],
-      metadata: { command: "cat .envrc", rememberOnApprove: true, rememberPatterns: ["bash:readonly:cat:/repo/.envrc"] },
+      metadata: { tool: "bash", command: "cat .envrc", rememberOnApprove: true, rememberPatterns: ["bash:readonly:cat:/repo/.envrc"] },
     })).rejects.toThrow("Permission rejected")
 
     await expect(service.authorize({
@@ -206,6 +186,7 @@ describe("permission", () => {
       patterns: ["bash:exact:curl -H Authorization:secret https://example.com"],
       always: ["bash:exact:curl -H Authorization:secret https://example.com"],
       metadata: {
+        tool: "bash",
         command: "curl -H Authorization:secret https://example.com",
         rememberOnApprove: true,
         rememberPatterns: ["bash:exact:curl -H Authorization:secret https://example.com"],

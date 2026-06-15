@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { z } from "zod"
 import { createBuiltinRegistry, ToolRegistry } from "../../src/tool"
 import { ContextManager } from "../../src/context"
-import { type BashResult, Sandbox } from "../../src/sandbox"
+import { SandboxPathEscapeError, type BashResult, Sandbox } from "../../src/sandbox"
 import { PermissionService, defaultPermissionAutoReviewer, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
 import { toolCallMessage, toolResultMessage, userMessage, type Message } from "../../src/message"
@@ -454,6 +454,45 @@ describe("tool", () => {
     expect(web.metadata.sources).toEqual([])
   })
 
+  test("web_fetch returns bounded structured HTTP evidence", async () => {
+    const registry = createBuiltinRegistry()
+    const server = Bun.serve({
+      port: 0,
+      fetch(request) {
+        const accept = request.headers.get("accept") ?? "missing"
+        return new Response("<html><title>Example Page</title><body>Hello from web_fetch.</body></html>", {
+          status: 200,
+          headers: {
+            "content-type": "text/html; charset=utf-8",
+            etag: `"accept:${accept}"`,
+          },
+        })
+      },
+    })
+    try {
+      const result = await registry.run("web_fetch", {
+        url: `http://127.0.0.1:${server.port}/docs`,
+        followRedirects: true,
+        headers: { accept: "text/html" },
+      }, toolContext())
+
+      expect(result.metadata).toMatchObject({
+        status: "succeeded",
+        method: "GET",
+        httpStatus: 200,
+        contentType: "text/html; charset=utf-8",
+      })
+      expect(result.output).toContain("[web_fetch] GET")
+      expect(result.output).toContain("Hello from web_fetch.")
+      expect(result.metadata.source).toMatchObject({
+        type: "web",
+        title: "Example Page",
+      })
+    } finally {
+      await server.stop(true)
+    }
+  })
+
   test("git workflow tools stage explicit files and reject unrelated staged commits", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
@@ -496,9 +535,9 @@ describe("tool", () => {
       execute: async (_input: unknown, _mode: unknown, options?: { bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean }) => {
         calls.push(options)
         return options?.bypassNativeWriteSandbox
-          ? bashResult({ command: "git log", exitCode: 0, stdout: "ok", nativeWriteSandbox: false, sandboxBypassed: true })
+          ? bashResult({ command: "pwd", exitCode: 0, stdout: "ok", nativeWriteSandbox: false, sandboxBypassed: true })
           : bashResult({
-              command: "git log",
+              command: "pwd",
               exitCode: 1,
               stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
               nativeWriteSandbox: true,
@@ -519,7 +558,7 @@ describe("tool", () => {
       },
     )
 
-    const result = await registry.run("bash", { command: "git log" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
+    const result = await registry.run("bash", { command: "pwd" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
 
     expect(requests).toEqual(["sandbox_bypass"])
     expect(calls.map((call) => Boolean(call?.bypassNativeWriteSandbox))).toEqual([false, true])
@@ -548,24 +587,22 @@ describe("tool", () => {
     expect(asks).toBe(2)
   })
 
-  test("auto-reviewed bash results are marked as allowed after review", async () => {
+  test("auto-reviewed non-replaceable bash results are marked as allowed after review", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
-    await git(root, ["init"])
     const permission = new PermissionService(defaultPermissionRules("build"), () => {
       throw new Error("manual prompt should not be reached")
     }, defaultPermissionAutoReviewer)
 
-    const result = await registry.run("bash", { command: "git status --short" }, { agentMode: "build", sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] })
+    const result = await registry.run("bash", { command: "pwd" }, { agentMode: "build", sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] })
 
     expect(result.metadata.status).toBe("succeeded")
     expect(result.metadata.permissionAction).toBe("allow")
   })
 
-  test("auto reviewer approves project-local small-file reads and safe curl fetches", async () => {
+  test("auto reviewer approves non-replaceable readonly bash only", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
-    await Bun.write(path.join(root, "small.txt"), "hello\n")
     const sandbox = {
       root,
       resolve: (target = ".") => path.resolve(root, target),
@@ -576,18 +613,15 @@ describe("tool", () => {
     }, defaultPermissionAutoReviewer)
     const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
 
-    const catResult = await registry.run("bash", { command: "cat small.txt" }, ctx)
-    const curlResult = await registry.run("bash", { command: "curl --retry 2 --connect-timeout 5 --http2 --url https://example.com/docs -H 'Accept: application/json' -A easycode/1.0" }, ctx)
+    const pwdResult = await registry.run("bash", { command: "pwd" }, ctx)
 
-    expect(catResult.metadata.status).toBe("succeeded")
-    expect(catResult.metadata.permissionAction).toBe("allow")
-    expect(curlResult.metadata.permissionAction).toBe("allow")
+    expect(pwdResult.metadata.status).toBe("succeeded")
+    expect(pwdResult.metadata.permissionAction).toBe("allow")
   })
 
-  test("large file reads and unsafe curl fetches still require manual bash approval", async () => {
+  test("non-autoapproved git bash still requires manual approval", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
-    await Bun.write(path.join(root, "large.txt"), "x".repeat(300 * 1024))
     const sandbox = {
       root,
       resolve: (target = ".") => path.resolve(root, target),
@@ -600,18 +634,93 @@ describe("tool", () => {
     }, defaultPermissionAutoReviewer)
     const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
 
-    const largeCat = await registry.run("bash", { command: "cat large.txt" }, ctx)
+    const gitDiff = await registry.run("bash", { command: "git diff HEAD~1 --stat" }, ctx)
+
+    expect(gitDiff.metadata.status).toBe("succeeded")
+    expect(requested).toEqual([
+      "bash:exact:git diff HEAD~1 --stat",
+    ])
+  })
+
+  test("unsupported curl patterns still fall back to bash instead of a fake web_fetch replacement", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const requested: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(request.patterns.join(","))
+      return "once"
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+
     const curlWithHeader = await registry.run("bash", { command: "curl -H Authorization:secret https://example.com" }, ctx)
     const curlWithOutput = await registry.run("bash", { command: "curl -o page.html https://example.com" }, ctx)
+    const curlPost = await registry.run("bash", { command: "curl -X POST https://example.com" }, ctx)
 
-    expect(largeCat.metadata.status).toBe("succeeded")
     expect(curlWithHeader.metadata.status).toBe("succeeded")
+    expect(curlWithHeader.metadata.error).toBeUndefined()
+    expect(curlWithHeader.metadata.replaceableBy).toEqual([])
     expect(curlWithOutput.metadata.status).toBe("succeeded")
+    expect(curlWithOutput.metadata.replaceableBy).toEqual([])
+    expect(curlPost.metadata.status).toBe("succeeded")
+    expect(curlPost.metadata.replaceableBy).toEqual([])
     expect(requested).toEqual([
-      "bash:exact:cat large.txt",
       "bash:exact:curl -H Authorization:secret https://example.com",
       "bash:exact:curl -o page.html https://example.com",
+      "bash:exact:curl -X POST https://example.com",
     ])
+  })
+
+  test("blocks replaceable bash commands and points to internal tools", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+      throw new Error("permission prompt should not be reached")
+    }, defaultPermissionAutoReviewer)
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async () => {
+        throw new Error("sandbox execute should not be reached")
+      },
+    } as unknown as Sandbox
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+
+    const gitStatus = await registry.run("bash", { command: "git status --short" }, ctx)
+    const grepResult = await registry.run("bash", { command: "grep -n foo src/index.ts | head -20" }, ctx)
+    const curlResult = await registry.run("bash", { command: "curl --retry 2 --connect-timeout 5 --url https://example.com/api -H 'Accept: application/json' -A easycode/1.0" }, ctx)
+
+    expect(gitStatus.metadata.status).toBe("failed")
+    expect(gitStatus.metadata.error).toBe("bash_replaced_by_internal_tool")
+    expect(gitStatus.metadata.commandClass).toBe("git_inspect")
+    expect(gitStatus.metadata.replaceableBy).toEqual(["git_status"])
+    expect(gitStatus.output).toContain("git_status")
+
+    expect(grepResult.metadata.status).toBe("failed")
+    expect(grepResult.metadata.error).toBe("bash_replaced_by_internal_tool")
+    expect(grepResult.metadata.commandClass).toBe("text_search")
+    expect(grepResult.metadata.replaceableBy).toEqual(["rg_search", "grep"])
+    expect(grepResult.output).toContain("rg_search")
+
+    expect(curlResult.metadata.status).toBe("failed")
+    expect(curlResult.metadata.error).toBe("bash_replaced_by_internal_tool")
+    expect(curlResult.metadata.commandClass).toBe("http_fetch")
+    expect(curlResult.metadata.replaceableBy).toEqual(["web_fetch"])
+    expect(curlResult.metadata.suggestedWebFetchInput).toEqual({
+      method: "GET",
+      url: "https://example.com/api",
+      headers: {
+        accept: "application/json",
+        "user-agent": "easycode/1.0",
+      },
+      retries: 2,
+      timeoutMs: 5000,
+    })
+    expect(curlResult.output).toContain("web_fetch")
   })
 
   test("bash does not retry sandbox bypass when rejected", async () => {
@@ -623,7 +732,7 @@ describe("tool", () => {
       execute: async (_input: unknown, _mode: unknown, options?: { bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean }) => {
         calls.push(options)
         return bashResult({
-          command: "git log",
+          command: "pwd",
           exitCode: 1,
           stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
           nativeWriteSandbox: true,
@@ -639,7 +748,7 @@ describe("tool", () => {
       () => "reject",
     )
 
-    const result = await registry.run("bash", { command: "git log" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
+    const result = await registry.run("bash", { command: "pwd" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
 
     expect(calls).toHaveLength(1)
     expect(result.metadata.status).toBe("failed")
@@ -650,12 +759,19 @@ describe("tool", () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const requests: string[] = []
+    const sandbox = {
+      root,
+      execute: async (input: { command: string }, _mode: unknown, options?: { bypassPathBoundary?: boolean }) => {
+        if (!options?.bypassPathBoundary) throw new SandboxPathEscapeError("/var/folders", "/var/folders", root)
+        return bashResult({ command: input.command, exitCode: 0, stdout: "ok", pathBoundaryBypassed: true })
+      },
+    } as unknown as Sandbox
     const result = await registry.run(
       "bash",
       { command: "ls /var/folders" },
       {
         agentMode: "build",
-        sandbox: new Sandbox(root),
+        sandbox,
         permission: new PermissionService(
           [
             { permission: "bash", pattern: "*", action: "allow" },
@@ -685,14 +801,19 @@ describe("tool", () => {
     const root = await tmpdir()
     const outside = await mkdtemp(path.join(os.tmpdir(), "easycode-outside-"))
     tempRoots.push(outside)
-    await mkdir(path.join(outside, "a"))
-    await mkdir(path.join(outside, "b"))
     const requests: string[] = []
     const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
       requests.push(`${request.permission}:${String(request.metadata.approvalScope ?? "")}`)
       return "once"
     })
-    const ctx = { agentMode: "build" as const, sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] }
+    const sandbox = {
+      root,
+      execute: async (input: { command: string }, _mode: unknown, options?: { bypassPathBoundary?: boolean }) => {
+        if (!options?.bypassPathBoundary) throw new SandboxPathEscapeError(outside, outside, root)
+        return bashResult({ command: input.command, exitCode: 0, stdout: "ok", pathBoundaryBypassed: true })
+      },
+    } as unknown as Sandbox
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
 
     const first = await registry.run("bash", { command: `ls ${path.join(outside, "a")}` }, ctx)
     const second = await registry.run("bash", { command: `ls ${path.join(outside, "b")}` }, ctx)

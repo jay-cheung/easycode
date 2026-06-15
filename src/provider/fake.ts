@@ -160,6 +160,33 @@ export class FakeProvider implements Provider {
       yield { type: "done" }
       return
     }
+    if (input.prompt.includes("Markdown Plan:")) {
+      yield {
+        type: "text_delta",
+        text: `\`\`\`json
+{
+  "id": "plan_fake",
+  "title": "Fake Plan",
+  "steps": [
+    {
+      "id": "step_1",
+      "goal": "Inspect the code",
+      "kind": "inspect",
+      "doneWhen": "Inspection is complete"
+    },
+    {
+      "id": "step_2",
+      "goal": "Edit the code",
+      "kind": "edit",
+      "doneWhen": "Edit is complete"
+    }
+  ]
+}
+\`\`\``,
+      }
+      yield { type: "done" }
+      return
+    }
     const planExitAlreadyRan = hasToolResult(input.messages, "plan_exit")
     if (prompt.includes("plan-exit") && !planExitAlreadyRan) {
       yield { type: "tool_call", call: call("plan_exit", { markdown: "# Plan\n- Fix the failing test." }) }

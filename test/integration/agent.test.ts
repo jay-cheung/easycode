@@ -3,6 +3,8 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { AgentRunner, createRunner } from "../../src/agent"
+import { PlanTracker } from "../../src/agent/planner"
+import { maxSubagentInvocationsPerRun, roleInvocationLimit } from "../../src/agent/subagent-runtime"
 import { ContextManager, estimateTextTokens } from "../../src/context"
 import { textMessage, toolResults } from "../../src/message"
 import { defaultPermissionRules, PermissionService } from "../../src/permission"
@@ -193,6 +195,8 @@ describe("agent integration", () => {
     expect(events.some((event) => event.type === "provider" && event.name === "provider.tool_call" && event.detail?.tool === "read")).toBe(true)
     expect(events.some((event) => event.type === "tool" && event.name === "permission.evaluate" && event.detail?.tool === "edit")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash")).toBe(true)
+    expect(events.some((event) => event.type === "data" && event.name === "provider -> tool_call_message" && event.detail?.tool === "bash" && typeof event.detail?.command === "string" && typeof event.detail?.commandClass === "string")).toBe(true)
+    expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash" && typeof event.detail?.command === "string" && typeof event.detail?.normalizedCommand === "string" && typeof event.detail?.commandClass === "string")).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.output" && typeof event.detail?.output === "string" && event.detail.output.length > 0)).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
@@ -787,7 +791,7 @@ describe("agent integration", () => {
 
     expect(result.status).toBe("completed")
     const current = context.state.ledger?.current ?? []
-    expect(current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "last_tool_failure", value: expect.stringContaining("bash denied PermissionRejectedError") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "last_tool_failure", value: expect.stringContaining("bash failed bash_replaced_by_internal_tool") }))
     expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "tool_failure_scope_rule", value: expect.stringContaining("not abandoning or silently shrinking scope") }))
     expect(current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "main_objective_still_active", value: "跑完整 APIx 评测并保留全量报告" }))
     expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "next_recovery_action", value: expect.stringContaining(".easycode/reports") }))
@@ -871,7 +875,7 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["plan_exit"])
     expect(result.text).toContain("<proposed_plan>")
-    expect(chunks.join("")).toContain("# Plan")
+    expect(chunks.join("")).toContain("# Fake Plan")
     expect(chunks.join("")).not.toContain("<proposed_plan>")
     expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a - b")
     await rm(root, { recursive: true, force: true })
@@ -896,6 +900,98 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["read", "edit", "bash"])
     expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a + b")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("plan mode retries until the provider returns a proposed plan", async () => {
+    const root = await fixture()
+    const prompts: string[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        prompts.push(input.providerMessages.map((message) => String(message.content)).join("\n\n"))
+        const corrected = input.providerMessages.some(
+          (message) => typeof message.content === "string" && message.content.includes("Planning mode hard gate:")
+        )
+        if (!corrected) {
+          yield { type: "text_delta", text: "我先说一下当前状态，再给计划。" }
+          return
+        }
+        yield { type: "text_delta", text: "<proposed_plan>\n# Plan\n- Inspect the code.\n- Make the change.\n</proposed_plan>" }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("给我一个计划", "plan")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("<proposed_plan>")
+    expect(prompts).toHaveLength(2)
+    expect(prompts[1]).toContain("Planning mode hard gate:")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("plan mode fails closed when the provider refuses to return a proposed plan", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "text_delta", text: "这是一段普通说明，不是计划。" }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("给我一个计划", "plan")
+
+    expect(result.status).toBe("failed")
+    expect(result.failureReason).toBe("provider_error")
+    expect(result.text).toContain("Planning mode hard gate failed")
+    expect(result.text).not.toContain("这是一段普通说明，不是计划。")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("running plans continue across steps without another user prompt", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_auto_continue",
+      title: "Auto Continue Plan",
+      steps: [
+        { id: "step_1", goal: "Inspect src/add.ts", kind: "inspect", doneWhen: "Inspection is complete." },
+        { id: "step_2", goal: "Verify the result", kind: "verify", doneWhen: "Verification is complete." },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running", step_2: "pending" },
+      status: "running",
+    })
+
+    let turnCount = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        turnCount += 1
+        const completedSteps = toolResults(input.messages)
+          .filter((part) => part.toolName === "plan_step_complete" && part.status === "succeeded")
+          .length
+        if (completedSteps === 0) {
+          yield { type: "tool_call", call: { id: "call_complete_1", name: "plan_step_complete", input: { message: "inspection done" } } }
+          return
+        }
+        if (completedSteps === 1) {
+          const latestToolResult = [...toolResults(input.messages)].reverse().find((part) => part.toolName === "plan_step_complete")
+          expect(latestToolResult?.output).toContain("Continue immediately with that step")
+          yield { type: "tool_call", call: { id: "call_complete_2", name: "plan_step_complete", input: { message: "verification done" } } }
+          return
+        }
+        yield { type: "text_delta", text: "Plan finished." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("Plan finished.")
+    expect(result.usedTools).toEqual(["plan_step_complete", "plan_step_complete"])
+    expect(turnCount).toBe(3)
     await rm(root, { recursive: true, force: true })
   })
 
@@ -929,6 +1025,9 @@ describe("agent integration", () => {
       name: "test-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
         seenPrompts.push(input.prompt)
+        const corrected = input.providerMessages.some(
+          (message) => typeof message.content === "string" && message.content.includes("Planning mode hard gate:")
+        )
         if (input.prompt.includes("Markdown Plan:")) {
           yield {
             type: "text_delta",
@@ -950,6 +1049,10 @@ describe("agent integration", () => {
           return
         }
         if (input.prompt === "现在到哪一步了？") {
+          if (corrected) {
+            yield { type: "text_delta", text: "<proposed_plan>\n# Plan\n- step_1: Inspect the code.\n- step_2: Edit the code.\n</proposed_plan>" }
+            return
+          }
           yield { type: "text_delta", text: "当前还在 step_1：Inspect the code。" }
           return
         }
@@ -1263,6 +1366,40 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("summary compaction is budgeted separately from foreground subagents", async () => {
+    const root = await fixture()
+    const events: RunUiEvent[] = []
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          yield { type: "text_delta", text: "<summary>\nSeparate summary budget.\n</summary>" }
+          return
+        }
+        yield { type: "text_delta", text: "Done with separate summary budget." }
+      },
+    }
+
+    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) })
+    ;(runner as any).subagentUsage.byRole.summary = roleInvocationLimit("summary")
+    ;(runner as any).subagentUsage.startedInvocations = maxSubagentInvocationsPerRun
+    const result = await runner.run("Fix the failing test", "build")
+    await runner.waitForSummarySubagent()
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toBe("Done with separate summary budget.")
+    expect(context.state.summary).toBe("Separate summary budget.")
+    expect(events).toContainEqual(expect.objectContaining({ type: "subagent", status: "scheduled", info: expect.objectContaining({ role: "summary" }) }))
+    expect(events).toContainEqual(expect.objectContaining({ type: "subagent", status: "completed", info: expect.objectContaining({ role: "summary" }) }))
+    expect(events.some((event) => event.type === "subagent" && event.status === "failed" && event.info.role === "summary")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("summary compaction uses a derived subagent route for registered providers", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
@@ -1362,6 +1499,77 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("coordinator retries pure fact-finding turns through delegate_subagent", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "gated-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        const correctionSeen = input.providerMessages.some((message) => typeof message.content === "string" && message.content.includes("Coordinator delegation gate"))
+        if (input.prompt === "Inspect add with delegation gate") {
+          if (results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "text_delta", text: "Coordinator consumed the delegated findings." }
+            return
+          }
+          if (correctionSeen) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts", success_criteria: "Identify the exported function and owning file." } } }
+            return
+          }
+          yield { type: "tool_call", call: { id: "call_repo_map", name: "repo_map", input: { dir: "src", language: "typescript", query: "add export" } } }
+          yield { type: "tool_call", call: { id: "call_find_definition", name: "find_definition", input: { symbol: "add", language: "typescript" } } }
+          return
+        }
+        if (input.prompt === "Inspect src/add.ts") {
+          yield { type: "text_delta", text: "Found export function add in src/add.ts." }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Inspect add with delegation gate", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["delegate_subagent"])
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Found export function add"))).toBe(true)
+    expect(toolResults(result.messages).some((part) => part.toolName === "repo_map")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("coordinator retries even a single fact-finding tool through delegate_subagent", async () => {
+    const root = await fixture()
+    const provider: Provider = {
+      name: "gated-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        const correctionSeen = input.providerMessages.some((message) => typeof message.content === "string" && message.content.includes("Coordinator delegation gate"))
+        if (input.prompt === "Inspect add with single read delegation gate") {
+          if (results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "text_delta", text: "Coordinator consumed the delegated single-read findings." }
+            return
+          }
+          if (correctionSeen) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts", success_criteria: "Identify the exported function and owning file." } } }
+            return
+          }
+          yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
+          return
+        }
+        if (input.prompt === "Inspect src/add.ts") {
+          yield { type: "text_delta", text: "Found export function add in src/add.ts." }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Inspect add with single read delegation gate", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["delegate_subagent"])
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Found export function add"))).toBe(true)
+    expect(toolResults(result.messages).some((part) => part.toolName === "read")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("subagent logs and transcripts are written to separate files", async () => {
     const root = await fixture()
     const logger = createLogger({ root, session: "alpha" })
@@ -1395,6 +1603,98 @@ describe("agent integration", () => {
     expect(subagentTranscript).toContain("Subagent 1")
     expect(subagentTranscript).toContain("role=docs_researcher")
     expect(subagentTranscript).toContain("task=Summarize src/add.ts")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("delegate_subagent returns a stage handoff instead of failing when the turn budget is exhausted", async () => {
+    const root = await fixture()
+    const logs: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output, status: part.status }))
+        if (input.prompt === "Use an explorer subagent with a bounded budget") {
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts and gather evidence", success_criteria: "Prove what add exports and whether the implementation is correct." } } }
+            return
+          }
+          const delegateResult = results.find((result) => result.tool === "delegate_subagent")
+          expect(delegateResult?.status).toBe("succeeded")
+          expect(delegateResult?.output).toContain('"status": "handoff"')
+          yield { type: "text_delta", text: "Coordinator received the stage handoff." }
+          return
+        }
+        if (input.prompt === "Inspect src/add.ts and gather evidence") {
+          if (!results.some((result) => result.tool === "read_lines")) {
+            yield { type: "tool_call", call: { id: "call_read_lines", name: "read_lines", input: { filePath: "src/add.ts", startLine: 1, endLine: 3 } } }
+            return
+          }
+          yield { type: "tool_call", call: { id: "call_repo_map", name: "repo_map", input: { dir: "src", language: "typescript", query: "add" } } }
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger: (event) => logs.push(event) }).run("Use an explorer subagent with a bounded budget", "build")
+
+    expect(result.status).toBe("completed")
+    const delegateTool = toolResults(result.messages).find((part) => part.toolName === "delegate_subagent")
+    expect(delegateTool).toBeDefined()
+    expect(delegateTool?.status).toBe("succeeded")
+    expect(delegateTool?.output).toContain('"status": "handoff"')
+    expect(delegateTool?.output).toContain('"nextAction"')
+    expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "subagent.result", detail: expect.objectContaining({ role: "explorer", status: "handoff" }) }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("delegate_subagent task packets include the active plan step assignment", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_subagent_task",
+      title: "Inspect before edit",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect src/add.ts with an explorer subagent",
+          kind: "inspect",
+          executorHint: "subagent",
+          subagentRole: "explorer",
+          doneWhen: "The owner file and current implementation are identified.",
+        },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    let subagentPrompt = ""
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt === "Delegate the active step") {
+          const results = toolResults(input.messages).map((part) => ({ tool: part.toolName }))
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts", success_criteria: "Identify the owning file and implementation." } } }
+            return
+          }
+          yield { type: "text_delta", text: "Coordinator consumed the assigned-step result." }
+          return
+        }
+        if (input.prompt === "Inspect src/add.ts") {
+          subagentPrompt = typeof input.providerMessages.at(-1)?.content === "string" ? input.providerMessages.at(-1)?.content as string : ""
+          yield { type: "text_delta", text: "Inspection complete." }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Delegate the active step", "build")
+
+    expect(result.status).toBe("completed")
+    expect(subagentPrompt).toContain("Assigned Plan Step:")
+    expect(subagentPrompt).toContain("step_1: Inspect src/add.ts with an explorer subagent")
+    expect(subagentPrompt).toContain("Done When: The owner file and current implementation are identified.")
     await rm(root, { recursive: true, force: true })
   })
 

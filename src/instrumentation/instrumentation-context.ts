@@ -1,6 +1,7 @@
 import { canonicalizeHistoryMessage, type Message } from "../message"
 import type { ContextLedger, ContextManagerLike } from "../context"
 import { emitLog, type Logger } from "../logger"
+import { analyzeBashCommand } from "../tool/bash"
 
 type ContextSnapshot = {
   messages: number
@@ -143,8 +144,52 @@ export class LoggingContextDecorator implements ContextManagerLike {
     for (const part of message.parts) {
       if (message.role === "user" && part.type === "text") emitLog(this.logger, { type: "data", name: "user_input -> context", detail: { promptLength: part.text.length } })
       if (message.role === "assistant" && part.type === "text") emitLog(this.logger, { type: "data", name: "provider -> assistant_message", detail: { textLength: part.text.length } })
-      if (message.role === "assistant" && part.type === "tool_call") emitLog(this.logger, { type: "data", name: "provider -> tool_call_message", detail: { tool: part.call.name, callID: part.call.id } })
-      if (message.role === "tool" && part.type === "tool_result") emitLog(this.logger, { type: "data", name: "tool_result -> context", detail: { tool: part.toolName, callID: part.callID, status: part.status, outputLength: part.output.length } })
+      if (message.role === "assistant" && part.type === "tool_call") {
+        emitLog(this.logger, {
+          type: "data",
+          name: "provider -> tool_call_message",
+          detail: { tool: part.call.name, callID: part.call.id, ...bashToolCallDetail(part.call.name, part.call.input) },
+        })
+      }
+      if (message.role === "tool" && part.type === "tool_result") {
+        emitLog(this.logger, {
+          type: "data",
+          name: "tool_result -> context",
+          detail: { tool: part.toolName, callID: part.callID, status: part.status, outputLength: part.output.length, ...bashToolResultDetail(part.toolName, part.metadata) },
+        })
+      }
     }
   }
+}
+
+function bashToolCallDetail(toolName: string, input: unknown) {
+  if (toolName !== "bash" || typeof input !== "object" || input === null) return {}
+  const record = input as Record<string, unknown>
+  const command = typeof record.command === "string" ? record.command : undefined
+  if (!command) return {}
+  const analysis = analyzeBashCommand(command)
+  return {
+    command,
+    normalizedCommand: analysis.normalizedCommand,
+    commandClass: analysis.commandClass,
+    replaceableBy: analysis.replaceableBy,
+  }
+}
+
+function bashToolResultDetail(toolName: string, metadata: Record<string, unknown>) {
+  if (toolName !== "bash") return {}
+  return {
+    command: stringMetadata(metadata.command),
+    normalizedCommand: stringMetadata(metadata.normalizedCommand),
+    commandClass: stringMetadata(metadata.commandClass),
+    replaceableBy: stringArrayMetadata(metadata.replaceableBy),
+  }
+}
+
+function stringMetadata(value: unknown) {
+  return typeof value === "string" ? value : undefined
+}
+
+function stringArrayMetadata(value: unknown) {
+  return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined
 }

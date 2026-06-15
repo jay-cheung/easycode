@@ -71,7 +71,7 @@ export function buildSuccessSummaryCard(
   language: UiLanguage,
   elapsedMs: number,
   metrics: ProviderRunMetrics | undefined,
-  subagentUsage: { inputTokens: number; outputTokens: number; calls: number },
+  subagentUsage: { inputTokens: number; outputTokens: number; calls: number; invocations: number; roleCounts: Record<string, number> | Partial<Record<string, number>> },
   sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number },
   columns: number,
 ) {
@@ -95,13 +95,16 @@ export function buildSuccessSummaryCard(
       copy.sessionTokensLine(cumTotal.toLocaleString(), cumInput.toLocaleString(), cumOutput.toLocaleString()),
     )
   }
-  if (subagentUsage.calls > 0 || sessionTokenUsage.subagentCalls > 0) {
+  if (subagentUsage.invocations > 0 || subagentUsage.calls > 0 || sessionTokenUsage.subagentCalls > 0) {
     const roundSubagentTotal = subagentUsage.inputTokens + subagentUsage.outputTokens
     const cumSubagentInput = sessionTokenUsage.subagentInputTokens + subagentUsage.inputTokens
     const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
     const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
     const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
+    const roundBreakdown = formatSubagentBreakdown(subagentUsage.roleCounts)
     lines.push(
+      copy.roundSubagentInvocationsLine(String(subagentUsage.invocations)),
+      ...(roundBreakdown ? [copy.roundSubagentDetailLine(roundBreakdown)] : []),
       copy.roundSubagentCallsLine(String(subagentUsage.calls)),
       copy.roundSubagentTokensLine(roundSubagentTotal.toLocaleString()),
       copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
@@ -119,7 +122,7 @@ export function buildFailureSummaryCard(
   language: UiLanguage,
   elapsedMs: number,
   metrics: ProviderRunMetrics | undefined,
-  subagentUsage: { inputTokens: number; outputTokens: number; calls: number },
+  subagentUsage: { inputTokens: number; outputTokens: number; calls: number; invocations: number; roleCounts: Record<string, number> | Partial<Record<string, number>> },
   sessionTokenUsage: { inputTokens: number; outputTokens: number; calls: number; subagentInputTokens: number; subagentOutputTokens: number; subagentCalls: number },
   reason: string,
   columns: number,
@@ -150,13 +153,16 @@ export function buildFailureSummaryCard(
       copy.sessionTokensLine(cumTotal.toLocaleString(), cumInput.toLocaleString(), cumOutput.toLocaleString()),
     )
   }
-  if (subagentUsage.calls > 0 || sessionTokenUsage.subagentCalls > 0) {
+  if (subagentUsage.invocations > 0 || subagentUsage.calls > 0 || sessionTokenUsage.subagentCalls > 0) {
     const roundSubagentTotal = subagentUsage.inputTokens + subagentUsage.outputTokens
     const cumSubagentInput = sessionTokenUsage.subagentInputTokens + subagentUsage.inputTokens
     const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
     const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
     const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
+    const roundBreakdown = formatSubagentBreakdown(subagentUsage.roleCounts)
     lines.push(
+      copy.roundSubagentInvocationsLine(String(subagentUsage.invocations)),
+      ...(roundBreakdown ? [copy.roundSubagentDetailLine(roundBreakdown)] : []),
       copy.roundSubagentCallsLine(String(subagentUsage.calls)),
       copy.roundSubagentTokensLine(roundSubagentTotal.toLocaleString()),
       copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
@@ -199,4 +205,12 @@ function wrapCardText(label: string, text: string, maxLineWidth: number) {
   }
 
   return wrapped.length > 0 ? wrapped : [text]
+}
+
+function formatSubagentBreakdown(roleCounts: Record<string, number> | Partial<Record<string, number>>) {
+  const entries = Object.entries(roleCounts)
+    .filter((entry): entry is [string, number] => typeof entry[1] === "number" && entry[1] > 0)
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+  if (entries.length === 0) return ""
+  return entries.map(([role, count]) => `${role} x${count}`).join(", ")
 }

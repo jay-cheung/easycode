@@ -131,10 +131,10 @@ export class TimelineRenderer {
         const metrics = event.metrics
           ? `, calls=${event.metrics.calls}, input_tokens=${event.metrics.inputTokens}, output_tokens=${event.metrics.outputTokens}`
           : ""
-        this.output.write(copy.timelineSubagentCompleted(event.info.role, elapsed, metrics))
+        this.output.write(copy.timelineSubagentCompleted(`#${event.info.id} ${event.info.role}`, elapsed, metrics))
       } else {
         const elapsed = event.elapsedMs === undefined ? "" : ` after ${formatDuration(event.elapsedMs)}`
-        this.output.write(copy.timelineSubagentFailed(event.info.role, elapsed, event.error ? `: ${event.error}` : ""))
+        this.output.write(copy.timelineSubagentFailed(`#${event.info.id} ${event.info.role}`, elapsed, event.error ? `: ${event.error}` : ""))
       }
       return
     }
@@ -254,7 +254,7 @@ function formatSubagentInfo(info: SubagentUiInfo) {
   const model = info.model ? ` ${info.model}` : ""
   const effort = info.thinking ? `, effort=${info.effort ?? "none"}` : ""
   const maxOutputTokens = info.maxOutputTokens === undefined ? "" : `, max_output_tokens=${info.maxOutputTokens}`
-  return `role=${info.role}, provider=${info.provider}${model}, thinking=${info.thinking ? "on" : "off"}${effort}, max_calls=${info.maxProviderCalls}${maxOutputTokens}`
+  return `id=${info.id}, role=${info.role}, provider=${info.provider}${model}, thinking=${info.thinking ? "on" : "off"}${effort}, max_calls=${info.maxProviderCalls}${maxOutputTokens}`
 }
 
 class MarkdownLineRenderer {

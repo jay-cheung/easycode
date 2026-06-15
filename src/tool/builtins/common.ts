@@ -34,6 +34,18 @@ export const ConnectorCallInput = z.object({ name: z.string() })
 export const McpListResourcesInput = z.object({ query: z.string().optional(), limit: z.number().nullish().transform((value) => value ?? 10) })
 export const McpReadResourceInput = z.object({ uri: z.string(), server: z.string().optional() })
 export const WebSearchInput = z.object({ query: z.string(), limit: z.number().nullish().transform((value) => value ?? 5), engine: z.string().optional(), live: z.boolean().optional() })
+export const WebFetchInput = z.object({
+  url: z.string(),
+  method: z.enum(["GET", "HEAD"]).nullish().transform((value) => value ?? "GET"),
+  headers: z.record(z.string(), z.string()).nullish().transform((value) => value ?? {}),
+  followRedirects: z.boolean().nullish().transform((value) => value ?? false),
+  includeHeaders: z.boolean().nullish().transform((value) => value ?? false),
+  insecureTLS: z.boolean().nullish().transform((value) => value ?? false),
+  timeoutMs: z.number().nullish().transform((value) => value ?? 10_000),
+  maxBytes: z.number().nullish().transform((value) => value ?? 24_000),
+  retries: z.number().nullish().transform((value) => value ?? 0),
+  retryDelayMs: z.number().nullish().transform((value) => value ?? 250),
+})
 
 export const PlanStepCompleteInput = z.object({
   message: z.string().optional(),

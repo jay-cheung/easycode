@@ -86,7 +86,7 @@ function hostnameFor(url: string) {
   }
 }
 
-function timeoutSignal(signal: AbortSignal | undefined, timeoutMs: number | undefined) {
+export function timeoutSignal(signal: AbortSignal | undefined, timeoutMs: number | undefined) {
   if (!timeoutMs) return { signal, cleanup: () => {} }
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)

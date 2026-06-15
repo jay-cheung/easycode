@@ -15,7 +15,8 @@
 - Default timeout is 120 seconds.
 - Default output cap is 64KB.
 - Dangerous commands are denied: `rm -rf`, `sudo`, `git push`, `docker`, `curl | sh`, recursive chmod on `/`.
-- Safe readonly bash scopes may auto-approve in `build` mode: `git status|diff|log`, `pwd`, `ls`, `find`, `wc`, common readonly `curl` GET/HEAD fetches with safe flags only, and project-local `cat` / `rg` / `grep` / `sed -n` reads when the target file is small enough and not under `.env*` or `secrets/**`.
+- Replaceable bash inspections that already map to internal tools are blocked instead of auto-approved: simple `git status|diff|log`, project-local `cat`, `rg` / `grep`, `sed -n` line reads, and supported readonly `curl` fetches that can be safely represented through `web_fetch`.
+- Safe readonly bash fallback scopes may auto-approve in `build` mode only when there is no equivalent internal tool path: `pwd`, `ls`, `find`, and `wc`.
 - macOS native write-sandbox denials may be retried without the native write sandbox only after an explicit `sandbox_bypass` permission prompt.
 - Explicit command paths outside the project may be retried only after an explicit `sandbox_bypass` permission prompt. Dangerous-command checks still apply.
 - Repeated `bash` and `sandbox_bypass` approvals are cached by reviewed scope for the current in-memory session only. Simple read-only commands may use a narrow path scope; complex or side-effectful commands use exact-command scope.
@@ -24,6 +25,7 @@
 ## Retrieval
 - `mcp` stays default-allowed.
 - `web_search` is default-allowed and continues to return structured citations, fixture/live metadata, and Tavily-only live results when configured.
+- `web_fetch` is default-allowed for bounded GET/HEAD requests over `http`/`https`, with safe headers only, no implicit redirect following unless requested, and a truncated response body excerpt.
 
 ## Context
 - Token count is estimated with a local mixed-language heuristic: CJK characters count as 0.6 tokens and other characters count as 0.3 tokens.

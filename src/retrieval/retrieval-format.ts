@@ -1,4 +1,4 @@
-import type { CitedSource, McpResource, WebSearchResult } from "./index"
+import type { CitedSource, McpResource, WebFetchResult, WebSearchResult } from "./index"
 
 export function mcpCitation(resource: McpResource): CitedSource {
   return {
@@ -17,6 +17,16 @@ export function webCitation(result: WebSearchResult): CitedSource {
     title: result.title,
     url: result.url,
     retrievedAt: result.retrievedAt ?? new Date().toISOString(),
+  }
+}
+
+export function webFetchCitation(result: WebFetchResult): CitedSource {
+  return {
+    type: "web",
+    id: result.finalUrl,
+    title: result.title,
+    url: result.finalUrl,
+    retrievedAt: result.retrievedAt,
   }
 }
 
@@ -41,6 +51,26 @@ export function formatWebResults(results: WebSearchResult[]) {
     const source = result.source ? `\nsource: ${result.source}` : ""
     return `[web:${index + 1}] ${result.title}\nurl: ${result.url}${source}${retrievedAt}\nsnippet: ${result.snippet}`
   }).join("\n\n")
+}
+
+export function formatWebFetchResult(result: WebFetchResult) {
+  const lines = [
+    `[web_fetch] ${result.method} ${result.url}`,
+    `finalUrl: ${result.finalUrl}`,
+    `status: ${result.status}${result.statusText ? ` ${result.statusText}` : ""}`,
+  ]
+  if (result.contentType) lines.push(`contentType: ${result.contentType}`)
+  if (result.contentLength !== undefined) lines.push(`contentLength: ${result.contentLength}`)
+  lines.push(`retrievedAt: ${result.retrievedAt}`)
+  const headers = Object.entries(result.headers)
+  if (headers.length > 0) {
+    lines.push("headers:")
+    for (const [name, value] of headers) lines.push(`${name}: ${value}`)
+  }
+  lines.push("body:")
+  lines.push(result.excerpt || "(no body)")
+  if (result.truncated) lines.push("[web_fetch] body truncated to maxBytes")
+  return lines.join("\n")
 }
 
 export function rankResources(resources: McpResource[], query: string | undefined) {

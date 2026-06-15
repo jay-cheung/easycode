@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { DeepSeekProvider, OpenAICompatibleProvider, OpenAIProvider } from "../../src/provider"
 import { clampSubagentRoute, resolveSubagentRoute } from "../../src/agent/subagent-routing"
+import { suggestedCoordinatorSubagentRole } from "../../src/agent/subagent-runtime"
 import { defaultSessionSettings } from "../../src/settings"
 
 describe("subagent routing", () => {
@@ -12,7 +13,7 @@ describe("subagent routing", () => {
       role: "explorer",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 2,
+      maxProviderCalls: 6,
     })
     expect(resolveSubagentRoute({ role: "summary", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "summary",
@@ -25,25 +26,25 @@ describe("subagent routing", () => {
       role: "reviewer",
       thinking: true,
       effort: "medium",
-      maxProviderCalls: 2,
+      maxProviderCalls: 3,
     })
     expect(resolveSubagentRoute({ role: "debugger", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "debugger",
       thinking: true,
       effort: "high",
-      maxProviderCalls: 3,
+      maxProviderCalls: 5,
     })
     expect(resolveSubagentRoute({ role: "tester", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "tester",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 2,
+      maxProviderCalls: 3,
     })
     expect(resolveSubagentRoute({ role: "docs_researcher", provider: "openai", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "docs_researcher",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 2,
+      maxProviderCalls: 5,
     })
   })
 
@@ -55,7 +56,7 @@ describe("subagent routing", () => {
       role: "tester",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 2,
+      maxProviderCalls: 3,
     })
     expect(resolveSubagentRoute({ role: "summary", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "summary",
@@ -68,25 +69,25 @@ describe("subagent routing", () => {
       role: "reviewer",
       thinking: true,
       effort: "high",
-      maxProviderCalls: 2,
+      maxProviderCalls: 3,
     })
     expect(resolveSubagentRoute({ role: "debugger", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "debugger",
       thinking: true,
       effort: "max",
-      maxProviderCalls: 3,
+      maxProviderCalls: 5,
     })
     expect(resolveSubagentRoute({ role: "explorer", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "explorer",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 2,
+      maxProviderCalls: 6,
     })
     expect(resolveSubagentRoute({ role: "docs_researcher", provider: "deepseek", model: provider.model, capabilities: provider.capabilities, settings })).toMatchObject({
       role: "docs_researcher",
       thinking: false,
       effort: undefined,
-      maxProviderCalls: 2,
+      maxProviderCalls: 5,
     })
   })
 
@@ -138,5 +139,19 @@ describe("subagent routing", () => {
       maxProviderCalls: 3,
       maxOutputTokens: 512,
     })
+  })
+
+  test("delegation gate suggests docs and explorer roles for single retrieval turns too", () => {
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_1", name: "web_fetch", input: { url: "https://example.com" } },
+    ])).toBe("docs_researcher")
+
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_2", name: "read", input: { filePath: "src/add.ts" } },
+    ])).toBe("explorer")
+
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_3", name: "delegate_subagent", input: { role: "explorer", task: "inspect" } },
+    ])).toBeUndefined()
   })
 })

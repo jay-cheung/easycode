@@ -100,9 +100,11 @@ describe("tui renderer", () => {
     renderer.event({ type: "run_done", status: "completed" })
     renderer.finish()
 
-    expect(output).toContain("Subagent scheduled role=summary")
-    expect(output).toContain("Subagent summary completed")
-    expect(output).toContain("Round Subagent Calls: 1")
+    expect(output).toContain("Subagent scheduled id=1, role=summary")
+    expect(output).toContain("Subagent #1 summary completed")
+    expect(output).toContain("Round Subagent Invocations: 1")
+    expect(output).toContain("Round Subagent Detail: summary x1")
+    expect(output).toContain("Round Subagent Turns: 1")
     expect(output).toContain("Round Subagent Tokens: 160")
     expect(output).toContain("Execution Completed")
     expect(output).not.toContain("[status] completed")
@@ -161,7 +163,7 @@ describe("tui renderer", () => {
       "en",
       1,
       { provider: "fake", model: "fake", calls: 66, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, totalTokens: 0, reasoningTokens: 0, hitRate: 0, providerElapsedMs: 1, firstResponseMs: 1, outputTokensPerSecond: 0, effectiveCost: 0, rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 } },
-      { inputTokens: 0, outputTokens: 0, calls: 0 },
+      { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, roleCounts: {} },
       { inputTokens: 0, outputTokens: 0, calls: 0, subagentInputTokens: 0, subagentOutputTokens: 0, subagentCalls: 0 },
       "Stopped after maxSteps (66).\nContinue with another message to keep going.",
       72,

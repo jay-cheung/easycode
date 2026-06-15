@@ -252,7 +252,9 @@ export function defaultPermissionAutoReviewer(request: PermissionRequest): Permi
   if (request.permission !== "bash") return undefined
   if (request.metadata.rememberOnApprove !== true) return undefined
   if (typeof request.metadata.command === "string" && containsSensitivePath(request.metadata.command)) return undefined
-  if (!request.patterns.every(isAutoApprovedReadonlyBashPattern)) return undefined
+  const tool = typeof request.metadata.tool === "string" ? request.metadata.tool : "bash"
+  const matcher = tool === "bash" ? isAutoApprovedReadonlyFallbackBashPattern : isAutoApprovedReadonlyInternalToolPattern
+  if (!request.patterns.every(matcher)) return undefined
   return "once"
 }
 
@@ -260,8 +262,12 @@ function isSafeSkillName(value: string) {
   return Boolean(value) && !value.includes("..") && !value.includes("\\") && !value.startsWith("/")
 }
 
-function isAutoApprovedReadonlyBashPattern(pattern: string) {
-  return /^bash:readonly:(git:(?:status|diff|log)|pwd|ls|find|wc|cat|rg|grep|sed|curl:(?:get|head)):/i.test(pattern)
+function isAutoApprovedReadonlyFallbackBashPattern(pattern: string) {
+  return /^bash:readonly:(pwd|ls|find|wc):/i.test(pattern)
+}
+
+function isAutoApprovedReadonlyInternalToolPattern(pattern: string) {
+  return /^bash:readonly:/i.test(pattern)
 }
 
 function containsSensitivePath(value: string) {
@@ -288,6 +294,7 @@ export function defaultPermissionRules(mode: "build" | "plan"): PermissionRule[]
     { permission: "skill", pattern: "*", action: "ask" },
     { permission: "mcp", pattern: "*", action: "allow" },
     { permission: "web_search", pattern: "*", action: "allow" },
+    { permission: "web_fetch", pattern: "*", action: "allow" },
     { permission: "delegate_subagent", pattern: "*", action: mode === "build" ? "allow" : "deny" },
     { permission: "plan_exit", pattern: "*", action: "allow" },
     { permission: "plan_step_complete", pattern: "*", action: mode === "build" ? "allow" : "deny" },

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, StreamXmlFilter, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
-import { imagePart, messagesToProviderInput, textMessage, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
+import { createMessage, imagePart, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 import type { Provider, ProviderEvent } from "../../src/provider"
 
@@ -371,6 +371,36 @@ describe("provider", () => {
             messages: [
               { role: "assistant", content: null, reasoning_content: "I should inspect files.", tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\": .}" } }] },
               { role: "tool", tool_call_id: "call_1", content: "README.md" },
+              { role: "user", content: "继续" },
+            ],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
+  test("preserves full assistant reasoning history in DeepSeek thinking replay", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
+      const reasoning = "r".repeat(3_000)
+      const history = messagesToProviderInput([
+        createMessage("assistant", [reasoningPart(reasoning), textPart("Need intraday data first.")]),
+        textMessage("user", "继续"),
+      ])
+      const stream = provider.stream({ mode: "build", prompt: "继续", messages: [], providerMessages: history, tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            messages: [
+              { role: "assistant", content: "Need intraday data first.", reasoning_content: reasoning },
               { role: "user", content: "继续" },
             ],
           },

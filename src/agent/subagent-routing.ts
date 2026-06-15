@@ -22,17 +22,17 @@ const reasoningOrder: ReasoningEffort[] = ["low", "medium", "high", "max"]
 
 const defaultSubagentPresets: Record<SubagentRole, SubagentExecutionPreset> = {
   summary: { thinking: true, effort: "low", maxProviderCalls: 2 },
-  explorer: { thinking: false, maxProviderCalls: 2 },
-  reviewer: { thinking: true, effort: "medium", maxProviderCalls: 2 },
-  debugger: { thinking: true, effort: "high", maxProviderCalls: 3 },
-  tester: { thinking: false, maxProviderCalls: 2 },
-  docs_researcher: { thinking: false, maxProviderCalls: 2 },
+  explorer: { thinking: false, maxProviderCalls: 6 },
+  reviewer: { thinking: true, effort: "medium", maxProviderCalls: 3 },
+  debugger: { thinking: true, effort: "high", maxProviderCalls: 5 },
+  tester: { thinking: false, maxProviderCalls: 3 },
+  docs_researcher: { thinking: false, maxProviderCalls: 5 },
 }
 
 const deepSeekSubagentPresets: Partial<Record<SubagentRole, SubagentExecutionPreset>> = {
   summary: { thinking: true, effort: "high", maxProviderCalls: 2 },
-  reviewer: { thinking: true, effort: "high", maxProviderCalls: 2 },
-  debugger: { thinking: true, effort: "max", maxProviderCalls: 3 },
+  reviewer: { thinking: true, effort: "high", maxProviderCalls: 3 },
+  debugger: { thinking: true, effort: "max", maxProviderCalls: 5 },
 }
 
 export function resolveSubagentRoute(input: {
