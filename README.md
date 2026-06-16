@@ -211,6 +211,14 @@ EasyCode 支持三种执行策略：普通模式、Plan 模式、Goal 模式。
 - 选**Plan 模式**：改动范围较大、可能触及关键路径、你希望先看见计划。
 - 选**Goal 模式**：边界较宽、存在探索性决策、需要持续对齐目标进度。
 
+### 精简版（双语 / Quick Reference）
+- **普通模式 / Normal mode**：直接执行、最少干预，适合小范围改动。  
+  *Execute directly with minimal intervention; best for small, low-risk tasks.*
+- **Plan 模式 / Plan mode**：先给出计划再执行，适合高风险/跨文件改动。  
+  *Submit a plan before execution; suited for high-risk, cross-file changes.*
+- **Goal 模式 / Goal mode**：按目标持续推进，适合长期探索和复杂任务。  
+  *Progress towards an explicit goal continuously; best for iterative complex work.*
+
 ---
 
 ## 🧪 统一验证与质量控制 / Quality Gate
