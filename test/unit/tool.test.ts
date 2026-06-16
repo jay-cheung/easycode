@@ -941,6 +941,43 @@ describe("tool", () => {
     expect(commit.output).toContain("unrelated staged files")
   })
 
+  test("git_branch read stays readonly while create requires explicit approval", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await git(root, ["init"])
+    const requested: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(request.patterns.join(","))
+      return "reject"
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox: new Sandbox(root), permission, skills: new SkillService(root), messages: [] }
+
+    const current = await registry.run("git_branch", {}, ctx)
+    const created = await registry.run("git_branch", { create: true, name: "feature/test" }, ctx)
+
+    expect(current.metadata.status).toBe("succeeded")
+    expect(current.metadata.permissionAction).toBe("allow")
+    expect(created.metadata.status).toBe("denied")
+    expect(requested).toEqual(["bash:scoped:git:branch:create:explicit-name"])
+  })
+
+  test("git_branch create is rejected in plan mode", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await git(root, ["init"])
+
+    const result = await registry.run("git_branch", { create: true, name: "feature/test" }, {
+      agentMode: "plan",
+      sandbox: new Sandbox(root),
+      permission: PermissionService.autoApprove(defaultPermissionRules("plan")),
+      skills: new SkillService(root),
+      messages: [],
+    })
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.output).toContain("not available in plan mode")
+  })
+
   test("bash keeps command output out of metadata", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
@@ -1044,6 +1081,30 @@ describe("tool", () => {
 
     expect(pwdResult.metadata.status).toBe("succeeded")
     expect(pwdResult.metadata.permissionAction).toBe("allow")
+  })
+
+  test("auto reviewer approves bounded verification bash commands", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+      throw new Error("manual prompt should not be reached")
+    }, defaultPermissionAutoReviewer)
+
+    const result = await registry.run("bash", { command: "bun run typecheck" }, {
+      agentMode: "build",
+      sandbox,
+      permission,
+      skills: new SkillService(root),
+      messages: [],
+    })
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.permissionAction).toBe("allow")
   })
 
   test("non-autoapproved git bash still requires manual approval", async () => {

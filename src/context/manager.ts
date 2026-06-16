@@ -71,7 +71,7 @@ export class ContextManager implements ContextManagerLike {
   }
 
   estimate(messages: Message[]) {
-    return estimateTextTokens(messagesToProviderInput(messages).map((message) => message.content).join("\n"))
+    return estimateTextTokens(messagesToProviderInput(messages, { toolResultTokenBudget: this._strategyState.toolResultTokenBudget }).map((message) => message.content).join("\n"))
   }
 
   recordUsage(inputTokens: number) {
@@ -107,6 +107,7 @@ export class ContextManager implements ContextManagerLike {
       preserveRecentUserTurns: this.preserveRecentUserTurns,
       ledger: this.state.ledger,
       summary: this.state.summary,
+      toolResultTokenBudget: this._strategyState.toolResultTokenBudget,
     })
     if (this.state.summary && snapshot.compactedMessageCount === 0) {
       const preserved = recentProviderMessageSuffix(this.state.messages, this.compactPreserveTokens)
@@ -180,6 +181,7 @@ export class ContextManager implements ContextManagerLike {
       ...(input ?? {}),
       summary: this.state.summary,
       messages: this.state.messages,
+      toolResultTokenBudget: this._strategyState.toolResultTokenBudget,
     })
   }
 
@@ -188,7 +190,7 @@ export class ContextManager implements ContextManagerLike {
   }
 
   private recalculateTokenEstimate() {
-    const messageProviderInput = messagesToProviderInput(this.state.messages)
+    const messageProviderInput = messagesToProviderInput(this.state.messages, { toolResultTokenBudget: this._strategyState.toolResultTokenBudget })
     const messageTokens = estimateTextTokens(messageProviderInput.map((message) => message.content).join("\n"))
     this.state.tokenEstimate = messageTokens + estimateSummaryTokens(this.state.summary)
   }

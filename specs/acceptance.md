@@ -54,7 +54,7 @@
 - Dangerous bash commands fail.
 - Replaceable bash inspections that already have internal tool coverage fail fast with a structured hint to use the matching internal tool instead.
 - Replaceable bash `curl` fetches fail fast only when they are safely representable as readonly `web_fetch` calls, including a translated suggestion for the supported flags.
-- Only non-replaceable readonly bash fallback scopes can auto-approve without a manual prompt; unsafe, side-effectful, or replaceable bash commands still require review or fail.
+- Only narrowly-bounded bash scopes can auto-approve without a manual prompt: non-replaceable readonly fallback scopes, plus the exact verification/test allowlist. Unsafe, side-effectful, or replaceable bash commands still require review or fail.
 - Native write-sandbox bypass and explicit outside-path bypass require a risk prompt and user approval.
 - Repeated approved bash commands reuse the current session approval and do not prompt again.
 - Bash timeout returns structured metadata.

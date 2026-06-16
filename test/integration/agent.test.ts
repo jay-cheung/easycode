@@ -374,6 +374,27 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("fails gracefully and emits run_done when provider throws a generic connection error", async () => {
+    const root = await fixture()
+    const uiEvents: RunUiEvent[] = []
+    const result = await new AgentRunner({
+      root,
+      provider: {
+        name: "test-provider",
+        async *stream(): AsyncIterable<ProviderEvent> {
+          throw new Error("The socket connection was closed unexpectedly.")
+        },
+      },
+      onEvent: (event) => uiEvents.push(event),
+    }).run("Fix", "build")
+
+    expect(result.status).toBe("failed")
+    expect(result.text).toContain("The socket connection was closed unexpectedly.")
+    expect(uiEvents).toContainEqual(expect.objectContaining({ type: "failure", source: "provider", category: "network" }))
+    expect(uiEvents).toContainEqual(expect.objectContaining({ type: "run_done", status: "failed" }))
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("logs streamed provider failures as errors and output", async () => {
     const root = await fixture()
     const events: LogEvent[] = []
@@ -850,6 +871,7 @@ describe("agent integration", () => {
     const provider: Provider = {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
+        yield { type: "reasoning_delta", text: "loop reasoning ".repeat(500) }
         yield { type: "tool_call", call: { id: "call_sleep", name: "bash", input: { command: "sleep 5" } } }
         yield { type: "done" }
       },
@@ -864,6 +886,10 @@ describe("agent integration", () => {
 
     expect(result.status).toBe("cancelled")
     expect(result.text).toContain("Run cancelled by user.")
+    const lastMessage = result.messages.at(-1)
+    const savedReasoning = lastMessage?.parts.find((part) => part.type === "reasoning")?.text ?? ""
+    expect(savedReasoning.length).toBeLessThan(2_000)
+    expect(savedReasoning).toContain("[truncated")
     expect(events.some((event) => event.type === "tool_progress")).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
@@ -1780,6 +1806,146 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("coordinator delegation gate stops after repeated ignored corrections", async () => {
+    const root = await fixture()
+    let providerTurns = 0
+    const provider: Provider = {
+      name: "gated-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        providerTurns += 1
+        if (input.prompt === "Ignore delegation gate for web fetch") {
+          yield { type: "tool_call", call: { id: `call_fetch_${providerTurns}`, name: "web_fetch", input: { url: "https://example.com/data.json" } } }
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Ignore delegation gate for web fetch", "build")
+
+    expect(result.status).toBe("failed")
+    expect(providerTurns).toBe(3)
+    expect(result.text).toContain("Validation gate failed repeatedly")
+    expect(result.text).toContain("docs_researcher")
+    expect(toolResults(result.messages).some((part) => part.toolName === "web_fetch")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("plan-step delegation gate does not block direct coordinator tools when the assigned subagent role is exhausted", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_exhausted_explorer",
+      title: "Inspect despite exhausted explorer budget",
+      lowRisk: true,
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect src/add.ts with an explorer subagent",
+          kind: "inspect",
+          executorHint: "subagent",
+          subagentRole: "explorer",
+          doneWhen: "The current implementation is identified.",
+        },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    let runner: AgentRunner
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        if (input.prompt === "Inspect even if explorer is exhausted") {
+          ;(runner as any).subagentUsage.byRole.explorer = roleInvocationLimit("explorer")
+          if (!results.some((result) => result.tool === "read")) {
+            yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
+            return
+          }
+          yield { type: "tool_call", call: { id: "call_step_complete", name: "plan_step_complete", input: { summary: "Coordinator inspected src/add.ts directly after explorer exhaustion." } } }
+        }
+      },
+    }
+
+    runner = new AgentRunner({ root, provider, context })
+    const result = await runner.run("Inspect even if explorer is exhausted", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read", "plan_step_complete"])
+    expect(result.text).toContain("All steps in plan Inspect despite exhausted explorer budget completed successfully!")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("coordinator delegation gate does not force delegate_subagent when the suggested role is exhausted", async () => {
+    const root = await fixture()
+    let runner: AgentRunner
+    const provider: Provider = {
+      name: "gated-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        if (input.prompt === "Inspect add when explorer is exhausted") {
+          ;(runner as any).subagentUsage.byRole.explorer = roleInvocationLimit("explorer")
+          if (!results.some((result) => result.tool === "read")) {
+            yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
+            return
+          }
+          yield { type: "text_delta", text: "Coordinator used direct inspection because explorer delegation was unavailable." }
+        }
+      },
+    }
+
+    runner = new AgentRunner({ root, provider })
+    const result = await runner.run("Inspect add when explorer is exhausted", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["read"])
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("coordinator receives the full delegate_subagent summary even when the raw result is truncated", async () => {
+    const root = await fixture()
+    const summary = "FULL_SUMMARY_" + "z".repeat(64)
+    let providerSawFullSummary = false
+    let providerSawTruncatedRawResult = false
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const resultSeen = toolResults(input.messages).some((part) => part.toolName === "delegate_subagent")
+        if (input.prompt === "Use a large explorer result") {
+          if (!resultSeen) {
+            yield {
+              type: "tool_call",
+              call: {
+                id: "call_delegate",
+                name: "delegate_subagent",
+                input: { role: "explorer", task: "Return a very large structured finding", success_criteria: "Return the full evidence summary." },
+              },
+            }
+            return
+          }
+          const serializedMessages = input.providerMessages.map((message) => message.content).join("\n")
+          providerSawFullSummary = serializedMessages.includes(summary) && serializedMessages.includes("<coordinator_summary>")
+          providerSawTruncatedRawResult = serializedMessages.includes("[truncated")
+          yield { type: "text_delta", text: providerSawFullSummary && providerSawTruncatedRawResult ? "Coordinator saw the full delegated summary." : "Coordinator missed the delegated summary." }
+          return
+        }
+        if (input.prompt === "Return a very large structured finding") {
+          yield { type: "text_delta", text: `${"subagent evidence ".repeat(500)}${summary}` }
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider }).run("Use a large explorer result", "build")
+
+    expect(result.status).toBe("completed")
+    expect(providerSawFullSummary).toBe(true)
+    expect(providerSawTruncatedRawResult).toBe(true)
+    expect(result.text).toContain("Coordinator saw the full delegated summary.")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("subagent logs and transcripts are written to separate files", async () => {
     const root = await fixture()
     const logger = createLogger({ root, session: "alpha" })
@@ -1854,6 +2020,46 @@ describe("agent integration", () => {
     expect(result.status).toBe("completed")
     expect(result.usedTools).toContain("delegate_subagent")
     expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Mutating bash was blocked."))).toBe(true)
+    expect(await Bun.file(path.join(root, "debug-side-effect.txt")).exists()).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("subagent stops repeated deterministic bash denials with structured handoff metadata", async () => {
+    const root = await fixture()
+    const logs: LogEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output, status: part.status }))
+        if (input.prompt === "Use a debugger subagent that repeats denied bash") {
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "debugger", task: "Try the same denied shell mutation twice and report blocker metadata.", success_criteria: "Return a handoff when bash remains denied." } } }
+            return
+          }
+          const delegateResult = results.find((result) => result.tool === "delegate_subagent")
+          expect(delegateResult?.status).toBe("succeeded")
+          expect(delegateResult?.output).toContain('"status": "handoff"')
+          expect(delegateResult?.output).toContain('"blockerClass": "permission_denied"')
+          expect(delegateResult?.output).toContain('"retryable": false')
+          yield { type: "text_delta", text: "Coordinator observed the debugger handoff." }
+          return
+        }
+        if (input.prompt === "Try the same denied shell mutation twice and report blocker metadata.") {
+          yield { type: "tool_call", call: { id: `call_bash_${results.length}`, name: "bash", input: { command: "touch debug-side-effect.txt" } } }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger: (event) => logs.push(event) }).run("Use a debugger subagent that repeats denied bash", "build")
+
+    expect(result.status).toBe("completed")
+    const delegateTool = toolResults(result.messages).find((part) => part.toolName === "delegate_subagent")
+    expect(delegateTool?.metadata?.subagentStatus).toBe("handoff")
+    expect(delegateTool?.metadata?.blockerClass).toBe("permission_denied")
+    expect(delegateTool?.metadata?.retryable).toBe(false)
+    expect(delegateTool?.metadata?.recommendedNextRole).toBeUndefined()
+    expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "subagent.failure_fuse", detail: expect.objectContaining({ role: "debugger", blockerClass: "permission_denied", retryable: false }) }))
     expect(await Bun.file(path.join(root, "debug-side-effect.txt")).exists()).toBe(false)
     await rm(root, { recursive: true, force: true })
   })

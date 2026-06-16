@@ -112,6 +112,20 @@ describe("timeline renderer", () => {
     expect(output).toContain("✓ Subagent #1 summary completed (1.5s), calls=1, input_tokens=120, output_tokens=40")
   })
 
+  test("renders provider failures separately from answer text", () => {
+    let output = ""
+    const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })
+
+    renderer.event({ type: "text_delta", text: "Model partial answer." })
+    renderer.event({ type: "failure", text: "The socket connection was closed unexpectedly.", source: "provider", category: "network" })
+    renderer.finish()
+
+    expect(output).toContain("● Answer")
+    expect(output).toContain("Model partial answer.")
+    expect(output).toContain("● Network Error")
+    expect(output).toContain("The socket connection was closed unexpectedly.")
+  })
+
   test("renders provider metrics with APIx usage and latency labels", () => {
     let output = ""
     const renderer = new TimelineRenderer({ write: (text) => { output += text }, isTTY: false })

@@ -47,7 +47,7 @@ export function buildSubagentTaskPrompt(request: SubagentTaskPacket, ledgerText:
   const stableSections = [
     `Role: ${request.role}`,
     roleContract(request.role),
-    "Execution Contract:\nUse the allowed tools internally, but return only a coordinator-facing conclusion. Prefer completing the task in this single delegation. Do not ask for follow-up unless the task is under-specified or blocked by permissions.",
+    "Execution Contract:\nUse the allowed tools internally, but return only a coordinator-facing conclusion. Prefer completing the task in this single delegation. Public HTTP/API/data-source retrieval should use web_fetch/web_search or connector/MCP tools before bash. If a deterministic tool failure occurs (permission denied, unavailable tool, invalid tool use, large read/output guard), do not retry the same tool/input; return a blocker handoff with the blocker class, retryability, and a recommended next role/tool.",
     "Output Contract:\nReturn a concise structured summary with: status, summary, findings, evidenceRefs, artifacts, nextAction. evidenceRefs must be short file/command/symbol/log references, not full tool logs.",
     "Do not answer the user directly. Do not repeat the full prompt. Do not include generic process narration.",
   ]
@@ -68,15 +68,15 @@ function roleContract(role: SubagentTaskPacket["role"]) {
     case "summary":
       return "Role Contract:\nCompress context aggressively. Preserve only decisions, constraints, current state, files, commands, and unresolved blockers."
     case "explorer":
-      return "Role Contract:\nFind facts quickly with read/search tools. Return exact files, symbols, and evidence snippets. Do not propose code changes unless asked."
+      return "Role Contract:\nCollect repo-local facts only: files, symbols, configs, diffs, and logs. Use read/search/navigation tools, return exact files/symbols/evidence snippets, and do not use bash for public HTTP/API/data retrieval."
     case "reviewer":
       return "Role Contract:\nReview for concrete bugs, regressions, missing tests, and risk. Lead with findings and file references."
     case "debugger":
-      return "Role Contract:\nDiagnose failures using bounded read/search and allowed verification commands. Return root cause, evidence, and minimal recovery."
+      return "Role Contract:\nDiagnose only after a concrete failure signal exists. Use bounded read/search and allowed diagnostic commands to isolate root cause. Do not act as a generic command runner or public data fetcher."
     case "tester":
-      return "Role Contract:\nRun or design bounded verification. Return commands, pass/fail status, and the smallest failing signal."
+      return "Role Contract:\nRun or design bounded tests, builds, gates, and assertion checks. Return commands, pass/fail status, and the smallest failing signal."
     case "docs_researcher":
-      return "Role Contract:\nResearch external or MCP-backed docs. Return source-backed facts and links/paths. Avoid broad summaries."
+      return "Role Contract:\nResearch external docs, public HTTP/API data, MCP resources, and connector-backed evidence. Prefer web_fetch for known URLs/API endpoints and web_search for discovery. Return source-backed facts and links/paths."
   }
 }
 

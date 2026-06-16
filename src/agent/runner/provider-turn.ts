@@ -23,7 +23,7 @@ export type ProviderTurnResult = {
     | { type: "reasoning_delta"; text: string }
     | { type: "text_delta"; text: string }
     | { type: "tool_call"; call: ToolCall }
-    | { type: "failure"; text: string }
+    | { type: "failure"; text: string; source?: "provider" | "system"; category?: "network" | "api" | "validation" | "runtime" }
   >
 }
 
@@ -112,10 +112,10 @@ export async function runProviderTurnStream(
       if (event.type === "failure") {
         stopProviderProgress()
         failureText = failureFormatter(event.error.output || event.error.message)
-        replayEvents.push({ type: "failure", text: failureText })
+        const classified = classifyProviderFailure(event.error)
+        replayEvents.push({ type: "failure", text: failureText, source: "provider", category: classified.category })
         if (emitDeltas) {
-          deps.onEvent?.({ type: "failure", text: failureText })
-          deps.onTextDelta?.(failureText)
+          deps.onEvent?.({ type: "failure", text: failureText, source: "provider", category: classified.category })
         }
       }
       if (event.type === "tool_call") {
@@ -135,10 +135,15 @@ export async function runProviderTurnStream(
     return extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, replayEvents }, emitDeltas, deps)
   } catch (error) {
     if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
-    if (!(error instanceof ProviderError)) throw error
-    const formattedFailure = failureFormatter(providerFailureText(error))
-    replayEvents.push({ type: "failure", text: formattedFailure })
-    if (emitDeltas) deps.onEvent?.({ type: "failure", text: formattedFailure })
+    const message = error instanceof ProviderError
+      ? providerFailureText(error)
+      : error instanceof Error
+        ? error.message
+        : String(error)
+    const formattedFailure = failureFormatter(message)
+    const classified = classifyProviderFailure({ message, output: message })
+    replayEvents.push({ type: "failure", text: formattedFailure, source: "provider", category: classified.category })
+    if (emitDeltas) deps.onEvent?.({ type: "failure", text: formattedFailure, source: "provider", category: classified.category })
     return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText: formattedFailure, replayEvents }
   } finally {
     finishProviderMetricCall(input.providerMetrics, metricCall)
@@ -165,8 +170,7 @@ export function emitProviderTurnEvents(turn: ProviderTurnResult, handlers: Pick<
       handlers.onEvent?.({ type: "tool_call", call: event.call })
       continue
     }
-    handlers.onEvent?.({ type: "failure", text: event.text })
-    handlers.onTextDelta?.(event.text)
+    handlers.onEvent?.({ type: "failure", text: event.text, source: event.source, category: event.category })
   }
 }
 
@@ -210,6 +214,20 @@ function startProviderProgressTimer(
 
 function providerFailureText(error: ProviderError) {
   return error.output?.trim() || error.message
+}
+
+function classifyProviderFailure(error: { code?: string; message: string; output: string }) {
+  const code = (error.code ?? "").toLowerCase()
+  const text = `${error.message}\n${error.output}`.toLowerCase()
+  if (
+    /\b(econnrefused|econnreset|enotfound|eai_again|etimedout|timeout|timed out|connection refused|connection reset|network request failed|fetch failed|socket hang up|socket connection|tls|ssl|certificate|unable to get local issuer certificate)\b/.test(text)
+  ) {
+    return { category: "network" as const }
+  }
+  if (/\b(quota|rate_limit|insufficient_quota|invalid_api_key|unauthorized|forbidden|payment_required)\b/.test(code) || /\b(quota exceeded|rate limit|unauthorized|forbidden)\b/.test(text)) {
+    return { category: "api" as const }
+  }
+  return { category: "runtime" as const }
 }
 
 function appendOutput(output: string, part: string) {

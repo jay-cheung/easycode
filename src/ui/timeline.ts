@@ -56,7 +56,7 @@ export type RunUiEvent =
   | { type: "tool_call"; call: ToolCall }
   | { type: "tool_progress"; callID: string; toolName: string; elapsedMs: number }
   | { type: "tool_result"; callID: string; toolName: string; title: string; status: string; output: string; durationMs?: number }
-  | { type: "failure"; text: string }
+  | { type: "failure"; text: string; source?: "provider" | "system"; category?: "network" | "api" | "validation" | "runtime" }
   | { type: "run_done"; status: string }
 
 type Writable = {
@@ -207,8 +207,10 @@ export class TimelineRenderer {
     }
     if (event.type === "failure") {
       this.closeThought()
-      this.openAnswer()
-      this.answerMarkdown?.write(event.text)
+      this.closeAnswer()
+      const title = failureTitle(event)
+      const preview = previewOutput(event.text)
+      this.output.write(`\n${this.title("tool", `● ${title}`)}${preview ? `\n${indent(preview, "  ")}` : ""}\n`)
       return
     }
     if (event.type === "run_done") this.finish()
@@ -264,6 +266,13 @@ function formatSubagentInfo(info: SubagentUiInfo) {
   const effort = info.thinking ? `, effort=${info.effort ?? "none"}` : ""
   const maxOutputTokens = info.maxOutputTokens === undefined ? "" : `, max_output_tokens=${info.maxOutputTokens}`
   return `id=${info.id}, role=${info.role}, provider=${info.provider}${model}, thinking=${info.thinking ? "on" : "off"}${effort}, max_calls=${info.maxProviderCalls}${maxOutputTokens}`
+}
+
+function failureTitle(event: Extract<RunUiEvent, { type: "failure" }>) {
+  if (event.category === "network") return "Network Error"
+  if (event.category === "validation") return "Validation Retry"
+  if (event.source === "provider" || event.category === "api") return "Provider Error"
+  return "Failure"
 }
 
 class MarkdownLineRenderer {

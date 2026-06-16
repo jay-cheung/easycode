@@ -30,6 +30,16 @@ async function waitForOutput(getText: () => string, expected: string, timeoutMs 
   throw new Error(`Timed out waiting for output: ${expected}\nCurrent output:\n${getText()}`)
 }
 
+async function waitForOutputCount(getText: () => string, expected: string, count: number, timeoutMs = 2_000) {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < timeoutMs) {
+    const matches = getText().split(expected).length - 1
+    if (matches >= count) return
+    await new Promise((resolve) => setTimeout(resolve, 20))
+  }
+  throw new Error(`Timed out waiting for output count: ${expected} x${count}\nCurrent output:\n${getText()}`)
+}
+
 async function spawnCliForcedTTY(
   args: string[],
   steps: Array<{ waitFor: string; send: string; timeoutMs?: number }>,
@@ -511,7 +521,7 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("loop forever\n:exit\n")
+    child.stdin.write("loop forever\n\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
@@ -538,9 +548,14 @@ describe("cli integration", () => {
       stderr = text
     })
     child.stdin.write("delayed answer\n")
-    await waitForOutput(() => stdout, "Type /cancel to stop this run", 3_000)
+    await waitForOutputCount(() => stdout, "pprove & execute", 1, 3_000)
+    child.stdin.write("\n")
+    await waitForOutput(() => stdout, "repo_map prewarm cache hit", 3_000)
     child.stdin.write("queued-ok\n")
     await waitForOutput(() => stdout, "Delayed done.", 3_000)
+    await waitForOutputCount(() => stdout, "pprove & execute", 2, 3_000)
+    child.stdin.write("\n")
+    await waitForOutput(() => stdout, "Queued done.", 3_000)
     child.stdin.write(":exit\n")
     child.stdin.end()
     const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
@@ -563,6 +578,8 @@ describe("cli integration", () => {
       stderr: "pipe",
     })
     child.stdin.write("slow command\n")
+    await new Promise((resolve) => setTimeout(resolve, 120))
+    child.stdin.write("\n")
     await new Promise((resolve) => setTimeout(resolve, 120))
     child.stdin.write("/cancel\n:exit\n")
     child.stdin.end()
@@ -593,7 +610,9 @@ describe("cli integration", () => {
     })
 
     child.stdin.write("delayed answer\n")
-    await waitForOutput(() => stdout, "Type /cancel to stop this run", 3_000)
+    await waitForOutput(() => stdout, "pprove & execute", 3_000)
+    child.stdin.write("\n")
+    await waitForOutputCount(() => stdout, "Type /cancel to stop this run", 2, 3_000)
     process.kill(child.pid, "SIGINT")
 
     const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
@@ -619,7 +638,7 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("Read env configuration\nn\n:exit\n")
+    child.stdin.write("Read env configuration\n\nn\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
@@ -638,7 +657,7 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("Read env configuration\n/cancel\n:exit\n")
+    child.stdin.write("Read env configuration\n\n/cancel\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
@@ -926,13 +945,25 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
+    let stdout = ""
+    let stderr = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr, (text) => {
+      stderr = text
+    })
     child.stdin.write("/image pic.png\n")
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await waitForOutput(() => stdout, "Attached image:", 3_000)
     child.stdin.write("Describe it\n")
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await waitForOutput(() => stdout, "pprove & execute", 3_000)
+    child.stdin.write("\n")
+    await waitForOutput(() => stdout, "Image received.", 3_000)
     child.stdin.write(":exit\n")
     child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+    stderr = finalStderr
     expect(status).toBe(0)
     expect(stdout).toContain("Attached image:")
     expect(stdout).toContain("● Thought")
@@ -952,13 +983,25 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
+    let stdout = ""
+    let stderr = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr, (text) => {
+      stderr = text
+    })
     child.stdin.write("/image pic.png\n")
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await waitForOutput(() => stdout, "Attached image:", 3_000)
     child.stdin.write("Describe it\n")
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await waitForOutput(() => stdout, "pprove & execute", 3_000)
+    child.stdin.write("\n")
+    await waitForOutput(() => stdout, "Image received.", 3_000)
     child.stdin.write(":exit\n")
     child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+    stderr = finalStderr
     expect(status).toBe(0)
     expect(stdout).toContain("● Thought")
     expect(stdout).toContain("● Answer")

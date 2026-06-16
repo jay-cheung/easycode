@@ -130,6 +130,7 @@ export function toolResultMessage(input: {
 
 export const protectedToolResultRedaction = "[redacted: permission-gated tool result]"
 export const largeOutputLimit = 8_000
+export const defaultToolResultTokenBudget = 1_200
 const largeOutputHead = 4_000
 const largeOutputTail = 3_000
 const historyAssistantTextLimit = 4_000
@@ -137,7 +138,7 @@ const historyReasoningTextLimit = 1_500
 const historyPlanTextLimit = 3_000
 const historyToolExcerptLimit = 2_400
 const historyCanonicalVersion = 1
-type MessageTextOptions = { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean; largeOutputLimit?: number }
+type MessageTextOptions = { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean; largeOutputLimit?: number; toolResultTokenBudget?: number }
 
 export function isProtectedToolResult(part: MessagePart) {
   return part.type === "tool_result" && part.metadata.permissionAction === "ask"
@@ -274,6 +275,10 @@ function canonicalizeToolResultPart(part: ToolResultPart): ToolResultPart {
 }
 
 function compactToolResultOutput(part: ToolResultPart, rawOutput: string): { output: string; compacted: boolean; kind: string } {
+  if (part.toolName === "delegate_subagent") {
+    const output = compactDelegateSubagentOutput(rawOutput)
+    return { output, compacted: output !== rawOutput, kind: "delegate_subagent_compact" }
+  }
   if (part.toolName === "skill") return { output: compactSkillOutput(part, rawOutput), compacted: true, kind: "skill_compact" }
   if (part.toolName === "web_search") return { output: compactWebSearchOutput(part, rawOutput), compacted: true, kind: "web_search_compact" }
   if (part.toolName === "web_fetch") return { output: compactWebFetchOutput(part, rawOutput), compacted: true, kind: "web_fetch_compact" }
@@ -408,6 +413,10 @@ function compactLedgerOutput(_part: ToolResultPart, rawOutput: string) {
   return lines.join("\n")
 }
 
+function compactDelegateSubagentOutput(rawOutput: string) {
+  return truncateLargeOutput(rawOutput, true, historyToolExcerptLimit)
+}
+
 function compactExcerpt(text: string, options: { head: number; tail: number; limit: number }) {
   const trimmed = text.trim()
   if (!trimmed) return "(no output)"
@@ -417,7 +426,7 @@ function compactExcerpt(text: string, options: { head: number; tail: number; lim
 }
 
 function keyDiagnosticLines(text: string) {
-  const pattern = /(error|failed|failure|exception|traceback|fatal|denied|invalid|timeout|timed out|not found|permission|refused)/i
+  const pattern = /(error|failed|failure|exception|traceback|panic|fatal|denied|invalid|timeout|timed out|not found|permission|refused|assert)/i
   return uniqueStrings(text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && pattern.test(line))).slice(0, 6)
 }
 
@@ -483,7 +492,7 @@ export function partToText(part: MessagePart, options: MessageTextOptions = {}) 
   if (part.type === "summary") return `<summary>\n${part.text}\n</summary>`
   if (part.type === "tool_call") return `<tool_call name="${part.call.name}" id="${part.call.id}">${JSON.stringify(part.call.input)}</tool_call>`
   const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
-  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${truncateLargeOutput(output, options.truncateLargeOutputs, options.largeOutputLimit)}\n</tool_result>`
+  return `<tool_result name="${part.toolName}" id="${part.callID}" status="${part.status}">\n${renderToolResultOutputForProvider(part, output, options)}\n</tool_result>`
 }
 
 export function messageToText(message: Message, options: MessageTextOptions = {}) {
@@ -549,7 +558,7 @@ function providerParts(message: Message, options: MessageTextOptions) {
   return message.parts.map((part): MessagePart => {
     if (part.type === "tool_result") {
       const output = options.redactProtectedToolResults && isProtectedToolResult(part) ? protectedToolResultRedaction : part.output
-      return { ...part, output: truncateLargeOutput(output, options.truncateLargeOutputs, options.largeOutputLimit) }
+      return { ...part, output: renderToolResultOutputForProvider(part, output, options) }
     }
     if (message.role === "assistant" && part.type === "text") {
       return { ...part, text: truncateLargeOutput(part.text, options.truncateLargeOutputs, options.largeOutputLimit) }
@@ -563,4 +572,129 @@ function providerParts(message: Message, options: MessageTextOptions) {
 
 function imageSourceLabel(source: ImageSource) {
   return source.type === "url" ? source.url : source.path
+}
+
+function renderToolResultOutputForProvider(part: ToolResultPart, output: string, options: MessageTextOptions) {
+  const budgetChars = toolResultBudgetChars(options.toolResultTokenBudget)
+  const truncated = renderEvidenceFirstToolResult(part, output, budgetChars)
+  if (part.toolName !== "delegate_subagent") return truncated
+  const coordinatorSummary = stringMetadata(part.metadata, "coordinatorSummary")
+  if (!coordinatorSummary) return truncated
+  return `${truncated}\n<coordinator_summary>\n${coordinatorSummary}\n</coordinator_summary>`
+}
+
+function renderEvidenceFirstToolResult(part: ToolResultPart, output: string, budgetChars: number) {
+  const diagnostics = toolResultDiagnostics(part, output)
+  const partial = isPartialToolResult(part, output, budgetChars)
+  const hint = retrievalHint(part)
+  const omitted = omittedText(part, output, partial)
+  const evidenceLines = [
+    "<evidence>",
+    `status: ${partial ? "partial" : "complete"}`,
+    `source: ${part.toolName}`,
+    ...toolSourceLines(part).map((line) => shortInline(line, 180)),
+  ]
+  if (diagnostics.length > 0) {
+    evidenceLines.push("diagnostics:")
+    for (const line of diagnostics) evidenceLines.push(`- ${shortInline(line, 160)}`)
+  }
+  if (omitted) evidenceLines.push(`omitted: ${omitted}`)
+  if (partial) evidenceLines.push(`retrievalHint: ${hint}`)
+  evidenceLines.push("</evidence>", "excerpt:")
+  const evidence = evidenceLines.join("\n")
+  const remaining = Math.max(0, budgetChars - evidence.length - 1)
+  const excerpt = excerptForBudget(output, remaining, partial)
+  return `${evidence}\n${excerpt}`.slice(0, Math.max(budgetChars, evidence.length))
+}
+
+function toolResultBudgetChars(tokenBudget = defaultToolResultTokenBudget) {
+  return Math.max(300, Math.min(4_000, Math.floor(tokenBudget))) * 4
+}
+
+function isPartialToolResult(part: ToolResultPart, output: string, budgetChars: number) {
+  const rawLength = numberMetadata(part.metadata, "rawOutputLength")
+  const missingCoordinatorSummary = part.toolName === "delegate_subagent" && !stringMetadata(part.metadata, "coordinatorSummary")
+  return booleanMetadata(part.metadata, "truncated") === true ||
+    booleanMetadata(part.metadata, "historyCompacted") === true ||
+    missingCoordinatorSummary ||
+    (rawLength !== undefined && rawLength > output.length) ||
+    output.trim().length > budgetChars ||
+    /\[(?:truncated|history compacted):? /i.test(output)
+}
+
+function omittedText(part: ToolResultPart, output: string, partial: boolean) {
+  if (!partial) return undefined
+  const rawLength = numberMetadata(part.metadata, "rawOutputLength")
+  if (rawLength !== undefined && rawLength > output.length) return `${rawLength - output.length} chars`
+  const stdoutLength = numberMetadata(part.metadata, "stdoutRawLength")
+  const stderrLength = numberMetadata(part.metadata, "stderrRawLength")
+  const totalRaw = (stdoutLength ?? 0) + (stderrLength ?? 0)
+  if (totalRaw > output.length) return `${totalRaw - output.length} chars`
+  return "unknown"
+}
+
+function toolSourceLines(part: ToolResultPart) {
+  if (part.toolName === "bash") {
+    const command = stringMetadata(part.metadata, "command")
+    const exitCode = numberMetadata(part.metadata, "exitCode")
+    return [
+      ...(command ? [`command: ${command}`] : []),
+      ...(exitCode !== undefined ? [`exitCode: ${exitCode}`] : []),
+    ]
+  }
+  if (part.toolName === "read" || part.toolName === "read_lines") {
+    const filePath = stringMetadata(part.metadata, "filePath")
+    const startLine = numberMetadata(part.metadata, "startLine")
+    const endLine = numberMetadata(part.metadata, "endLine")
+    if (!filePath) return []
+    return [part.toolName === "read_lines" ? `path: ${filePath}:${startLine ?? "?"}-${endLine ?? "?"}` : `path: ${filePath}`]
+  }
+  if (part.toolName === "git_diff") {
+    const mode = stringMetadata(part.metadata, "mode")
+    const filePath = stringMetadata(part.metadata, "filePath")
+    return [`mode: ${mode ?? "summary"}`, ...(filePath ? [`path: ${filePath}`] : [])]
+  }
+  if (part.toolName === "delegate_subagent") {
+    const role = stringMetadata(part.metadata, "subagentRole")
+    const status = stringMetadata(part.metadata, "subagentStatus")
+    return [...(role ? [`role: ${role}`] : []), ...(status ? [`subagentStatus: ${status}`] : [])]
+  }
+  return []
+}
+
+function toolResultDiagnostics(part: ToolResultPart, output: string) {
+  return uniqueStrings([
+    ...stringArrayMetadata(part.metadata, "stdoutDiagnostics"),
+    ...stringArrayMetadata(part.metadata, "stderrDiagnostics"),
+    ...keyDiagnosticLines(output),
+  ]).slice(0, 5)
+}
+
+function retrievalHint(part: ToolResultPart) {
+  if (part.toolName === "bash") return "rerun a narrower command or filter logs around the diagnostic lines"
+  if (part.toolName === "read") return "use read_lines with a focused line range"
+  if (part.toolName === "read_lines") return "request a narrower adjacent line range"
+  if (part.toolName === "git_diff") return "use git_diff mode=file with a narrower path"
+  if (part.toolName === "delegate_subagent") return "review coordinator_summary first; redelegate with narrower success_criteria if evidence is insufficient"
+  return "rerun the tool with a narrower query or source"
+}
+
+function excerptForBudget(text: string, budgetChars: number, partial: boolean) {
+  const trimmed = text.trim()
+  if (!trimmed) return "(no output)"
+  if (budgetChars <= 0) return "(excerpt omitted by tool result budget)"
+  if (!partial && trimmed.length <= budgetChars) return trimmed
+  if (trimmed.length <= budgetChars) return trimmed
+  if (budgetChars < 160) return `${trimmed.slice(0, budgetChars)}`
+  const marker = "\n[tool result budget excerpt: middle omitted]\n"
+  const bodyBudget = Math.max(0, budgetChars - marker.length)
+  const head = Math.floor(bodyBudget * 0.55)
+  const tail = Math.max(0, bodyBudget - head)
+  return `${trimmed.slice(0, head)}${marker}${trimmed.slice(Math.max(0, trimmed.length - tail))}`
+}
+
+function stringArrayMetadata(metadata: Record<string, unknown>, key: string) {
+  const value = metadata[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim())
 }

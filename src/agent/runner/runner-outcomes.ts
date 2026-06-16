@@ -3,6 +3,7 @@ import type { ProviderMetricsAccumulator } from "../metrics"
 import type { RunUiEvent } from "../../ui/timeline"
 import type { ContextManagerLike } from "../../context"
 import type { RunAspect } from "../../instrumentation"
+import { canonicalizeAssistantHistory } from "../../message"
 import { appendOutput, assistantMessage } from "./runner-helpers"
 import { emitRunDoneEvent } from "./runner-events"
 
@@ -17,7 +18,8 @@ export function createCancelledRunResult(input: {
 }): AgentRunResult {
   const text = appendOutput((input.output ?? "Run cancelled by user.").trim(), "Continue with another message when ready.")
   input.onEvent?.({ type: "failure", text })
-  input.context.add(assistantMessage(input.reasoningTranscript, text))
+  const canonical = canonicalizeAssistantHistory(input.reasoningTranscript, text)
+  input.context.add(assistantMessage(canonical.reasoningText, canonical.text))
   const state = input.aspect.transition("cancelled", { usedTools: input.usedTools })
   emitRunDoneEvent(input.onEvent, "cancelled", input.providerMetrics)
   return {

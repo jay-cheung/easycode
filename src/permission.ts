@@ -253,8 +253,10 @@ export function defaultPermissionAutoReviewer(request: PermissionRequest): Permi
   if (request.permission === "skill" && request.patterns.every(isSafeSkillName)) return "once"
   if (request.permission !== "bash") return undefined
   if (request.metadata.rememberOnApprove !== true) return undefined
-  if (typeof request.metadata.command === "string" && containsSensitivePath(request.metadata.command)) return undefined
+  const command = typeof request.metadata.command === "string" ? request.metadata.command : undefined
+  if (command && containsSensitivePath(command)) return undefined
   const tool = typeof request.metadata.tool === "string" ? request.metadata.tool : "bash"
+  if (tool === "bash" && command && isAutoApprovedVerificationBashCommand(command)) return "once"
   const matcher = tool === "bash" ? isAutoApprovedReadonlyFallbackBashPattern : isAutoApprovedReadonlyInternalToolPattern
   if (!request.patterns.every(matcher)) return undefined
   return "once"
@@ -270,6 +272,12 @@ function isAutoApprovedReadonlyFallbackBashPattern(pattern: string) {
 
 function isAutoApprovedReadonlyInternalToolPattern(pattern: string) {
   return /^bash:readonly:/i.test(pattern)
+}
+
+function isAutoApprovedVerificationBashCommand(command: string) {
+  const trimmed = command.trim()
+  if (!trimmed || /[;&|><`$]/.test(trimmed)) return false
+  return /^(bun test|bun run test|bun run build|bun run typecheck|bun run verify|bun run gate|bunx vitest|bun x vitest|npm test|npm run test|npm run build|npm run typecheck|npm run verify|pnpm test|pnpm run test|pnpm run build|pnpm run typecheck|pnpm run verify|pnpm exec tsc|pnpm exec vitest|npx tsc|npx vitest|go test|cargo test|pytest|python -m pytest|node --test|vitest|jest|mocha)(?:\s+.+)?$/i.test(trimmed)
 }
 
 function containsSensitivePath(value: string) {
@@ -318,6 +326,8 @@ const verificationBashAllowPatterns = [
   "bash:exact:bun run typecheck*",
   "bash:exact:bun run verify*",
   "bash:exact:bun run gate*",
+  "bash:exact:bunx vitest*",
+  "bash:exact:bun x vitest*",
   "bash:exact:npm test*",
   "bash:exact:npm run test*",
   "bash:exact:npm run build*",
@@ -329,12 +339,17 @@ const verificationBashAllowPatterns = [
   "bash:exact:pnpm run typecheck*",
   "bash:exact:pnpm run verify*",
   "bash:exact:pnpm exec tsc*",
+  "bash:exact:pnpm exec vitest*",
   "bash:exact:npx tsc*",
+  "bash:exact:npx vitest*",
   "bash:exact:go test*",
   "bash:exact:cargo test*",
   "bash:exact:pytest*",
   "bash:exact:python -m pytest*",
   "bash:exact:node --test*",
+  "bash:exact:vitest*",
+  "bash:exact:jest*",
+  "bash:exact:mocha*",
 ] as const
 
 export function defaultSubagentPermissionRules(role: SubagentPermissionRole): PermissionRule[] {

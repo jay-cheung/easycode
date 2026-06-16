@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { DeepSeekProvider, OpenAICompatibleProvider, OpenAIProvider } from "../../src/provider"
 import { clampSubagentRoute, resolveSubagentRoute } from "../../src/agent/subagent-routing"
-import { suggestedCoordinatorSubagentRole } from "../../src/agent/subagent-runtime"
+import { classifySubagentToolFailure, createSubagentTaskState, noteSubagentToolResult, shouldStopSubagentAfterFailure, suggestedCoordinatorSubagentRole } from "../../src/agent/subagent-runtime"
 import { defaultSessionSettings } from "../../src/settings"
 
 describe("subagent routing", () => {
@@ -173,5 +173,62 @@ describe("subagent routing", () => {
     expect(suggestedCoordinatorSubagentRole([
       { id: "call_9", name: "read", input: { filePath: "src/agent.ts" } },
     ], { requiredRole: "reviewer" })).toBe("reviewer")
+  })
+
+  test("delegation gate routes public HTTP/API retrieval to docs researcher before debugger", () => {
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_http", name: "bash", input: { command: "curl https://api.example.com/prices" } },
+    ], { taskHint: "Fetch public API data for analysis." })).toBe("docs_researcher")
+
+    expect(suggestedCoordinatorSubagentRole([
+      { id: "call_fetch", name: "web_fetch", input: { url: "https://api.example.com/prices" } },
+    ], { taskHint: "Debug why API data differs." })).toBe("docs_researcher")
+  })
+
+  test("subagent failures classify deterministic blockers and stop repeated identical attempts", () => {
+    const state = createSubagentTaskState({
+      requestId: 1,
+      role: "debugger",
+      task: "Fetch public API data",
+      maxProviderCalls: 7,
+    })
+    const call = { id: "call_bash", name: "bash", input: { command: "curl https://api.example.com/prices" } }
+    const firstFailure = {
+      toolName: "bash",
+      title: "bash",
+      status: "denied",
+      output: "Permission denied by policy.",
+      metadata: { error: "permission_denied" },
+      call,
+    }
+
+    const classified = classifySubagentToolFailure(firstFailure)
+    expect(classified?.blockerClass).toBe("permission_denied")
+    expect(classified?.retryable).toBe(false)
+    expect(classified?.recommendedNextRole).toBe("docs_researcher")
+    expect(classified?.recommendedNextTool).toBe("web_fetch")
+
+    noteSubagentToolResult(state, firstFailure)
+    expect(shouldStopSubagentAfterFailure(state)).toBeUndefined()
+    noteSubagentToolResult(state, firstFailure)
+    const stop = shouldStopSubagentAfterFailure(state)
+    expect(stop?.blockerClass).toBe("permission_denied")
+    expect(stop?.retryable).toBe(false)
+  })
+
+  test("large file read failures recommend bounded explorer reads", () => {
+    const classified = classifySubagentToolFailure({
+      toolName: "read",
+      title: "read",
+      status: "error",
+      output: "full-file read blocked: file exceeds 5000 lines",
+      metadata: { error: "large_file_read_forbidden" },
+      call: { id: "call_read", name: "read", input: { filePath: "src/big.ts" } },
+    })
+
+    expect(classified?.blockerClass).toBe("large_output_or_read_blocked")
+    expect(classified?.retryable).toBe(false)
+    expect(classified?.recommendedNextRole).toBe("explorer")
+    expect(classified?.recommendedNextTool).toBe("read_lines")
   })
 })

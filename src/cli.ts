@@ -215,6 +215,15 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
     const queuedPrompts: string[] = []
+    const queuedPromptImages: ImagePart[][] = []
+    const enqueuePrompt = (text: string, images: ImagePart[] = []) => {
+      queuedPrompts.push(text)
+      queuedPromptImages.push(images)
+    }
+    const clearQueuedPrompts = () => {
+      queuedPrompts.length = 0
+      queuedPromptImages.length = 0
+    }
     let activeMode: AgentMode = "build"
     let goalState: GoalState | undefined
     let runner: ReturnType<typeof createRunner> | undefined
@@ -315,7 +324,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activePlanId: undefined,
       })
       emitGoalLifecycle("goal.definition", goalState, reason ? { reason } : {})
-      queuedPrompts.push(buildGoalDefinitionPrompt(goalState ?? goal, reason))
+      enqueuePrompt(buildGoalDefinitionPrompt(goalState ?? goal, reason))
     }
     const beginGoalPlanning = (goal: GoalState, reason?: string, advanceIteration = false) => {
       persistGoal({
@@ -329,7 +338,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         ...(reason ? { reason } : {}),
         advanceIteration,
       })
-      queuedPrompts.push(buildGoalPlanningPrompt(goalState ?? goal, reason))
+      enqueuePrompt(buildGoalPlanningPrompt(goalState ?? goal, reason))
     }
     const beginGoalReview = (goal: GoalState, reason?: string) => {
       persistGoal({
@@ -339,7 +348,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activePlanId: undefined,
       })
       emitGoalLifecycle("goal.reviewing", goalState, reason ? { reason } : {})
-      queuedPrompts.push(buildGoalAssessmentPrompt(goalState ?? goal, reason))
+      enqueuePrompt(buildGoalAssessmentPrompt(goalState ?? goal, reason))
     }
     const pauseGoal = async (reason: string) => {
       if (!goalState) return
@@ -386,7 +395,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       runner = undefined
       goalState = undefined
       syncTuiGoal(undefined)
-      queuedPrompts.length = 0
+      clearQueuedPrompts()
       tui?.setSessionTokenUsage(sessionTokenUsage)
       tui?.startSession(session)
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
@@ -394,7 +403,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     }
 
     while (true) {
-      const prompt = (queuedPrompts.shift() ?? await question(reader, tui)).trim()
+      const queuedPrompt = queuedPrompts.shift()
+      const queuedImages = queuedPrompt === undefined ? undefined : queuedPromptImages.shift() ?? []
+      const prompt = (queuedPrompt ?? await question(reader, tui)).trim()
       if (prompt === eofPrompt) {
         const sessionContext = runner?.context ?? context
         await clearTransientSessionTaskState(sessionContext, args.root)
@@ -421,7 +432,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
             await clearActivePlanIfPresent()
             emitGoalLifecycle("goal.cleared", goalState)
             persistGoal(undefined)
-            queuedPrompts.length = 0
+            clearQueuedPrompts()
             writeSessionMessage("Goal cleared.")
           } else if (changed.goalAction.action === "pause") {
             if (!goalState) writeSessionMessage("No active goal.")
@@ -433,7 +444,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           } else if (changed.goalAction.action === "start") {
             await clearActivePlanIfPresent()
             const nextGoal = createGoalState(changed.goalAction.objective)
-            queuedPrompts.length = 0
+            clearQueuedPrompts()
             emitGoalLifecycle("goal.started", nextGoal)
             beginGoalDefinition(nextGoal, "Goal started by user. Define acceptance before any plan.")
             writeSessionMessage(`Goal started.\n${goalStatusText(goalState)}`)
@@ -475,11 +486,11 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       }
 
       const activeRunner = getRunner()
-      const images = pendingImages
-      pendingImages = []
+      const images = queuedImages ?? pendingImages
+      if (!queuedImages) pendingImages = []
       const messageCountBeforeRun = activeRunner.context.state.messages.length
       activeAbort = new AbortController()
-      const runInput = collectRunInput(reader, activeAbort, queuedPrompts, tui)
+      const runInput = collectRunInput(reader, activeAbort, { push: (text) => enqueuePrompt(text) }, tui)
       const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
       runInput.stop()
       activeAbort = undefined
@@ -537,7 +548,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           persistGoal(activateGoalPlan(goalState, planId))
           emitGoalLifecycle("goal.executing", goalState, { planId })
           await saveSession(activeRunner.context)
-          queuedPrompts.push("Proceed with the approved plan.")
+          enqueuePrompt("Proceed with the approved plan.")
           continue
         }
 
@@ -589,7 +600,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         }
         if (choice === "e" || choice.startsWith("edit")) {
           const editDesc = await reader.question("What would you like changed? ")
-          if (editDesc) queuedPrompts.push(`Revise the plan: ${editDesc}`)
+          if (editDesc) enqueuePrompt(`Revise the plan: ${editDesc}`)
           await saveSession(activeRunner.context)
           continue
         }
@@ -602,7 +613,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         }
         
         runner = undefined
-        queuedPrompts.push(planId ? "Proceed with the approved plan." : command.text)
+        enqueuePrompt(planId ? "Proceed with the approved plan." : command.text, planId ? [] : images)
         continue
       }
       if (goalState) {

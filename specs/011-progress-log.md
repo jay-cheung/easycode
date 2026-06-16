@@ -2,6 +2,59 @@
 
 Status: Draft
 
+## Step 59: Evidence-First Tool Result Budgeting
+
+- Scope: replace scattered provider-visible large-output truncation with a single evidence-first tool result budget, while keeping run-specific evidence out of static prompts.
+- Implementation:
+  - Updated `src/message.ts` so provider-visible tool results render as fixed-order evidence blocks with `status`, `source`, diagnostics, omission state, retrieval hints, and budgeted excerpts.
+  - Connected `ContextStrategyState.toolResultTokenBudget` through `src/context/manager.ts` and `src/context/manager-compose.ts` for compose, compaction input, token estimates, and the public estimate helper.
+  - Updated `src/sandbox.ts` so bash stdout/stderr extract diagnostic lines before byte truncation and carry raw-length metadata into tool result metadata.
+  - Preserved `delegate_subagent` coordinator summaries in full after the budgeted raw evidence, and marked delegate results partial when the coordinator summary is missing.
+  - Bounded oversized evidence metadata itself so diagnostics and retrieval hints are prioritized without letting long commands or repeated diagnostic lines consume the whole provider result.
+- Verification:
+  - `bun test test/unit/message.test.ts test/unit/sandbox.test.ts test/unit/context.test.ts test/unit/provider.test.ts test/unit/logger.test.ts test/integration/agent.test.ts`
+  - `bun run typecheck`
+  - `bun run cache:bench -- --provider simulated --suite real --quiet` (`effective_input=61992`, below the 5% increase cap versus the 61258 live baseline)
+  - `bun test test/integration/cli.test.ts`
+  - `bun run gate` passed typecheck, tests, eval_fake, apix_subset, cache_benchmark, and build; repeated full-gate retries failed only because the external DeepSeek provider gate intermittently could not connect.
+  - `bun run dev/quality/provider-gate.ts` passed independently after the failed full-gate runs, confirming the remaining failure is provider/network flakiness rather than a local assertion failure.
+- Notes: this slice does not persist full raw large outputs as artifacts; it focuses on provider-visible evidence fidelity, cost bounds, and actionable retrieval hints. The CLI SIGINT cancellation regression was also tightened to wait for the active execution-run cancellation prompt before sending SIGINT, removing a full-suite timing race in `test/integration/cli.test.ts`.
+
+## Step 58: Auto-Approve Bounded Build Verification Bash
+
+- Scope: cut down pointless manual bash approvals in ordinary build sessions without reopening arbitrary shell execution or plan-mode mutation paths.
+- Implementation:
+  - Updated `src/permission.ts` so the default auto-reviewer now auto-approves the existing exact verification/test bash allowlist in `build` mode, in addition to the already-supported non-replaceable readonly fallback scopes.
+  - Expanded the verification allowlist to cover direct `vitest` / `jest` / `mocha` entrypoints plus common `bunx` / `npx` / `pnpm exec vitest` forms, while leaving arbitrary repo-local scripts and other shell mutations on the manual-review path.
+  - Updated `src/tool/builtins/git-tools.ts` and `src/tool/git.ts` so `git_branch` no longer reuses a readonly permission scope for branch creation, and branch creation now fails closed in `plan` mode instead of being prompt-approvable there.
+  - Added focused regression coverage in `test/unit/permission.test.ts` and `test/unit/tool.test.ts`, and synchronized `specs/005-boundary-conditions.md` plus `specs/acceptance.md` with the refined bash approval contract.
+- Verification:
+  - `bun test test/unit/permission.test.ts test/unit/tool.test.ts`
+  - `bun run typecheck`
+  - `bun run gate` was started, produced no intermediate output for over two minutes, and was manually stopped; no failing sub-check output surfaced before termination.
+- Notes: this slice deliberately does not auto-approve arbitrary `node`/`python` project scripts or any `sandbox_bypass` retry; the goal is to remove repetitive verification friction without widening script-execution trust by default.
+
+## Step 57: Harden Subagent Role Routing And Failure Handoffs
+
+- Scope: make subagent delegation intent-based instead of tool-availability-based, and stop repeated deterministic tool failures from consuming the full turn budget.
+- Implementation:
+  - Extended `SubagentExecutionResult` and task state with `blockerClass`, `retryable`, `recommendedNextRole`, `recommendedNextTool`, and per-tool failure fingerprints.
+  - Added subagent failure classification and fuse logic so repeated permission, unavailable-tool, invalid-tool-use, large-read/output, and network/provider failures return a structured `handoff` instead of looping.
+  - Updated role routing and plan-step inference so HTTP/API/public data/web/MCP/connector retrieval routes to `docs_researcher`, repo-local read/search routes to `explorer`, tests/gates route to `tester`, and `debugger` is reserved for concrete failure diagnosis.
+  - Updated coordinator and subagent prompts with explicit role boundaries, `web_fetch` preference for known public endpoints, and a no-repeat rule for deterministic failures.
+  - Changed validation retry handling so repeated gate corrections fail closed after three attempts, and cancellation history now stores canonicalized reasoning instead of full repeated reasoning transcripts.
+- Verification:
+  - `bun test test/unit/subagent-routing.test.ts test/unit/runner.test.ts test/unit/message.test.ts`
+  - `bun test test/integration/agent.test.ts`
+  - `bun test test/integration/agent.test.ts test/unit/runner.test.ts test/unit/message.test.ts`
+  - `bun test test/integration/cli.test.ts --test-name-pattern "SIGINT|queues input"`
+  - `bun test test/unit/subagent-routing.test.ts`
+  - `bun test`
+  - `bun run typecheck`
+  - `bun run cache:bench -- --provider simulated --suite real --quiet` (`effective_input=61992`)
+  - `bun run gate` passed typecheck, tests, eval_fake, apix_subset, cache_benchmark, build, and provider_gate.
+- Notes: `handoff` still maps to a successful outer `delegate_subagent` tool result while exposing `subagentStatus`, blocker metadata, and coordinator summary in metadata for the next coordinator turn.
+
 ## Step 55: Bundle Directly Runnable Local SWE-bench Smoke Sets
 
 - Scope: make the new SWE-bench adapter usable immediately by adding a local dataset exporter plus bundled smoke JSONL subsets, so users can benchmark EasyCode without first hand-curating task rows.

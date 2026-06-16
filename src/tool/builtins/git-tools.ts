@@ -62,7 +62,12 @@ export function registerGitTools(registry: ToolRegistry) {
     jsonSchema: objectSchema({ name: { type: "string" }, create: { type: "boolean" }, startPoint: { type: "string" } }, []),
     permission: "bash",
     modes: ["build", "plan"],
-    patterns: () => [scopedBashApproval("git:branch", "project", []).target],
+    patterns: (input) => {
+      const params = GitBranchInput.parse(input)
+      return [params.create
+        ? scopedBashApproval("git:branch:create", "explicit-name", [], false).target
+        : scopedBashApproval("git:branch", "project", []).target]
+    },
     execute: async (input, ctx) => gitBranchToolResult(GitBranchInput.parse(input), ctx),
   })
 

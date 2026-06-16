@@ -225,7 +225,7 @@ export function writeCliText(tui: TuiRenderer | undefined, text: string, title: 
   output.write(text.endsWith("\n") ? text : `${text}\n`)
 }
 
-export function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: string[], tui?: TuiRenderer) {
+export function collectRunInput(reader: LineReader, activeAbort: AbortController, queuedPrompts: { push: (text: string) => unknown }, tui?: TuiRenderer) {
   const pumpAbort = new AbortController()
   const copy = uiText(tui?.getLanguage() ?? "en")
   if (tui) tui.runInputHint()

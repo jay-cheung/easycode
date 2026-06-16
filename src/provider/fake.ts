@@ -359,10 +359,49 @@ export class FakeProvider implements Provider {
         yield { type: "done" }
         return
       }
-      yield { type: "text_delta", text: `<proposed_plan>\n# Plan\n- Inspect the code.\n- Propose the smallest safe change.\n</proposed_plan>` }
+      if (input.tools.some((tool) => tool.name === "plan_exit")) {
+        yield { type: "tool_call", call: call("plan_exit", { markdown: defaultPlanMarkdown(prompt) }) }
+      } else {
+        yield { type: "text_delta", text: `<proposed_plan>\n# Plan\n- Inspect the code.\n- Propose the smallest safe change.\n</proposed_plan>` }
+      }
       yield { type: "usage", inputTokens: 10, outputTokens: 20 }
       yield { type: "done" }
       return
+    }
+
+    if (currentPrompt.includes("proceed with the approved plan")) {
+      if (prompt.includes("queued-ok")) {
+        yield { type: "text_delta", text: "Queued done." }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Queued done." }) }
+        yield { type: "done" }
+        return
+      }
+      if (prompt.includes("delayed")) {
+        await new Promise((resolve) => setTimeout(resolve, 1_000))
+        yield { type: "text_delta", text: "Delayed done." }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Delayed done." }) }
+        yield { type: "done" }
+        return
+      }
+      if (prompt.includes("env")) {
+        const envReadAlreadyRan = hasToolResult(input.messages, "read")
+        if (!envReadAlreadyRan) {
+          yield { type: "tool_call", call: call("read", { filePath: ".env" }) }
+          yield { type: "done" }
+          return
+        }
+        yield { type: "text_delta", text: "Environment read handled." }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Environment read handled." }) }
+        yield { type: "done" }
+        return
+      }
+      if (input.providerMessages.some((message) => message.parts?.some((part) => part.type === "image"))) {
+        yield { type: "reasoning_delta", text: "I should inspect the attached image." }
+        yield { type: "text_delta", text: "Image received." }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Image received." }) }
+        yield { type: "done" }
+        return
+      }
     }
 
     if ((prompt.includes("low-risk-plan") || prompt.includes("high-risk-plan")) && currentPrompt.includes("proceed with the approved plan")) {
@@ -737,4 +776,27 @@ function numberFromEnv(name: string) {
   if (value === undefined) return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
+}
+
+function defaultPlanMarkdown(prompt: string) {
+  const compactPrompt = prompt.replace(/\s+/g, " ").trim().slice(0, 80) || "the requested task"
+  return [
+    "# Plan",
+    `- Execute the approved fake-provider scenario for: ${compactPrompt}.`,
+    "```json",
+    JSON.stringify({
+      id: "plan_fake_default",
+      title: "Fake default plan",
+      lowRisk: false,
+      steps: [
+        {
+          id: "step_1",
+          goal: `Execute the approved fake-provider scenario for ${compactPrompt}.`,
+          kind: "inspect",
+          doneWhen: "The fake provider has returned the scenario-specific result.",
+        },
+      ],
+    }, null, 2),
+    "```",
+  ].join("\n")
 }

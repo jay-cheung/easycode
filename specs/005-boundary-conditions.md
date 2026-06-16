@@ -17,7 +17,7 @@
 - Default output cap is 64KB.
 - Dangerous commands are denied: `rm -rf`, `sudo`, `git push`, `docker`, `curl | sh`, recursive chmod on `/`.
 - Replaceable bash inspections that already map to internal tools are blocked instead of auto-approved: simple `git status|diff|log`, project-local `cat`, `rg` / `grep`, `sed -n` line reads, and supported readonly `curl` fetches that can be safely represented through `web_fetch`.
-- Safe readonly bash fallback scopes may auto-approve in `build` mode only when there is no equivalent internal tool path: `pwd`, `ls`, `find`, and `wc`.
+- Safe bash auto-review in `build` mode stays narrow: non-replaceable readonly fallback scopes may auto-approve only when there is no equivalent internal tool path (`pwd`, `ls`, `find`, and `wc`), and exact verification/test commands may auto-approve only when they match the bounded allowlist (`bun`/`npm`/`pnpm` test-build-typecheck-verify-gate forms, `go test`, `cargo test`, `pytest`, `node --test`, `vitest`, `jest`, `mocha`).
 - macOS native write-sandbox denials may be retried without the native write sandbox only after an explicit `sandbox_bypass` permission prompt.
 - Explicit command paths outside the project may be retried only after an explicit `sandbox_bypass` permission prompt. Dangerous-command checks still apply.
 - Repeated `bash` and `sandbox_bypass` approvals are cached by reviewed scope for the current in-memory session only. Simple read-only commands may use a narrow path scope; complex or side-effectful commands use exact-command scope.

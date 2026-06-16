@@ -138,4 +138,14 @@ describe("sandbox", () => {
     expect(result.truncated).toBe(true)
     await rm(root, { recursive: true, force: true })
   })
+
+  test("extracts diagnostic lines before truncating command output", async () => {
+    const root = await tmpdir()
+    const sandbox = new Sandbox(root, { maxOutputBytes: 13 })
+    const result = await sandbox.execute({ command: "printf 'begin\\nASSERT FAILED in the middle\\nend-of-output'" })
+    expect(result.truncated).toBe(true)
+    expect(result.stdout).toBe("end-of-output")
+    expect(result.stdoutDiagnostics).toContain("ASSERT FAILED in the middle")
+    await rm(root, { recursive: true, force: true })
+  })
 })

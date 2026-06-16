@@ -99,9 +99,16 @@ function providerMessagesWithCorrections(
   correctionMessages: string[],
 ) {
   if (correctionMessages.length === 0) return providerMessages
+  const existingSystemContents = new Set(
+    providerMessages
+      .filter((message) => message.role === "system")
+      .map((message) => message.content),
+  )
+  const dedupedCorrections = [...new Set(correctionMessages)].filter((content) => !existingSystemContents.has(content))
+  if (dedupedCorrections.length === 0) return providerMessages
   return [
     ...providerMessages,
-    ...correctionMessages.map((content) => ({ role: "system" as const, content })),
+    ...dedupedCorrections.map((content) => ({ role: "system" as const, content })),
   ]
 }
 

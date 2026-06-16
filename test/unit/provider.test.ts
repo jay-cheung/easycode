@@ -95,7 +95,7 @@ describe("provider", () => {
 
     expect(input.flatMap(providerMessageToResponseInput)).toEqual([
       { type: "function_call", id: "call_1", call_id: "call_1", name: "read", arguments: "{\"filePath\":\"a.ts\"}" },
-      { type: "function_call_output", call_id: "call_1", output: "ok" },
+      { type: "function_call_output", call_id: "call_1", output: expect.stringContaining("excerpt:\nok") },
     ])
   })
 
@@ -402,7 +402,7 @@ describe("provider", () => {
           body: {
             messages: [
               { role: "assistant", content: null, reasoning_content: "I should inspect files.", tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\": .}" } }] },
-              { role: "tool", tool_call_id: "call_1", content: "README.md" },
+              { role: "tool", tool_call_id: "call_1", content: expect.stringContaining("excerpt:\nREADME.md") },
               { role: "user", content: "继续" },
             ],
           },
@@ -464,7 +464,7 @@ describe("provider", () => {
           body: {
             messages: [
               { role: "assistant", content: null, reasoning_content: "", tool_calls: [{ id: "call_1", type: "function", function: { name: "list", arguments: "{\"dirPath\": .}" } }] },
-              { role: "tool", tool_call_id: "call_1", content: "README.md" },
+              { role: "tool", tool_call_id: "call_1", content: expect.stringContaining("excerpt:\nREADME.md") },
               { role: "assistant", content: "done", reasoning_content: "" },
               { role: "user", content: "继续" },
             ],

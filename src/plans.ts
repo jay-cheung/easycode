@@ -220,9 +220,10 @@ function inferSubagentRole(goal: string, kind: PlanStepKind, doneWhen: string, f
   if (/\btester\b/.test(text)) return "tester"
   if (/\bsummary\b/.test(text)) return "summary"
   if (!/\bdelegate\b|delegate_subagent|subagent|委派|子\s*agent/i.test(text)) return undefined
+  if (/\b(web_fetch|web_search|https?:\/\/|api\b|http\b|public data|external docs?|external spec|data source|mcp|connector|fetch data|market data|stock data)\b|公开\s*api|外部接口|外部资料|数据源|网页|抓取|行情/i.test(text)) return "docs_researcher"
   if (kind === "verify" || kind === "gate") return "tester"
   if (/\breview\b|审查|评审/i.test(text)) return "reviewer"
-  if (/\bdebug\b|排查|定位/i.test(text)) return "debugger"
+  if (/\b(debug|diagnos|trace|repro|crash|error|failure|flake|flaky|logs?)\b|调试|排查|定位|复现|报错|错误|失败|日志/i.test(text)) return "debugger"
   if (/\bdocs?\b|文档|spec/i.test(text)) return "docs_researcher"
   if (kind === "inspect") return "explorer"
   return undefined

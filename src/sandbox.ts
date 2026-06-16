@@ -8,6 +8,10 @@ export type BashResult = {
   exitCode: number | null
   stdout: string
   stderr: string
+  stdoutDiagnostics?: string[]
+  stderrDiagnostics?: string[]
+  stdoutRawLength?: number
+  stderrRawLength?: number
   timedOut: boolean
   cancelled: boolean
   truncated: boolean
@@ -73,9 +77,15 @@ type PipeSubprocess = {
 }
 
 function truncateBytes(input: string, maxBytes: number) {
-  if (Buffer.byteLength(input) <= maxBytes) return { text: input, truncated: false }
+  const diagnostics = keyDiagnosticLines(input)
+  if (Buffer.byteLength(input) <= maxBytes) return { text: input, truncated: false, diagnostics }
   const buffer = Buffer.from(input)
-  return { text: buffer.subarray(Math.max(0, buffer.length - maxBytes)).toString("utf8"), truncated: true }
+  return { text: buffer.subarray(Math.max(0, buffer.length - maxBytes)).toString("utf8"), truncated: true, diagnostics }
+}
+
+function keyDiagnosticLines(text: string) {
+  const pattern = /(error|failed|failure|exception|traceback|panic|fatal|denied|invalid|timeout|timed out|not found|permission|refused|assert)/i
+  return [...new Set(text.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && pattern.test(line)))].slice(0, 8)
 }
 
 export function isDangerousCommand(command: string) {
@@ -312,6 +322,10 @@ export class Sandbox {
       exitCode,
       stdout: stdout.text,
       stderr: stderr.text,
+      stdoutDiagnostics: stdout.diagnostics,
+      stderrDiagnostics: stderr.diagnostics,
+      stdoutRawLength: redactSensitiveEnvValues(stdoutRaw).length,
+      stderrRawLength: redactSensitiveEnvValues(stderrRaw).length,
       timedOut,
       cancelled,
       truncated: stdout.truncated || stderr.truncated,
@@ -368,6 +382,10 @@ function cancelledBashResult(command: string, started: number): BashResult {
     exitCode: null,
     stdout: "",
     stderr: "Command cancelled by user.",
+    stdoutDiagnostics: [],
+    stderrDiagnostics: [],
+    stdoutRawLength: 0,
+    stderrRawLength: "Command cancelled by user.".length,
     timedOut: false,
     cancelled: true,
     truncated: false,

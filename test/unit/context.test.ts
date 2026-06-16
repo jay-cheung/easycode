@@ -556,6 +556,29 @@ describe("context", () => {
     expect(providerToolResult).toMatchObject({ type: "tool_result", output: expect.stringContaining("[history compacted: omitted") })
     expect(providerToolResult).not.toMatchObject({ output: expect.stringContaining("x".repeat(9_000)) })
   })
+
+  test("provider input uses the configured tool result token budget", () => {
+    const small = new ContextManager({ maxTokens: 20_000 })
+    small.configureStrategy({ toolResultTokenBudget: 300 })
+    small.add(textMessage("user", "show logs"))
+    small.add(toolCallMessage({ id: "call_logs", name: "bash", input: { command: "cat logs" } }))
+    small.add(toolResultMessage({ callID: "call_logs", toolName: "bash", status: "failed", output: `ERROR middle\n${"x".repeat(12_000)}`, metadata: { command: "cat logs", stdoutDiagnostics: ["ERROR middle"], truncated: true } }))
+
+    const large = new ContextManager({ maxTokens: 20_000 })
+    large.configureStrategy({ toolResultTokenBudget: 1_200 })
+    large.add(textMessage("user", "show logs"))
+    large.add(toolCallMessage({ id: "call_logs", name: "bash", input: { command: "cat logs" } }))
+    large.add(toolResultMessage({ callID: "call_logs", toolName: "bash", status: "failed", output: `ERROR middle\n${"x".repeat(12_000)}`, metadata: { command: "cat logs", stdoutDiagnostics: ["ERROR middle"], truncated: true } }))
+
+    const smallInput = small.compose().map((message) => message.content).join("\n")
+    const largeInput = large.compose().map((message) => message.content).join("\n")
+
+    expect(smallInput).toContain("<evidence>")
+    expect(smallInput).toContain("ERROR middle")
+    expect(smallInput.length).toBeLessThan(largeInput.length)
+    expect(small.state.tokenEstimate).toBe(small.estimate(small.state.messages))
+    expect(small.state.tokenEstimate).toBeLessThan(large.state.tokenEstimate)
+  })
 })
 
 function ledgerRecord(kind: LedgerKind, subject: string, value: string, status: LedgerStatus, turn: number, input: { reason?: string; scope?: LedgerRecord["scope"] } = {}): LedgerRecord {

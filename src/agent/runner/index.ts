@@ -20,7 +20,7 @@ import { evaluateHypothesisTurn, type ActiveHypothesis, type HypothesisViolation
 import { emitProviderTurnEvents, runProviderTurnStream, type ProviderTurnInput, type ProviderTurnResult } from "./provider-turn"
 import { createSummaryTask, runSummarySubagentTask, type BackgroundAgentTask } from "./summary-subagent"
 import { createDerivedSubagentProvider, resolveSubagentRoute } from "../subagent-routing"
-import { blockedInternalActionToolResult, buildSubagentHandoffResult, budgetDeniedToolResult, createSubagentTaskState, filterToolsForAgent, formatSubagentResult, isCoordinatorOnlyTool, maxSubagentInvocationsPerRun, maxSubagentTurnsPerRun, noteSubagentBlockedAction, noteSubagentToolResult, noteSubagentTurn, parseSubagentRequest, roleInvocationLimit, suggestedCoordinatorSubagentRole, type SubagentAssignedStep, type SubagentBudgetSnapshot, type SubagentExecutionResult, type SubagentRequest, type SubagentTaskState } from "../subagent-runtime"
+import { blockedInternalActionToolResult, buildSubagentHandoffResult, budgetDeniedToolResult, createSubagentTaskState, filterToolsForAgent, formatSubagentResult, isCoordinatorOnlyTool, maxSubagentInvocationsPerRun, maxSubagentTurnsPerRun, noteSubagentBlockedAction, noteSubagentToolResult, noteSubagentTurn, parseSubagentRequest, roleInvocationLimit, shouldStopSubagentAfterFailure, suggestedCoordinatorSubagentRole, type SubagentAssignedStep, type SubagentBudgetSnapshot, type SubagentExecutionResult, type SubagentRequest, type SubagentTaskState } from "../subagent-runtime"
 import { refreshRepoMapCache } from "./repo-map-refresh"
 import { emitToolResultEvent, recordToolOutcome as recordToolOutcomeSideEffect, runToolCall } from "./tool-execution"
 import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypothesisCorrectionMessage, recordActiveSkillState, recordHypothesisViolationState, recordRunIntentState, truncateForLedger, updateActiveHypothesisState } from "./hypothesis-state"
@@ -111,6 +111,7 @@ export class AgentRunner {
   private activeHypothesis: ActiveHypothesis | undefined
   private activeForegroundSubagentRequestID: number | undefined
   private subagentUsage = createSubagentRunUsage()
+  private pendingValidationCorrection: string | undefined
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -155,6 +156,7 @@ export class AgentRunner {
 
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[]; signal?: AbortSignal } = {}): Promise<AgentRunResult> {
     this.subagentUsage = createSubagentRunUsage()
+    this.pendingValidationCorrection = undefined
     const prep = await this.prepareRun(prompt, mode, input)
     if (prep.aborted) {
       return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
@@ -338,7 +340,9 @@ export class AgentRunner {
             })
             this.onEvent?.({
               type: "failure",
-              text: `Failed to revise plan: ${replanError instanceof Error ? replanError.message : String(replanError)}`
+              text: `Failed to revise plan: ${replanError instanceof Error ? replanError.message : String(replanError)}`,
+              source: "system",
+              category: "runtime",
             })
           }
         } else if (isApproval && activePlanState.checkpoint.currentStepId) {
@@ -478,7 +482,9 @@ export class AgentRunner {
             })
             this.onEvent?.({
               type: "failure",
-              text: `Replanning failed: ${replanError instanceof Error ? replanError.message : String(replanError)}`
+              text: `Replanning failed: ${replanError instanceof Error ? replanError.message : String(replanError)}`,
+              source: "system",
+              category: "runtime",
             })
           }
         }
@@ -610,13 +616,14 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     const providerMessages = shouldInjectReviewPlanningTemplate(prompt, requiresProposedPlan)
       ? [...preparedTurn.providerMessages, { role: "system" as const, content: reviewPlanningTemplate(prompt) }]
       : preparedTurn.providerMessages
+    const effectiveProviderMessages = this.consumePendingValidationCorrection(providerMessages)
 
     let currentState = this.aspect.transition("streaming", { step: step + 1 })
     const turn = await this.runValidatedProviderTurn({
       agent,
       prompt,
       messages: this.context.state.messages,
-      providerMessages,
+      providerMessages: effectiveProviderMessages,
       tools: preparedTurn.availableTools,
       signal: input.signal,
       providerMetrics,
@@ -633,10 +640,10 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     }
 
     if (turn.retryMessage) {
-      this.onEvent?.({ type: "failure", text: turn.retryMessage })
-      if (requiresProposedPlan && (turn.validationFailureCount ?? 0) >= 3) {
-        const output = buildPlanGateFallbackMessage(turn)
-        this.onEvent?.({ type: "failure", text: output })
+      const validationFailureCount = turn.validationFailureCount ?? 0
+      if (validationFailureCount >= 3) {
+        const output = requiresProposedPlan ? buildPlanGateFallbackMessage(turn) : buildValidationGateFallbackMessage(turn)
+        this.onEvent?.({ type: "failure", text: output, source: "system", category: "validation" })
         this.context.add(assistantMessage(nextReasoningTranscript, output))
         currentState = this.aspect.runFailed("provider_error", usedTools)
         this.emitRunDone("failed", providerMetrics)
@@ -645,7 +652,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           result: { status: "failed", failureReason: "provider_error", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
         }
       }
-      this.context.add(textMessage("system", turn.retryMessage))
+      this.pendingValidationCorrection = turn.retryMessage
       return {
         action: "continue",
         reasoningTranscript: nextReasoningTranscript,
@@ -768,7 +775,12 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           }
           const requiredDelegationRole = activePlanStep?.executorHint === "subagent" ? activePlanStep.subagentRole : undefined
           const directCoordinatorTools = turn.toolCalls.filter((call) => !isCoordinatorOnlyTool(call.name))
-          if (requiredDelegationRole && directCoordinatorTools.length > 0 && !turn.toolCalls.some((call) => call.name === "delegate_subagent")) {
+          if (
+            requiredDelegationRole &&
+            directCoordinatorTools.length > 0 &&
+            !turn.toolCalls.some((call) => call.name === "delegate_subagent") &&
+            this.isSubagentDelegationAvailable(requiredDelegationRole)
+          ) {
             const toolNames = [...new Set(directCoordinatorTools.map((call) => call.name))].join(", ")
             return {
               correction: [
@@ -788,6 +800,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
             taskHint: [input.prompt, activePlanStep?.goal, activePlanStep?.doneWhen].filter(Boolean).join("\n"),
           })
           if (!suggestedRole) return undefined
+          if (!this.isSubagentDelegationAvailable(suggestedRole)) return undefined
           const toolNames = [...new Set(turn.toolCalls.map((call) => call.name))].join(", ")
           return {
             correction: [
@@ -1060,12 +1073,32 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           effort: route.effort,
           budget: this.subagentBudgetSnapshot(request.role),
           summary: result.summary,
+          blockerClass: result.blockerClass,
+          retryable: result.retryable,
+          recommendedNextRole: result.recommendedNextRole,
+          recommendedNextTool: result.recommendedNextTool,
         },
       })
       return {
         title: `subagent ${request.role}`,
         output: formatSubagentResult(result),
-        metadata: { status: result.status === "failed" ? "failed" : "succeeded", subagentStatus: result.status, subagentRole: request.role, subagentRequestId: requestId, provider: route.provider, model: route.model, thinking: route.thinking, effort: route.effort, turnsUsed: providerMetrics.calls, nextAction: result.nextAction },
+        metadata: {
+          status: result.status === "failed" ? "failed" : "succeeded",
+          subagentStatus: result.status,
+          subagentRole: request.role,
+          subagentRequestId: requestId,
+          provider: route.provider,
+          model: route.model,
+          thinking: route.thinking,
+          effort: route.effort,
+          turnsUsed: providerMetrics.calls,
+          coordinatorSummary: result.summary,
+          nextAction: result.nextAction,
+          blockerClass: result.blockerClass,
+          retryable: result.retryable,
+          recommendedNextRole: result.recommendedNextRole,
+          recommendedNextTool: result.recommendedNextTool,
+        },
       }
     } catch (error) {
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
@@ -1169,6 +1202,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           title: result.title,
           status: String(result.metadata.status ?? "failed"),
           output: result.output,
+          metadata: result.metadata,
+          call,
         })
         context.add(toolResultMessage({
           callID: call.id,
@@ -1177,6 +1212,23 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           output: result.output,
           metadata: result.metadata,
         }))
+        const blocker = shouldStopSubagentAfterFailure(taskState)
+        if (blocker) {
+          emitLog(this.subagentLogger, {
+            type: "state",
+            name: "subagent.failure_fuse",
+            detail: {
+              requestId,
+              role: packet.role,
+              tool: blocker.toolName,
+              blockerClass: blocker.blockerClass,
+              retryable: blocker.retryable,
+              recommendedNextRole: blocker.recommendedNextRole,
+              recommendedNextTool: blocker.recommendedNextTool,
+            },
+          })
+          return buildSubagentHandoffResult(taskState)
+        }
       }
     }
 
@@ -1215,6 +1267,14 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
   private emitRunDone(status: string, providerMetrics: ProviderMetricsAccumulator | undefined) {
     emitRunDoneEvent(this.onEvent, status, providerMetrics)
+  }
+
+  private consumePendingValidationCorrection(providerMessages: ProviderTurnInput["providerMessages"]) {
+    const pending = this.pendingValidationCorrection
+    this.pendingValidationCorrection = undefined
+    if (!pending) return providerMessages
+    if (providerMessages.some((message) => message.role === "system" && message.content === pending)) return providerMessages
+    return [...providerMessages, { role: "system" as const, content: pending }]
   }
 
   private async selectedSkills() {
@@ -1340,19 +1400,9 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
   private reserveSubagentBudget(role: SubagentRequest["role"], requestedTurns: number) {
     const snapshot = this.subagentBudgetSnapshot(role)
-    if (this.subagentUsage.startedInvocations >= maxSubagentInvocationsPerRun) {
-      return { ok: false as const, error: "subagent_budget_denied" as const, reason: `Subagent budget denied: invocation cap ${maxSubagentInvocationsPerRun} reached.`, snapshot }
-    }
-    if (this.subagentUsage.byRole[role] >= roleInvocationLimit(role)) {
-      return { ok: false as const, error: "subagent_role_disabled" as const, reason: `Subagent budget denied: role ${role} already used ${this.subagentUsage.byRole[role]}/${roleInvocationLimit(role)} times this run.`, snapshot }
-    }
-    if (role !== "summary" && this.activeForegroundSubagentRequestID !== undefined) {
-      return { ok: false as const, error: "subagent_concurrency_blocked" as const, reason: `Subagent concurrency blocked: request ${this.activeForegroundSubagentRequestID} is still running.`, snapshot }
-    }
-    const remainingTurns = maxSubagentTurnsPerRun - this.subagentUsage.usedTurns - this.subagentUsage.reservedTurns
-    if (remainingTurns <= 0) {
-      return { ok: false as const, error: "subagent_budget_denied" as const, reason: `Subagent budget denied: turn cap ${maxSubagentTurnsPerRun} would be exceeded.`, snapshot }
-    }
+    const denied = this.subagentDelegationDenial(role, snapshot)
+    if (denied) return { ok: false as const, ...denied, snapshot }
+    const remainingTurns = this.remainingSubagentTurns()
     const reservedTurns = Math.max(1, Math.min(requestedTurns, remainingTurns))
     this.subagentUsage.startedInvocations += 1
     this.subagentUsage.byRole[role] += 1
@@ -1363,6 +1413,33 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       reservedTurns,
       snapshot: this.subagentBudgetSnapshot(role),
     }
+  }
+
+  private isSubagentDelegationAvailable(role: SubagentRole) {
+    return !this.subagentDelegationDenial(role, this.subagentBudgetSnapshot(role))
+  }
+
+  private subagentDelegationDenial(
+    role: SubagentRole,
+    snapshot: SubagentBudgetSnapshot,
+  ): { error: "subagent_budget_denied" | "subagent_concurrency_blocked" | "subagent_role_disabled"; reason: string } | undefined {
+    if (this.subagentUsage.startedInvocations >= maxSubagentInvocationsPerRun) {
+      return { error: "subagent_budget_denied", reason: `Subagent budget denied: invocation cap ${maxSubagentInvocationsPerRun} reached.` }
+    }
+    if (this.subagentUsage.byRole[role] >= roleInvocationLimit(role)) {
+      return { error: "subagent_role_disabled", reason: `Subagent budget denied: role ${role} already used ${this.subagentUsage.byRole[role]}/${roleInvocationLimit(role)} times this run.` }
+    }
+    if (role !== "summary" && this.activeForegroundSubagentRequestID !== undefined) {
+      return { error: "subagent_concurrency_blocked", reason: `Subagent concurrency blocked: request ${this.activeForegroundSubagentRequestID} is still running.` }
+    }
+    if (this.remainingSubagentTurns() <= 0) {
+      return { error: "subagent_budget_denied", reason: `Subagent budget denied: turn cap ${snapshot.totalTurnLimit} would be exceeded.` }
+    }
+    return undefined
+  }
+
+  private remainingSubagentTurns() {
+    return maxSubagentTurnsPerRun - this.subagentUsage.usedTurns - this.subagentUsage.reservedTurns
   }
 
   private finishReservedSubagentTurns(reservedTurns: number, actualTurns: number) {
@@ -1489,8 +1566,9 @@ function lastSubagentDelegationFailedOrHandoff(messages: Message[]): boolean {
     for (const part of msg.parts) {
       if (part.type === "tool_result" && part.toolName === "delegate_subagent") {
         const subagentStatus = part.metadata?.subagentStatus
-        const isTruncated = typeof part.output === "string" && part.output.includes("[truncated")
-        return subagentStatus === "failed" || subagentStatus === "handoff" || isTruncated
+        const coordinatorSummary = typeof part.metadata?.coordinatorSummary === "string" ? part.metadata.coordinatorSummary.trim() : ""
+        const missingCoordinatorSummary = !coordinatorSummary
+        return subagentStatus === "failed" || subagentStatus === "handoff" || missingCoordinatorSummary
       }
     }
   }
@@ -1549,4 +1627,20 @@ function buildPlanGateFallbackMessage(turn: ProviderTurnResult) {
     "要求：必须先提交 proposal plan（`plan_exit` 或 `<proposed_plan>`），然后才能继续。",
     `最后一次无效输出：${evidence}`,
   ].join("\n")
+}
+
+function buildValidationGateFallbackMessage(turn: ProviderTurnResult) {
+  const rawText = turn.lastRejectedTurn?.text?.trim()
+  const toolNames = turn.lastRejectedTurn?.toolNames ?? []
+  const reasoning = turn.lastRejectedTurn?.reasoningText?.trim()
+  const correction = turn.retryMessage?.trim()
+  const evidence = rawText
+    || (toolNames.length > 0 ? `Last invalid tool intent: ${toolNames.join(", ")}.` : "")
+    || (reasoning ? `Last hidden reasoning summary: ${compactLine(reasoning)}` : "")
+    || "The model did not return a valid next action after correction."
+  return [
+    "Validation gate failed repeatedly; stopping this run to avoid an unbounded retry loop.",
+    correction ? `Last required correction: ${compactLine(correction)}` : "",
+    `Last invalid output: ${evidence}`,
+  ].filter(Boolean).join("\n")
 }

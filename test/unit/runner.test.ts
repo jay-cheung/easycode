@@ -32,7 +32,8 @@ describe("agent runner ui events", () => {
     ])
 
     expect(prompt).toContain("Role Contract:")
-    expect(prompt).toContain("Find facts quickly with read/search tools.")
+    expect(prompt).toContain("Collect repo-local facts only")
+    expect(prompt).toContain("deterministic tool failure")
     expect(prompt).toContain("Use at most 8 model turns")
     expect(prompt).toContain("Prior Subagent Conclusions In This Run:")
     expect(prompt).toContain("returns a - b")
@@ -208,7 +209,7 @@ describe("agent runner ui events", () => {
       expect(result.status).toBe("failed")
       expect(result.text).toContain("模型连续未按要求产出计划")
       expect(result.text).toContain("status only, no plan")
-      expect(events.some((text) => text.includes("Planning mode hard gate"))).toBe(true)
+      expect(events.some((text) => text.includes("Planning mode hard gate"))).toBe(false)
       expect(events.at(-1)).toContain("模型连续未按要求产出计划")
     } finally {
       await rm(root, { recursive: true, force: true })

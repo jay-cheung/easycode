@@ -158,6 +158,21 @@ describe("permission", () => {
     expect(service.evaluate("bash", "bash:readonly:git:status:project")).toBe("allow")
   })
 
+  test("auto reviewer approves bounded verification bash commands", async () => {
+    const service = new PermissionService(defaultPermissionRules("build"), () => {
+      throw new Error("manual prompt should not be reached")
+    }, defaultPermissionAutoReviewer)
+
+    await service.authorize({
+      permission: "bash",
+      patterns: ["bash:exact:bun run typecheck"],
+      always: ["bash:exact:bun run typecheck"],
+      metadata: { tool: "bash", command: "bun run typecheck", rememberOnApprove: true, rememberPatterns: ["bash:exact:bun run typecheck"] },
+    })
+
+    expect(service.evaluate("bash", "bash:exact:bun run typecheck")).toBe("allow")
+  })
+
   test("auto reviewer does not auto-approve replaceable readonly bash fallback commands", async () => {
     const requested: string[] = []
     const service = new PermissionService(defaultPermissionRules("build"), (request) => {
@@ -215,11 +230,23 @@ describe("permission", () => {
       },
     })).rejects.toThrow("Permission rejected")
 
+    await expect(service.authorize({
+      permission: "bash",
+      patterns: ["bash:scoped:git:branch:create:explicit-name"],
+      always: ["bash:scoped:git:branch:create:explicit-name"],
+      metadata: {
+        tool: "git_branch",
+        rememberOnApprove: true,
+        rememberPatterns: ["bash:scoped:git:branch:create:explicit-name"],
+      },
+    })).rejects.toThrow("Permission rejected")
+
     expect(requested).toEqual([
       "bash:bash:readonly:cat:/repo/.env",
       "bash:bash:readonly:cat:/repo/.envrc",
       "edit:/src/a.ts",
       "bash:bash:exact:curl -H Authorization:secret https://example.com",
+      "bash:bash:scoped:git:branch:create:explicit-name",
     ])
   })
 

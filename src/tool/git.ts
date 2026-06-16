@@ -65,6 +65,7 @@ export async function gitCommitToolResult(params: z.infer<typeof GitCommitInput>
 }
 
 export async function gitBranchToolResult(params: z.infer<typeof GitBranchInput>, ctx: ToolContext): Promise<ToolResult> {
+  if (params.create && ctx.agentMode === "plan") throw new Error("git_branch create is not available in plan mode")
   const args = params.create
     ? ["switch", "-c", requiredBranchName(params.name), ...(params.startPoint ? [params.startPoint] : [])]
     : ["branch", "--show-current"]
