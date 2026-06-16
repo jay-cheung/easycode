@@ -2,6 +2,20 @@
 
 Status: Draft
 
+## Step 64: Cap Intermediate plan_step_complete Reports
+
+- Scope: keep `plan_step_complete.report` strict enough for final deliverables while preventing intermediate plan steps from smuggling full final writeups through oversized progress reports.
+- Implementation:
+  - Updated `src/plans.ts` with shared concise-report limits for intermediate plan steps: at most 240 characters or 4 lines.
+  - Updated `src/agent/runner/index.ts` and `src/prompt/agent.ts` so the active-step reminder plus validation gate now distinguish final vs non-final steps: intermediate `plan_step_complete` calls must stay within the concise-report limit, while the final step may still emit the full user-facing deliverable.
+  - Updated `src/tool/builtins/retrieval-tools.ts` so tool execution also fails closed if a non-final `plan_step_complete.report` exceeds the shared concise-report threshold, preserving the same rule even if validation is bypassed.
+  - Expanded `test/integration/agent.test.ts` so final-step long reports remain allowed, while non-final oversized reports are rejected before the plan can advance.
+- Verification:
+  - `bun test test/integration/agent.test.ts --test-name-pattern "running plans continue across steps without another user prompt|plan_step_complete without a report is rejected by the validation gate|non-final plan_step_complete report must stay concise|goal-backed plans still return to the controller immediately after the final step|forced planning can activate a delegated inspect step and continue in the same session|plan-step delegation gate does not block direct coordinator tools when the assigned subagent role is exhausted"`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this is the narrower “final-step only” hardening on top of Step 63; placeholder finals are still governed by the existing final-deliverable wording rather than a placeholder-specific classifier.
+
 ## Step 63: Harden plan_step_complete With Required Reports
 
 - Scope: replace the soft post-completion synthesis fallback with a stricter plan-step completion contract, so every `plan_step_complete` carries an explicit report and final plan completion can end immediately without losing the promised user-facing output.

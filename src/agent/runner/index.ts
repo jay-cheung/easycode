@@ -33,7 +33,7 @@ import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
 import { runFailureText } from "./failure-policy"
 import { emitPlanExitText, emitRunDoneEvent } from "./runner-events"
-import { isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState, renderPlanToMarkdown, type ExecutionPlan, type PlanStep } from "../../plans"
+import { intermediatePlanStepReportMaxChars, intermediatePlanStepReportMaxLines, isIntermediatePlanStepReportTooLong, isPlanApprovalPrompt, isPlanRevisionPrompt, loadStructuredPlanState, nextIncompletePlanStep, renderPlanToMarkdown, type ExecutionPlan, type PlanStep } from "../../plans"
 import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../planner"
 import { defaultToolProgressIntervalMs, defaultProviderProgressIntervalMs, maxAutoSkillArtifactInspections, autoInspectFileExtensions, autoInspectFileBasenames, autoInspectIgnoredBasenames, autoInspectIgnoredDirectories, autoRecallMemoryKinds, maxAutoRecalledMemoryRecords } from "./constants"
 import { createSubagentLogger, withSubagentLogContext, buildSubagentTaskPrompt, autoSkillArtifactCalls, memoryLedgerValue, memoryScopeToLedger } from "./helpers"
@@ -565,6 +565,7 @@ export class AgentRunner {
 
     let activeHypothesisMsgs = this.activeHypothesisMessages()
     let activePlanStep: PlanStep | undefined
+    let activePlanStepIsFinal = false
     const latestLedger = this.context.state.ledger
     const activePlanIdRec = latestLedger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
     if (activePlanIdRec) {
@@ -576,6 +577,10 @@ export class AgentRunner {
         const s = currentPlanState.plan.steps.find(stepItem => stepItem.id === stepId)
         if (s) {
           activePlanStep = s
+          activePlanStepIsFinal = nextIncompletePlanStep(
+            currentPlanState.plan,
+            { ...currentPlanState.checkpoint.stepStatuses, [stepId]: "completed" },
+          ) === undefined
           activeHypothesisMsgs = [
             ...activeHypothesisMsgs,
             {
@@ -591,6 +596,7 @@ Executor Hint: ${s.executorHint ?? "main"}${s.subagentRole ? ` (${s.subagentRole
 
 Focus ONLY on achieving the goal of this step. Do not deviate.
 When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' with a non-empty 'report' string that explains what was completed.
+If this is not the final step, keep that 'report' concise: no more than ${intermediatePlanStepReportMaxChars} characters or ${intermediatePlanStepReportMaxLines} lines.
 If this is the final step, that 'report' must be the final user-facing deliverable, not a promise to write it later.
 After a step is completed, continue immediately with the next plan step in the same run. Do not ask the user whether to continue between steps.
 ${s.executorHint === "subagent" && s.subagentRole ? `This step is assigned to a subagent. Before any non-coordinator tool use, you MUST call 'delegate_subagent' with role='${s.subagentRole}'. Do not execute this step directly from the coordinator.` : ""}
@@ -629,7 +635,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       tools: preparedTurn.availableTools,
       signal: input.signal,
       providerMetrics,
-    }, requiresProposedPlan, activePlanStep)
+    }, requiresProposedPlan, activePlanStep, activePlanStepIsFinal)
 
     const currentReasoningTranscript = appendOutput(reasoningTranscript, turn.reasoningText)
     if (turn.cancelledOutput) {
@@ -740,7 +746,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     )
   }
 
-  private async runValidatedProviderTurn(input: ProviderTurnInput, requiresProposedPlan: boolean, activePlanStep?: PlanStep): Promise<ProviderTurnResult> {
+  private async runValidatedProviderTurn(input: ProviderTurnInput, requiresProposedPlan: boolean, activePlanStep?: PlanStep, activePlanStepIsFinal = false): Promise<ProviderTurnResult> {
     return runValidatedProviderTurnLoop(
       {
         runProviderTurn: (nextInput) => this.runProviderTurn(nextInput),
@@ -773,6 +779,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
                 "- If this completion ends the plan, put the final user-facing report in 'report' now instead of promising to write it later.",
               ].join("\n"),
               failureText: `Plan step completion gate failed: plan_step_complete must include a non-empty report (call id: ${missingPlanStepReport.id}).`,
+            }
+          }
+          const overlongIntermediatePlanStepReport = firstOverlongIntermediatePlanStepReport(turn.toolCalls, activePlanStepIsFinal)
+          if (overlongIntermediatePlanStepReport) {
+            return {
+              correction: [
+                "Plan step completion gate:",
+                `- Non-final plan_step_complete reports must stay concise: no more than ${intermediatePlanStepReportMaxChars} characters or ${intermediatePlanStepReportMaxLines} lines.`,
+                "- Reserve longer reports for the final step only.",
+                "- If this step is still intermediate, reduce the report to a brief progress update.",
+              ].join("\n"),
+              failureText: `Plan step completion gate failed: non-final plan_step_complete report is too long (call id: ${overlongIntermediatePlanStepReport.id}).`,
             }
           }
           if (requiresReviewerDelegationBeforeFinal(input.prompt, activePlanStep) && turn.toolCalls.length === 0 && turn.text.trim() && !hasSuccessfulReviewerSubagent(this.context.state.messages)) {
@@ -1663,8 +1681,19 @@ function firstMissingPlanStepReport(toolCalls: ToolCall[]) {
   return toolCalls.find((call) => call.name === "plan_step_complete" && !hasNonEmptyPlanStepReport(call.input))
 }
 
+function firstOverlongIntermediatePlanStepReport(toolCalls: ToolCall[], activePlanStepIsFinal: boolean) {
+  if (activePlanStepIsFinal) return undefined
+  return toolCalls.find((call) => call.name === "plan_step_complete" && hasOverlongIntermediatePlanStepReport(call.input))
+}
+
 function hasNonEmptyPlanStepReport(input: unknown) {
   if (!input || typeof input !== "object") return false
   const report = (input as { report?: unknown }).report
   return typeof report === "string" && report.trim().length > 0
+}
+
+function hasOverlongIntermediatePlanStepReport(input: unknown) {
+  if (!input || typeof input !== "object") return false
+  const report = (input as { report?: unknown }).report
+  return typeof report === "string" && isIntermediatePlanStepReportTooLong(report)
 }

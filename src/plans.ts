@@ -3,6 +3,8 @@ import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { easycodeDir } from "./easycode-path"
 
 const MAX_PLANS_PER_SESSION = 20
+export const intermediatePlanStepReportMaxChars = 240
+export const intermediatePlanStepReportMaxLines = 4
 
 export function planStoreDir(root: string, sessionId: string): string {
   return path.join(easycodeDir(root), "plans", safePlanSegment(sessionId))
@@ -263,6 +265,14 @@ export function nextIncompletePlanStep(plan: ExecutionPlan, stepStatuses: Record
     if ((step.dependsOn ?? []).every((dependency) => stepStatuses[dependency] === "completed")) return step
   }
   return undefined
+}
+
+export function planStepReportLineCount(report: string) {
+  return report.trim().split(/\r?\n/).length
+}
+
+export function isIntermediatePlanStepReportTooLong(report: string) {
+  return report.trim().length > intermediatePlanStepReportMaxChars || planStepReportLineCount(report) > intermediatePlanStepReportMaxLines
 }
 
 export function createPlanCheckpoint(plan: ExecutionPlan, input: Partial<PlanCheckpoint> = {}): PlanCheckpoint {

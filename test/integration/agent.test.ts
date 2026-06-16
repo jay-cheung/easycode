@@ -1008,6 +1008,13 @@ describe("agent integration", () => {
   test("running plans continue across steps without another user prompt", async () => {
     const root = await fixture()
     const context = new ContextManager()
+    const finalReport = [
+      "Final verification report line 1: inspected src/add.ts and confirmed the initial diagnosis.",
+      "Final verification report line 2: verified the bounded scope and preserved the expected plan ordering.",
+      "Final verification report line 3: confirmed the completion contract is satisfied for the last step.",
+      "Final verification report line 4: no additional follow-up plan is required for this synthetic run.",
+      "Final verification report line 5: final deliverable is emitted directly from plan_step_complete.",
+    ].join("\n")
     await PlanTracker.activatePlan(context, root, "default", {
       id: "plan_auto_continue",
       title: "Auto Continue Plan",
@@ -1037,7 +1044,7 @@ describe("agent integration", () => {
         if (completedSteps === 1) {
           const latestToolResult = [...toolResults(input.messages)].reverse().find((part) => part.toolName === "plan_step_complete")
           expect(latestToolResult?.output).toContain("Continue immediately with that step")
-          yield { type: "tool_call", call: { id: "call_complete_2", name: "plan_step_complete", input: { message: "verification done", report: "Final verification report." } } }
+          yield { type: "tool_call", call: { id: "call_complete_2", name: "plan_step_complete", input: { message: "verification done", report: finalReport } } }
           return
         }
       },
@@ -1046,7 +1053,7 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
 
     expect(result.status).toBe("completed")
-    expect(result.text).toContain("Final verification report.")
+    expect(result.text).toContain("Final verification report line 5")
     expect(result.usedTools).toEqual(["plan_step_complete", "plan_step_complete"])
     expect(turnCount).toBe(2)
     await rm(root, { recursive: true, force: true })
@@ -1128,6 +1135,57 @@ describe("agent integration", () => {
     expect(result.status).toBe("failed")
     expect(turnCount).toBe(3)
     expect(result.text).toContain("Every plan_step_complete call must include a non-empty 'report' field.")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("non-final plan_step_complete report must stay concise", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    const overlongIntermediateReport = [
+      "Intermediate report line 1: this is intentionally long enough to exceed the concise-report threshold for a non-final plan step.",
+      "Intermediate report line 2: it keeps elaborating on details that should be reserved for the final user-facing deliverable.",
+      "Intermediate report line 3: the validation gate should reject this before plan_step_complete can advance the plan.",
+      "Intermediate report line 4: even more detail to ensure the report is clearly oversized for an intermediate step.",
+      "Intermediate report line 5: this extra line locks the line-count rule as well as the character-count rule.",
+    ].join("\n")
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_intermediate_report_limit",
+      title: "Intermediate Report Limit",
+      lowRisk: true,
+      steps: [
+        { id: "step_1", goal: "Inspect src/add.ts", kind: "inspect", doneWhen: "Inspection is complete." },
+        { id: "step_2", goal: "Verify the result", kind: "verify", doneWhen: "Verification is complete." },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running", step_2: "pending" },
+      status: "running",
+    })
+
+    let turnCount = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        turnCount += 1
+        yield {
+          type: "tool_call",
+          call: {
+            id: `call_complete_${turnCount}`,
+            name: "plan_step_complete",
+            input: {
+              message: "inspection done",
+              report: overlongIntermediateReport,
+            },
+          },
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
+
+    expect(result.status).toBe("failed")
+    expect(turnCount).toBe(3)
+    expect(result.text).toContain("Non-final plan_step_complete reports must stay concise")
     await rm(root, { recursive: true, force: true })
   })
 

@@ -2,7 +2,7 @@ import { McpSourceService, WebFetchService, WebSearchService, formatMcpResource,
 import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, WebFetchInput, PlanStepCompleteInput, PlanStepFailInput, GoalCompleteInput, GoalBlockedInput, GoalSetAcceptanceInput, DelegateSubagentInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
-import { loadStructuredPlanState, nextIncompletePlanStep } from "../../plans"
+import { intermediatePlanStepReportMaxChars, intermediatePlanStepReportMaxLines, isIntermediatePlanStepReportTooLong, loadStructuredPlanState, nextIncompletePlanStep, planStepReportLineCount } from "../../plans"
 import { PlanTracker } from "../../agent/planner"
 import { GoalStateError, assertGoalPhase, goalStateFromContext, writeGoalState } from "../../goal"
 import type { Message } from "../../message"
@@ -237,6 +237,20 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const stepStatuses = { ...checkpoint.stepStatuses, [currentStepId]: "completed" as const }
       const nextStep = nextIncompletePlanStep(plan, stepStatuses)
       const report = params.report.trim()
+      if (nextStep && isIntermediatePlanStepReportTooLong(report)) {
+        return {
+          title: "Plan Step Completed",
+          output: `Intermediate plan steps require a concise progress report. Keep report within ${intermediatePlanStepReportMaxChars} characters and ${intermediatePlanStepReportMaxLines} lines; reserve longer reports for the final step.`,
+          metadata: {
+            status: "failed",
+            error: "plan_step_report_too_long_before_final_step",
+            maxChars: intermediatePlanStepReportMaxChars,
+            maxLines: intermediatePlanStepReportMaxLines,
+            reportChars: report.length,
+            reportLines: planStepReportLineCount(report),
+          },
+        }
+      }
       
       if (nextStep) {
         await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {

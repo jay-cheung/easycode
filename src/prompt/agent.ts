@@ -63,6 +63,7 @@ const unifiedRunProtocol = [
   "4. After a plan is approved and active, focus only on the current plan step and use plan_step_complete or plan_step_fail to advance or trigger replanning.",
   "   - After plan_step_complete advances to another step, continue immediately in the same run. Do not ask the user whether to continue between plan steps.",
   "   - Every plan_step_complete call must include a non-empty report. Use message only as a short label; put the real completion content in report.",
+  "   - For non-final steps, keep report concise: at most 240 characters or 4 lines. Longer reports are reserved for the final step only.",
   "   - Do not call plan_step_complete for the final step until the final user-visible deliverable is actually ready. The final step's report must be that deliverable, not a placeholder promise.",
   "5. delegate_subagent usage:",
   "   - For PURE FACT-FINDING (list tools, grep definitions, find references, read configs, collect stats):",
