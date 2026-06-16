@@ -1,6 +1,6 @@
 {
   "id": "EC-002",
-  "mode": "build",
+  "mode": "plan",
   "prompt": "plan-exit",
   "fixture": "evals/fixtures/simple-bug",
   "expected": {

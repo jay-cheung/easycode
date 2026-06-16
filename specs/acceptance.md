@@ -10,6 +10,7 @@
 - Real-provider checks inside `bun run gate` target configured real providers by default and can be narrowed with `--provider` / `--providers`.
 - `easycode` without a prompt starts the interactive unified run session.
 - `easycode "..."` runs a single task and exits; `--once` is no longer required.
+- Ordinary prompts default to `build` execution; planning mode is entered only through explicit `/plan` or `/goal` flows.
 - Multi-step, risky, or symbol-affecting unified runs can return `<proposed_plan>` before any edit occurs.
 - A returned `<proposed_plan>` does not auto-execute in the same turn; execution continues only after explicit approval.
 - Planning-stage responses fail closed unless the final assistant message is a `<proposed_plan>...</proposed_plan>` block or a `plan_exit` tool call that produces one.
@@ -26,6 +27,7 @@
 - First interactive startup without `EASYCODE_LANG` prompts for a UI language choice and saves it for later sessions.
 - `/sessions` lists saved sessions and marks the active one in interactive mode.
 - `/lang <code>` updates the fixed CLI/TUI language for the current session and persists the default in `~/.easycode/.env`.
+- `/plan <request>` creates a draft plan on demand and waits for explicit approval before execution.
 - `/session switch <id>` switches the active interactive session and reloads that session's saved settings.
 - `/session delete <id>` archives a short summary into project memory, deletes the session file, logs, and saved plans, and keeps the interactive shell on a valid session.
 - Project memory records in `.easycode/memory.json` are structured, backward-compatible, and queryable through `memory_query`.

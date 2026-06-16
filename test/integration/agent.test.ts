@@ -893,10 +893,10 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("plan-exit-completes-run in unified mode", async () => {
+  test("explicit plan mode surfaces a proposed plan without executing edits", async () => {
     const root = await fixture()
     const chunks: string[] = []
-    const result = await createRunner({ root, provider: "fake", mode: "build", onTextDelta: (text) => chunks.push(text) }).run("plan-exit", "build")
+    const result = await createRunner({ root, provider: "fake", mode: "plan", onTextDelta: (text) => chunks.push(text) }).run("plan-exit", "plan")
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["plan_exit"])
     expect(result.text).toContain("<proposed_plan>")
@@ -906,9 +906,9 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("direct-agent-runner-allows-plan-exit-in-unified-mode", async () => {
+  test("direct agent runner still allows explicit plan mode to return plan_exit", async () => {
     const root = await fixture()
-    const result = await new AgentRunner({ root, provider: new FakeProvider() }).run("plan-exit", "build")
+    const result = await new AgentRunner({ root, provider: new FakeProvider() }).run("plan-exit", "plan")
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["plan_exit"])
     expect(result.text).toContain("<proposed_plan>")
@@ -987,7 +987,7 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("plan mode fails closed when the provider refuses to return a proposed plan", async () => {
+  test("plan mode degrades to a fallback proposed plan when the provider refuses to return one", async () => {
     const root = await fixture()
     const provider: Provider = {
       name: "test-provider",
@@ -998,10 +998,9 @@ describe("agent integration", () => {
 
     const result = await new AgentRunner({ root, provider }).run("给我一个计划", "plan")
 
-    expect(result.status).toBe("failed")
-    expect(result.failureReason).toBe("provider_error")
-    expect(result.text).toContain("模型连续未按要求产出计划")
-    expect(result.text).toContain("这是一段普通说明，不是计划。")
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("<proposed_plan>")
+    expect(result.text).toContain("Fallback Execution Plan")
     await rm(root, { recursive: true, force: true })
   })
 
@@ -1132,9 +1131,9 @@ describe("agent integration", () => {
 
     const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
 
-    expect(result.status).toBe("failed")
-    expect(turnCount).toBe(3)
-    expect(result.text).toContain("Every plan_step_complete call must include a non-empty 'report' field.")
+    expect(result.status).toBe("completed")
+    expect(turnCount).toBe(2)
+    expect(result.text).toContain("Validation gate failed repeatedly")
     await rm(root, { recursive: true, force: true })
   })
 
@@ -1183,9 +1182,9 @@ describe("agent integration", () => {
 
     const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
 
-    expect(result.status).toBe("failed")
-    expect(turnCount).toBe(3)
-    expect(result.text).toContain("Non-final plan_step_complete reports must stay concise")
+    expect(result.status).toBe("completed")
+    expect(turnCount).toBe(2)
+    expect(result.text).toContain("Validation gate failed repeatedly")
     await rm(root, { recursive: true, force: true })
   })
 
@@ -1836,22 +1835,13 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("review plan outputs must delegate bounded reviewer work before final synthesis", async () => {
+  test("build mode can return a direct review synthesis without forced reviewer delegation", async () => {
     const root = await fixture()
     const provider: Provider = {
       name: "review-gated-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
         const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
-        const correctionSeen = input.providerMessages.some((message) => typeof message.content === "string" && message.content.includes("Reviewer delegation anti-pattern gate"))
         if (input.prompt === "依据 Code Complete 维度制定项目 review/修复/优化方案") {
-          if (results.some((result) => result.tool === "delegate_subagent")) {
-            yield { type: "text_delta", text: "Final plan synthesized from reviewer conclusion." }
-            return
-          }
-          if (correctionSeen) {
-            yield { type: "tool_call", call: { id: "call_reviewer", name: "delegate_subagent", input: { role: "reviewer", task: "Review runner files by Code Complete complexity dimension", success_criteria: "Return concrete findings and evidence references." } } }
-            return
-          }
           yield { type: "text_delta", text: "Code Complete 项目审查/修复/优化方案：P1 类型安全，P2 错误处理。" }
           return
         }
@@ -1865,26 +1855,21 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider }).run("依据 Code Complete 维度制定项目 review/修复/优化方案", "build")
 
     expect(result.status).toBe("completed")
-    expect(result.usedTools).toEqual(["delegate_subagent"])
-    expect(result.text).toContain("Final plan synthesized from reviewer conclusion.")
-    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.metadata?.subagentRole === "reviewer")).toBe(true)
+    expect(result.usedTools).toEqual([])
+    expect(result.text).toContain("Code Complete 项目审查/修复/优化方案")
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent")).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
 
-  test("coordinator retries pure fact-finding turns through delegate_subagent", async () => {
+  test("build mode can use direct fact-finding tools without forced delegate_subagent retries", async () => {
     const root = await fixture()
     const provider: Provider = {
       name: "gated-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
         const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
-        const correctionSeen = input.providerMessages.some((message) => typeof message.content === "string" && message.content.includes("Coordinator delegation gate"))
         if (input.prompt === "Inspect add with delegation gate") {
-          if (results.some((result) => result.tool === "delegate_subagent")) {
-            yield { type: "text_delta", text: "Coordinator consumed the delegated findings." }
-            return
-          }
-          if (correctionSeen) {
-            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts", success_criteria: "Identify the exported function and owning file." } } }
+          if (results.some((result) => result.tool === "find_definition")) {
+            yield { type: "text_delta", text: "Coordinator inspected add directly through semantic tools." }
             return
           }
           yield { type: "tool_call", call: { id: "call_repo_map", name: "repo_map", input: { dir: "src", language: "typescript", query: "add export" } } }
@@ -1901,13 +1886,13 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider }).run("Inspect add with delegation gate", "build")
 
     expect(result.status).toBe("completed")
-    expect(result.usedTools).toEqual(["delegate_subagent"])
-    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Found export function add"))).toBe(true)
-    expect(toolResults(result.messages).some((part) => part.toolName === "repo_map")).toBe(false)
+    expect(result.usedTools).toEqual(["repo_map", "find_definition"])
+    expect(result.text).toContain("Coordinator inspected add directly through semantic tools.")
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent")).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
 
-  test("coordinator retries even a single fact-finding tool through delegate_subagent", async () => {
+  test("build mode allows a single fact-finding read without forcing delegate_subagent", async () => {
     const root = await fixture()
     const provider: Provider = {
       name: "gated-provider",
@@ -1915,6 +1900,10 @@ describe("agent integration", () => {
         const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
         const correctionSeen = input.providerMessages.some((message) => typeof message.content === "string" && message.content.includes("Coordinator delegation gate"))
         if (input.prompt === "Inspect add with single read delegation gate") {
+          if (results.some((result) => result.tool === "read")) {
+            yield { type: "text_delta", text: "Coordinator inspected src/add.ts directly." }
+            return
+          }
           if (results.some((result) => result.tool === "delegate_subagent")) {
             yield { type: "text_delta", text: "Coordinator consumed the delegated single-read findings." }
             return
@@ -1936,19 +1925,23 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider }).run("Inspect add with single read delegation gate", "build")
 
     expect(result.status).toBe("completed")
-    expect(result.usedTools).toEqual(["delegate_subagent"])
-    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Found export function add"))).toBe(true)
-    expect(toolResults(result.messages).some((part) => part.toolName === "read")).toBe(false)
+    expect(result.usedTools).toEqual(["read"])
+    expect(toolResults(result.messages).some((part) => part.toolName === "read" && part.status === "succeeded")).toBe(true)
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent")).toBe(false)
     await rm(root, { recursive: true, force: true })
   })
 
-  test("coordinator delegation gate stops after repeated ignored corrections", async () => {
+  test("build mode does not fail closed on coordinator delegation suggestions without an active plan step", async () => {
     const root = await fixture()
     let providerTurns = 0
     const provider: Provider = {
       name: "gated-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
         providerTurns += 1
+        if (toolResults(input.messages).some((part) => part.toolName === "web_fetch")) {
+          yield { type: "text_delta", text: "Coordinator kept the direct web fetch result." }
+          return
+        }
         if (input.prompt === "Ignore delegation gate for web fetch") {
           yield { type: "tool_call", call: { id: `call_fetch_${providerTurns}`, name: "web_fetch", input: { url: "https://example.com/data.json" } } }
         }
@@ -1957,11 +1950,10 @@ describe("agent integration", () => {
 
     const result = await new AgentRunner({ root, provider }).run("Ignore delegation gate for web fetch", "build")
 
-    expect(result.status).toBe("failed")
-    expect(providerTurns).toBe(3)
-    expect(result.text).toContain("Validation gate failed repeatedly")
-    expect(result.text).toContain("docs_researcher")
-    expect(toolResults(result.messages).some((part) => part.toolName === "web_fetch")).toBe(false)
+    expect(result.status).toBe("completed")
+    expect(providerTurns).toBe(2)
+    expect(result.text).toContain("Coordinator kept the direct web fetch result.")
+    expect(result.usedTools).toContain("web_fetch")
     await rm(root, { recursive: true, force: true })
   })
 

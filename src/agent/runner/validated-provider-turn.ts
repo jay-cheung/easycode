@@ -36,7 +36,7 @@ export async function runValidatedProviderTurnLoop(
   let hypothesisAttempts = 0
   let turnValidationAttempts = 0
   const maxHypothesisAttempts = 2
-  const maxTurnValidationAttempts = deps.validateTurn ? 3 : 0
+  const maxTurnValidationAttempts = deps.validateTurn ? 2 : 0
   while (hypothesisAttempts < maxHypothesisAttempts || turnValidationAttempts < maxTurnValidationAttempts) {
     const providerMessages = providerMessagesWithCorrections(input.providerMessages, correctionMessages)
     const turn = await deps.runProviderTurn({ ...input, providerMessages, emitDeltas: false })

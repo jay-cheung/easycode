@@ -289,9 +289,9 @@ export function defaultPermissionRules(mode: "build" | "plan" | "goal"): Permiss
     { permission: "plan_exit", pattern: "*", action: "allow" },
     { permission: "plan_step_complete", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
     { permission: "plan_step_fail", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
-    { permission: "goal_set_acceptance", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
-    { permission: "goal_complete", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
-    { permission: "goal_blocked", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
+    { permission: "goal_set_acceptance", pattern: "*", action: mode === "build" || mode === "plan" || mode === "goal" ? "allow" : "deny" },
+    { permission: "goal_complete", pattern: "*", action: mode === "build" || mode === "plan" || mode === "goal" ? "allow" : "deny" },
+    { permission: "goal_blocked", pattern: "*", action: mode === "build" || mode === "plan" || mode === "goal" ? "allow" : "deny" },
   ]
   base.push({ permission: "bash", pattern: "*", action: "allow" })
   return base

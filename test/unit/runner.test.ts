@@ -92,10 +92,10 @@ describe("agent runner ui events", () => {
       tools: [],
     })
 
-    expect(attempts).toBe(3)
+    expect(attempts).toBe(2)
     expect(result.failureText).toBeUndefined()
     expect(result.retryMessage).toContain("Planning mode hard gate")
-    expect(result.validationFailureCount).toBe(3)
+    expect(result.validationFailureCount).toBe(2)
     expect(result.lastRejectedTurn).toEqual({
       text: "Here is a plain status update instead of a plan.",
       reasoningText: "",
@@ -245,12 +245,11 @@ describe("agent runner ui events", () => {
 
       const result = await runner.run("review 当前代码", "build")
 
-      expect(providerCalls).toBe(3)
-      expect(result.status).toBe("failed")
-      expect(result.text).toContain("模型连续未按要求产出计划")
-      expect(result.text).toContain("status only, no plan")
+      expect(providerCalls).toBe(2)
+      expect(result.status).toBe("completed")
+      expect(result.text).toContain("<proposed_plan>")
+      expect(result.text).toContain("Fallback Investigation Plan")
       expect(events.some((text) => text.includes("Planning mode hard gate"))).toBe(false)
-      expect(events.at(-1)).toContain("模型连续未按要求产出计划")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

@@ -1722,3 +1722,18 @@ Status: Draft
   - Correctness: ordinary prompts now reach the planning hard gate first, so they cannot bypass planning and fall straight into execution-only delegation loops.
   - Maintainability: CLI entry behavior now matches the runtime prompt contract instead of having a goal-only exception path that was easy to forget when debugging sessions from logs.
   - Verification: reran focused CLI integration plus the runner/hypothesis/typecheck checks covering the affected plan/delegation paths.
+
+## Step 59: Restore Build-First Default And Soft Fallbacks
+
+- Scope: reverse the default force-planning behavior so normal prompts stay in `build`, keep `/goal` as the only auto-planning flow, restore public `/plan`, and reduce repeated hard-failure loops when planning or validation gates keep rejecting a run.
+- Implementation:
+  - Updated `src/cli.ts`, `src/slash.ts`, `src/cli/session-helpers.ts`, and `src/i18n.ts` so ordinary single-run and interactive prompts create the runner with `forcePlanning: false`, `/goal` still queues planning automatically, `/plan <request>` is publicly exposed again, and welcome/help copy now advertises both slash commands.
+  - Updated `src/prompt/agent.ts` plus `src/agent/runner/runner-support.ts` so `build` and `plan` prompts diverge again: `build` executes directly and must not emit `plan_exit` unless an explicit planning turn is active, while `plan` retains the proposal-plan contract and plan-mode permission profile.
+  - Updated `src/agent/runner/index.ts` and `src/agent/runner/validated-provider-turn.ts` so repeated validation failures stop after two attempts, non-plan runs degrade to a result-bearing fallback message instead of hard failure, repeated plan-gate failures synthesize a minimal draft `<proposed_plan>` for approval, and delegation-only validation gates no longer block ordinary build turns that have no active plan step.
+  - Updated `specs/acceptance.md`, `test/unit/slash.test.ts`, `test/unit/prompt.test.ts`, and `test/unit/runner.test.ts` to lock the restored `/plan` surface, build-first prompt contract, and soft-fallback behavior.
+- Code Complete review result:
+  - Correctness: normal prompts no longer pay the plan-mode gate cost by default, `/goal` still preserves controlled auto-planning, and repeated validator rejection now converges to an inspectable result instead of looping into failure.
+  - Maintainability: mode boundaries are explicit again, which makes the runner easier to reason about because planning-only tools and permissions are no longer silently active in build runs.
+  - Verification:
+  - `bun test test/unit/slash.test.ts test/unit/prompt.test.ts test/unit/cli.test.ts test/unit/runner.test.ts`
+  - `bun run typecheck`

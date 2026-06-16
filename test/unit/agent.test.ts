@@ -2,26 +2,27 @@ import { describe, expect, test } from "bun:test"
 import { createAgent } from "../../src/agent"
 
 describe("agent protocol", () => {
-  test("run mode carries unified planning and symbol-aware edit guidance", () => {
+  test("build mode carries direct execution and symbol-aware edit guidance", () => {
     const prompt = createAgent("build").systemPrompt
 
-    expect(prompt).toContain("# Unified Run Mode - System Reminder")
-    expect(prompt).toContain("EasyCode runs in one unified mode")
+    expect(prompt).toContain("# Build Mode - System Reminder")
+    expect(prompt).toContain("EasyCode is in direct execution mode")
     expect(prompt).toContain("plan_exit")
-    expect(prompt).toContain("inspect only as needed with read-only tools")
-    expect(prompt).toContain("Every structured plan JSON MUST include \"lowRisk\"")
+    expect(prompt).toContain("Inspect only as much as needed, then do the work directly.")
+    expect(prompt).toContain("Do not call plan_exit unless the user explicitly requested /plan or /goal created an active planning turn.")
     expect(prompt).toContain("symbol-aware edit plan")
     expect(prompt).toContain("target symbols")
     expect(prompt).toContain("excluded same-name matches")
   })
 
-  test("legacy plan agent reuses the unified run protocol", () => {
+  test("plan agent carries the explicit planning protocol", () => {
     const prompt = createAgent("plan").systemPrompt
 
-    expect(prompt).toContain("# Unified Run Mode - System Reminder")
-    expect(prompt).toContain("Files likely to change")
+    expect(prompt).toContain("# Plan Mode - System Reminder")
+    expect(prompt).toContain("Return either a final <proposed_plan>...</proposed_plan> block or call plan_exit.")
+    expect(prompt).toContain("Every structured plan JSON MUST include \"lowRisk\"")
     expect(prompt).toContain("target symbols")
-    expect(prompt).not.toContain("read-only planning phase")
+    expect(prompt).toContain("read-only tools")
     expect(createAgent("plan").mode).toBe("build")
   })
 

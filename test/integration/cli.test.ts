@@ -501,7 +501,7 @@ describe("cli integration", () => {
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     expect(status).toBe(0)
     expect(stdout).toContain("EasyCode TUI")
-    expect(stdout).toContain("/help /settings /goal /sessions")
+    expect(stdout).toContain("/help /settings /plan /goal /sessions")
     expect(stdout).toContain("[Settings]")
     expect(stdout).toContain("provider: fake")
     expect(stdout).toContain("[Sessions]")
@@ -548,13 +548,9 @@ describe("cli integration", () => {
       stderr = text
     })
     child.stdin.write("delayed answer\n")
-    await waitForOutputCount(() => stdout, "pprove & execute", 1, 3_000)
-    child.stdin.write("\n")
-    await waitForOutput(() => stdout, "repo_map prewarm cache hit", 3_000)
+    await waitForOutput(() => stdout, "Type /cancel to stop this run", 3_000)
     child.stdin.write("queued-ok\n")
     await waitForOutput(() => stdout, "Delayed done.", 3_000)
-    await waitForOutputCount(() => stdout, "pprove & execute", 2, 3_000)
-    child.stdin.write("\n")
     await waitForOutput(() => stdout, "Queued done.", 3_000)
     child.stdin.write(":exit\n")
     child.stdin.end()
@@ -610,9 +606,7 @@ describe("cli integration", () => {
     })
 
     child.stdin.write("delayed answer\n")
-    await waitForOutput(() => stdout, "pprove & execute", 3_000)
-    child.stdin.write("\n")
-    await waitForOutputCount(() => stdout, "Type /cancel to stop this run", 2, 3_000)
+    await waitForOutput(() => stdout, "Type /cancel to stop this run", 3_000)
     process.kill(child.pid, "SIGINT")
 
     const [status, finalStdout, finalStderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
@@ -638,9 +632,17 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("Read env configuration\n\nn\n:exit\n")
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("Read env configuration\n")
+    await waitForOutput(() => stdout, "Allow read for .env?", 3_000)
+    child.stdin.write("n\n:exit\n")
     child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
     expect(status).toBe(0)
     expect(stdout).toContain("Allow read for .env?")
     expect(stdout).not.toContain("SECRET=hidden")
@@ -657,9 +659,19 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("Read env configuration\n\n/cancel\n:exit\n")
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("Read env configuration\n")
+    await waitForOutput(() => stdout, "Allow read for .env?", 3_000)
+    child.stdin.write("/cancel\n")
+    await waitForOutput(() => stdout, "TUI: Cancelling current run...", 3_000)
+    child.stdin.write(":exit\n")
     child.stdin.end()
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
     expect(status).toBe(0)
     expect(stdout).toContain("[Permission]")
     expect(stdout).toContain("Allow read for .env?")
@@ -702,7 +714,7 @@ describe("cli integration", () => {
     const stderrDone = readPipe(child.stderr, (text) => {
       stderr = text
     })
-    child.stdin.write("plan-exit\n")
+    child.stdin.write("/plan plan-exit\n")
     await waitForOutput(() => stdout, "[Plan] [A]pprove & execute", 5_000)
     child.stdin.write("r\n:exit\n")
     child.stdin.end()
@@ -717,7 +729,7 @@ describe("cli integration", () => {
     await rm(root, { recursive: true, force: true })
   }, { timeout: 12_000 })
 
-  test("ordinary interactive prompts enter planning mode before execution", async () => {
+  test("ordinary interactive prompts stay in build mode and execute directly", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
       cwd: path.resolve(import.meta.dir, "../.."),
@@ -730,20 +742,18 @@ describe("cli integration", () => {
       stdout = text
     })
     const stderrDone = readPipe(child.stderr)
-    child.stdin.write("hello\n")
-    await waitForOutput(() => stdout, "<proposed_plan>", 5_000)
-    await waitForOutput(() => stdout, "[A]pprove & execute", 5_000)
-    child.stdin.write("r\n:exit\n")
+    child.stdin.write("queued-ok\n:exit\n")
     child.stdin.end()
     const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
     stdout = finalStdout
 
     expect(status).toBe(0)
-    expect(stdout).toContain("<proposed_plan>")
+    expect(stdout).toContain("Queued done.")
     const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
     expect(logText).toContain("\"name\":\"provider.input\"")
-    expect(logText).toContain("\"mode\":\"plan\"")
-    expect(logText).not.toContain("\"mode\":\"build\",\"prompt\":\"hello\"")
+    expect(logText).toContain("\"mode\":\"build\"")
+    expect(logText).toContain("\"prompt\":\"queued-ok\"")
+    expect(logText).not.toContain("\"mode\":\"plan\",\"prompt\":\"queued-ok\"")
     expect(stderr).toBe("")
     await rm(root, { recursive: true, force: true })
   }, { timeout: 12_000 })
@@ -761,7 +771,7 @@ describe("cli integration", () => {
       stdout = text
     })
     const stderrDone = readPipe(child.stderr)
-    child.stdin.write("high-risk-plan\n")
+    child.stdin.write("/plan high-risk-plan\n")
     await waitForOutput(() => stdout, "[A]pprove & execute", 5_000)
     child.stdin.write("\n:exit\n")
     child.stdin.end()
@@ -786,7 +796,7 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("low-risk-plan\n:exit\n")
+    child.stdin.write("/plan low-risk-plan\n:exit\n")
     child.stdin.end()
     const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
 
@@ -809,10 +819,18 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("/goal goal-delegated-e2e\n:exit\n")
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("/goal goal-delegated-e2e\n")
+    await waitForOutput(() => stdout, "Goal completed.", 8_000)
+    child.stdin.write(":exit\n")
     child.stdin.end()
 
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
     expect(status).toBe(0)
     expect(stdout).toContain("Goal started.")
     expect(stdout).toContain("Goal Acceptance Recorded")
@@ -870,10 +888,18 @@ describe("cli integration", () => {
       stdout: "pipe",
       stderr: "pipe",
     })
-    child.stdin.write("/goal goal-multi-slice-e2e\n:exit\n")
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("/goal goal-multi-slice-e2e\n")
+    await waitForOutput(() => stdout, "Goal completed.", 8_000)
+    child.stdin.write(":exit\n")
     child.stdin.end()
 
-    const [stdout, stderr, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
     expect(status).toBe(0)
     expect(stdout).toContain("Goal started.")
     expect(stdout).toContain("Goal multi-slice e2e plan 1")
@@ -956,8 +982,6 @@ describe("cli integration", () => {
     child.stdin.write("/image pic.png\n")
     await waitForOutput(() => stdout, "Attached image:", 3_000)
     child.stdin.write("Describe it\n")
-    await waitForOutput(() => stdout, "pprove & execute", 3_000)
-    child.stdin.write("\n")
     await waitForOutput(() => stdout, "Image received.", 3_000)
     child.stdin.write(":exit\n")
     child.stdin.end()
@@ -994,8 +1018,6 @@ describe("cli integration", () => {
     child.stdin.write("/image pic.png\n")
     await waitForOutput(() => stdout, "Attached image:", 3_000)
     child.stdin.write("Describe it\n")
-    await waitForOutput(() => stdout, "pprove & execute", 3_000)
-    child.stdin.write("\n")
     await waitForOutput(() => stdout, "Image received.", 3_000)
     child.stdin.write(":exit\n")
     child.stdin.end()

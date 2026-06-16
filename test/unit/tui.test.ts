@@ -24,7 +24,7 @@ describe("tui renderer", () => {
 
     expect(output).toContain("EasyCode TUI")
     expect(output).toContain("session=demo")
-    expect(output).toContain("/help /settings /goal /sessions")
+    expect(output).toContain("/help /settings /plan /goal /sessions")
     expect(output).toContain("[status] /settings")
     expect(output).toContain("[Settings]")
     expect(output).toContain("● Model")

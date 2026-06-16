@@ -13,6 +13,7 @@ describe("slash commands", () => {
     expect(parseSlashCommand("/effort max")).toEqual({ type: "effort", value: "max" })
     expect(parseSlashCommand("/lang zh")).toEqual({ type: "lang", value: "zh" })
     expect(parseSlashCommand("/lang")).toEqual({ type: "lang" })
+    expect(parseSlashCommand("/plan fix the flaky test")).toEqual({ type: "plan", objective: "fix the flaky test" })
     expect(parseSlashCommand("/goal")).toEqual({ type: "goal", action: "status" })
     expect(parseSlashCommand("/goal pause")).toEqual({ type: "goal", action: "pause" })
     expect(parseSlashCommand("/goal resume")).toEqual({ type: "goal", action: "resume" })
@@ -28,6 +29,7 @@ describe("slash commands", () => {
   test("returns error for model and provider with no args", () => {
     expect(parseSlashCommand("/model")).toEqual({ type: "error", code: "model_requires_name" })
     expect(parseSlashCommand("/provider")).toEqual({ type: "error", code: "provider_requires_name" })
+    expect(parseSlashCommand("/plan")).toEqual({ type: "error", code: "plan_requires_objective" })
     expect(parseSlashCommand("/session switch")).toEqual({ type: "error", code: "session_switch_requires_name" })
     expect(parseSlashCommand("/session delete")).toEqual({ type: "error", code: "session_delete_requires_name" })
   })

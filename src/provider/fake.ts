@@ -140,6 +140,11 @@ export class FakeProvider implements Provider {
 
     if (prompt.includes("goal-delegated-e2e") && currentPrompt.includes("the latest plan slice has finished.")) {
       const results = toolResults(input.messages)
+      if (results.some((part) => part.toolName === "goal_complete" && part.status === "succeeded")) {
+        yield { type: "text_delta", text: "Goal delegated e2e review finished." }
+        yield { type: "done" }
+        return
+      }
       const reviewerCount = results.filter((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "reviewer").length
       if (reviewerCount === 0) {
         yield {
@@ -165,6 +170,11 @@ export class FakeProvider implements Provider {
 
     if (prompt.includes("goal-multi-slice-e2e") && currentPrompt.includes("the latest plan slice has finished.")) {
       const results = toolResults(input.messages)
+      if (results.some((part) => part.toolName === "goal_complete" && part.status === "succeeded")) {
+        yield { type: "text_delta", text: "Goal multi-slice e2e review finished." }
+        yield { type: "done" }
+        return
+      }
       const reviewerCount = results.filter((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "reviewer").length
       const stepCompleteCount = results.filter((part) => part.toolName === "plan_step_complete" && part.status === "succeeded").length
       if (stepCompleteCount === 1 && reviewerCount === 0) {

@@ -4,6 +4,7 @@ export type SlashCommand =
   | { type: "prompt"; text: string }
   | { type: "help" }
   | { type: "settings" }
+  | { type: "plan"; objective: string }
   | { type: "goal"; action: "start"; objective: string }
   | { type: "goal"; action: "status" | "pause" | "resume" | "clear" }
   | { type: "sessions" }
@@ -31,6 +32,10 @@ export function parseSlashCommand(input: string): SlashCommand {
   if (!name) return { type: "help" }
   if (name === "help") return { type: "help" }
   if (name === "settings") return { type: "settings" }
+  if (name === "plan") {
+    const objective = args.join(" ")
+    return objective ? { type: "plan", objective } : { type: "error", code: "plan_requires_objective" }
+  }
   if (name === "goal") {
     const action = args[0]?.toLowerCase()
     if (!action || action === "status" || action === "show" || action === "list") return { type: "goal", action: "status" }

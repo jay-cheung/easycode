@@ -50,6 +50,7 @@ export type SlashErrorCode =
   | "image_requires_value"
   | "skill_remove_requires_name"
   | "skill_use_requires_name"
+  | "plan_requires_objective"
   | "model_requires_name"
   | "provider_requires_name"
   | "effort_requires_value"
@@ -290,6 +291,7 @@ function buildEnglishCopy(): UiCopy {
       "  /thinking on|off        enable or disable model thinking",
       "  /lang <code>            set UI language: en, zh, ja, fr, ko, de",
       "  /settings               show current session settings",
+      "  /plan <request>         create a draft plan and wait for approval",
       "  /goal <objective>       start or replace the active goal",
       "  /goal status            show the active goal state",
       "  /goal pause|resume      pause or resume automatic goal continuation",
@@ -330,6 +332,7 @@ function buildEnglishCopy(): UiCopy {
       image_requires_value: "/image requires a path or URL",
       skill_remove_requires_name: "/skill remove requires a skill name",
       skill_use_requires_name: "/skill use requires a skill name",
+      plan_requires_objective: "/plan requires a request or objective",
       model_requires_name: "/model requires a model name",
       provider_requires_name: "/provider requires a provider name",
       effort_requires_value: "/effort requires low, medium, high, or max",
@@ -395,7 +398,7 @@ function buildEnglishCopy(): UiCopy {
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
     welcomeSession: (session, logger, status, language) => `session=${session} logger=${logger} language=${language} status=${status}`,
     welcomeRoot: (root) => `root=${root}`,
-    welcomeCommands: "/help /settings /goal /sessions /session /model /skill /image /thinking /effort /lang /cancel",
+    welcomeCommands: "/help /settings /plan /goal /sessions /session /model /skill /image /thinking /effort /lang /cancel",
     welcomeProjectRoot: "Project Root:",
     welcomeAgent: "AI Agent:",
     welcomeRunMode: "Run Mode:",
@@ -506,6 +509,7 @@ const copies: Record<UiLanguage, UiCopy> = {
       "  /thinking on|off        开启或关闭思考",
       "  /lang <code>            设置界面语言：en、zh、ja、fr、ko、de",
       "  /settings               查看当前会话设置",
+      "  /plan <request>         生成 draft plan，等待批准后执行",
       "  /goal <objective>       启动或替换当前 goal",
       "  /goal status            查看当前 goal 状态",
       "  /goal pause|resume      暂停或恢复 goal 自动续跑",
@@ -533,6 +537,7 @@ const copies: Record<UiLanguage, UiCopy> = {
       image_requires_value: "/image 需要路径或 URL",
       skill_remove_requires_name: "/skill remove 需要技能名",
       skill_use_requires_name: "/skill use 需要技能名",
+      plan_requires_objective: "/plan 需要请求或目标描述",
       model_requires_name: "/model 需要模型名",
       provider_requires_name: "/provider 需要 provider 名",
       effort_requires_value: "/effort 需要 low、medium、high 或 max",
@@ -596,7 +601,7 @@ const copies: Record<UiLanguage, UiCopy> = {
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
     welcomeSession: (session, logger, status, language) => `session=${session} logger=${logger} language=${language} status=${status}`,
     welcomeRoot: (root) => `root=${root}`,
-    welcomeCommands: "/help /settings /goal /sessions /session /model /skill /image /thinking /effort /lang /cancel",
+    welcomeCommands: "/help /settings /plan /goal /sessions /session /model /skill /image /thinking /effort /lang /cancel",
     welcomeProjectRoot: "项目目录：",
     welcomeAgent: "AI Agent：",
     welcomeRunMode: "运行模式：",

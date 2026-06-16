@@ -31,11 +31,11 @@ export function markSkillLoadedInSettings(settings: SessionSettings, input: unkn
 }
 
 export function effectiveModeForPrompt(_prompt: string, mode: AgentMode, _hasProposedPlan: boolean): AgentMode {
-  return mode === "plan" ? "build" : mode
+  return mode
 }
 
 export function permissionServiceForMode(permission: PermissionService, mode: AgentMode) {
-  const rules = defaultPermissionRules(mode === "plan" ? "build" : mode)
+  const rules = defaultPermissionRules(mode)
   if (samePermissionRules(permission.rules, rules)) return permission
   return permission.withRules(rules)
 }
