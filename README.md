@@ -1,350 +1,270 @@
-# EasyCode 🚀
+# EasyCode
 
-EasyCode 是一个面向真实代码仓库的命令行 Coding Agent。它专注于“读代码、做计划、改代码、跑验证、长上下文记忆”的完整开发闭环，适合在本地仓库里安全、高效地完成日常修 Bug、重构、测试修复和代码探索。
+EasyCode 是一个运行在本地代码仓库里的命令行 Coding Agent。它帮助你读代码、制定计划、修改文件、运行验证，并在多轮开发中保留上下文，适合日常修 Bug、理解项目、重构、补测试和推进较长的工程任务。
 
-*EasyCode is a command-line coding agent for real repositories. It focuses on the complete development loop of "reading code, planning changes, editing safely, running verification, and preserving context," making it ideal for resolving bugs, refactoring, fixing tests, and exploring architectures locally.*
-
----
-
-## 🌟 核心优势 / Key Highlights
-
-### 🚦 统一运行与按需规划 / Unified Run With Approval Gates
-*   **单一运行入口**：直接运行 `easycode` 进入交互式开发会话；直接传入 prompt 则执行一次性任务并退出。
-    *Single run entrypoint: `easycode` starts an interactive development session; passing a prompt runs one task and exits.*
-*   **按需产出 Plan**：简单任务直接执行；多步骤、高风险、符号级修改任务会先返回 `<proposed_plan>`，等你批准后再继续落地。
-    *Plan only when needed: simple work executes directly; multi-step, risky, or symbol-affecting work returns a `<proposed_plan>` first and waits for approval before implementation continues.*
-*   **结构化计划驱动执行**：批准后的计划会保存为结构化 step 状态，支持 step 完成、验证失败后的局部重规划，以及跨 session 恢复。
-    *Structured plans drive execution after approval, supporting step-level progress, bounded replanning, and session recovery.*
-
-### 🔍 增量 AST 代码索引 / AST-Grep Code Indexing
-*   不仅是正则 `grep`。EasyCode 在本地基于 `ast-grep` 维护轻量级增量 AST 索引。
-    *More than regex grep. EasyCode maintains a lightweight, incremental AST index locally powered by `ast-grep`.*
-*   支持精确的 `findDefinition`、`findReferences`、`callGraph` 和 `repoMap` 骨架缓存，能够智能过滤局部变量命名碰撞，做出更安全的重构计划。
-    *Supports precise definition, reference, call graph, and skeleton repoMap caches, filtering out local binding name collisions to plan safer edits.*
-
-### 🛡️ 智能自动审查与沙箱安全 / Sandbox & Auto-Reviewer
-*   **安全隔离**：内置项目根目录写限制，隔离的 Bash 执行环境，并自动对控制台输出中的 API Key/Secret 进行红线脱敏。
-    *Sandbox isolation: Project-root write limits, isolated bash shell execution, and automatic secret redaction from stdout.*
-*   **自动放行**：智能识别安全只读操作，免除频繁授权弹窗；仅在执行写指令或网络请求等危险动作时发起确认，降低确认疲劳。
-    *Auto-reviewer: Approves safe read-only operations automatically to avoid prompt fatigue; user authorization is only requested for risky write or network actions.*
-
-### 🧠 上下文账本与持久化项目记忆 / Ledger & Project Memory
-*   **Context Ledger**：跟踪当前假设、约束和排查决策，在多轮对话中自动执行 Compaction 压缩以降低 Token 消耗。
-    *Context ledger: Tracks current hypotheses, constraints, and decision logs, automatically compacting old history to optimize tokens.*
-*   **Project Memory**：支持持久化存储项目特定偏好、常见错误模式和成功工作流，在检测到 `继续`、`上次` 等触发词时自动召回。
-    *Project memory: Persists project-scoped preferences, failure patterns, and successful workflows, automatically recalling them on continuation keywords.*
+*EasyCode is a command-line coding agent for local repositories. It helps you understand code, plan changes, edit files, run checks, and keep context across longer development sessions.*
 
 ---
 
-## 🚀 快速上手 / Quick Start
+## 为什么使用 EasyCode / Why EasyCode
 
-### 1. 安装 / Install EasyCode
-你可以直接从 [Releases](https://github.com/FanFan-web-developer/easycode/releases) 下载对应平台的二进制并加入 `PATH`：
-*Download the binary for your platform from Releases and add it to your PATH:*
+- **像结对开发一样工作**：你可以直接描述目标，EasyCode 会在仓库里读代码、解释判断、执行改动。  
+  *Work like pair programming: describe the goal, and EasyCode reads the repo, explains decisions, and applies changes.*
+- **简单任务直接做，复杂任务先计划**：小修复可以直接完成，高风险或跨文件任务可以先进入 Plan 模式审批。  
+  *Small tasks can run directly; risky or multi-file tasks can go through Plan mode first.*
+- **长任务不会轻易丢上下文**：Goal 模式适合持续推进迁移、重构、测试修复等目标型任务。  
+  *Goal mode keeps longer migrations, refactors, and test-fix efforts moving with persistent context.*
+- **默认围绕真实仓库工作**：它优先基于当前代码、项目规则、会话历史和验证结果做决策。  
+  *It works from the real repository, project rules, session history, and verification results.*
+- **可按团队习惯扩展**：你可以加入 Skills、项目资料、常用命令和联网搜索配置，让 Agent 更贴合你的项目。  
+  *You can add skills, project knowledge, common commands, and web search configuration to match your team workflow.*
 
-**macOS (Apple Silicon / arm64):**
+---
+
+## 五分钟上手 / Quick Start
+
+### 1. 安装 / Install
+
+从 [Releases](https://github.com/FanFan-web-developer/easycode/releases) 下载对应平台二进制，并放入 `PATH`。
+
+*Download the binary for your platform from [Releases](https://github.com/FanFan-web-developer/easycode/releases) and add it to `PATH`.*
+
+**macOS Apple Silicon / arm64**
+
 ```bash
 curl -L https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-darwin-arm64 -o /tmp/easycode && chmod +x /tmp/easycode && sudo mv /tmp/easycode /usr/local/bin/easycode
 ```
 
-**macOS (Intel / x64):**
+**macOS Intel / x64**
+
 ```bash
 curl -L https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-darwin-x64 -o /tmp/easycode && chmod +x /tmp/easycode && sudo mv /tmp/easycode /usr/local/bin/easycode
 ```
 
-**Linux (x64):**
+**Linux x64**
+
 ```bash
 curl -L https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-linux-x64 -o /tmp/easycode && chmod +x /tmp/easycode && sudo mv /tmp/easycode /usr/local/bin/easycode
 ```
 
-**Linux (arm64):**
+**Linux arm64**
+
 ```bash
 curl -L https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-linux-arm64 -o /tmp/easycode && chmod +x /tmp/easycode && sudo mv /tmp/easycode /usr/local/bin/easycode
 ```
 
-**Windows (PowerShell / x64):**
+**Windows PowerShell / x64**
+
 ```powershell
 New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\easycode"
 Invoke-WebRequest -Uri "https://github.com/FanFan-web-developer/easycode/releases/latest/download/easycode-win-x64.exe" -OutFile "$env:USERPROFILE\easycode\easycode.exe"
-# 将 $env:USERPROFILE\easycode 添加到系统 PATH 环境变量中
-# Add $env:USERPROFILE\easycode to your system PATH environment variable
+# Add $env:USERPROFILE\easycode to your system PATH.
 ```
 
-### 2. 配置 API Key / Setup API Key
-EasyCode 默认使用 **DeepSeek**（支持 reasoning 思考逻辑，且无需 `--provider` 标记）：
-*EasyCode defaults to DeepSeek (supporting reasoning effort, no `--provider` flag required):*
+### 2. 配置模型 / Configure Provider
+
+第一次运行 `easycode` 会引导你选择语言、Provider 和 API Key。推荐直接从交互式引导开始：
+
+*The first `easycode` run guides you through language, provider, and API key setup. The easiest path is to start interactively:*
 
 ```bash
-export DEEPSEEK_API_KEY="sk-your-deepseek-key-here"
-```
-
-### 3. 运行你的第一个任务 / Run Your First Task
-在你的本地代码仓库根目录下运行以下命令：
-*Run the command in your repository root directory:*
-
-```bash
-# 单次任务：直接传 prompt，必要时 EasyCode 会先给出 plan
-# Single task: pass the prompt directly; EasyCode will plan first when needed
-easycode "分析本项目如何处理大文件截断"
-
-# 交互式开发：启动 TUI，会在同一会话里处理计划审批与执行
-# Interactive development: start the TUI; planning approval and execution happen in the same session
 easycode
 ```
 
----
+你也可以提前设置环境变量：
 
-## 🛠️ CLI 命令与配置 / CLI Commands & Configuration
+*You can also configure environment variables upfront:*
 
-### 主命令 / Main Commands
-
-| 命令 / Command | 简体中文描述 | English Description |
-| :--- | :--- | :--- |
-| `easycode` | 启动统一运行模式的交互式会话；首次运行引导配置语言和 API Key。 | Starts the interactive unified run session and triggers first-run setup. |
-| `easycode "<prompt>"` | 执行一次性任务并退出；必要时会先返回 `<proposed_plan>` 等待批准。 | Runs a one-off task and exits; may return a `<proposed_plan>` first when needed. |
-| `easycode --session <id>` | 进入指定 session 继续开发。 | Continue work in a named session. |
-
-### 命令行选项 / CLI Options
-
-| 选项 / Option | 简体中文描述 | English Description |
-| :--- | :--- | :--- |
-| `--provider <name>` | 指定 AI provider（如 `deepseek`, `openai`, `openai-compatible`, `fake`）。 | Specify AI provider (e.g. `deepseek`, `openai`, `openai-compatible`, `fake`). |
-| `--model <id>` | 指定模型 ID（覆盖 provider 的内置默认模型）。 | Specify model ID (overrides provider default). |
-| `--max-tokens <n>` | 每次 API 调用的最大 token 数（默认 32000）。 | Max tokens per API call (default 32000). |
-| `--max-steps <n>` | 最大执行步数（默认 66）。 | Max execution steps (default 66). |
-| `--session <id>` | 加载指定的 session 进行继续开发。 | Load a specific session. |
-| `--logger` | 启用详细调试日志。 | Enable detailed debug logs. |
-| `--no-tui` | 禁用交互式终端 UI（TUI），退回到普通 CLI 命令行输出。 | Disable the interactive Terminal UI (TUI) and fallback to plain CLI output. |
-
-> 兼容性说明 / Compatibility note
->
-> 旧语法 `easycode build ...`、`easycode plan ...` 和 `--once` 仍可解析为兼容别名，但文档不再把它们视为主入口。
-
----
-
-## 📂 扩展上下文数据源 / Data Sources
-
-数据源以 JSON 文件形式配置在项目 `.easycode/` 目录下，**无需重启进程，即刻生效**：
-*Data sources are configured under `.easycode/` in JSON format and take effect **without restarting the process**:*
-
-### 1. MCP (模型上下文协议 / Model Context Protocol)
-`.easycode/mcp.json` —— 预配项目文档或架构指南等结构化条目供 AI 对话中按需读取。
-*`.easycode/mcp.json` — Preconfigures structured entries like docs and conventions for reference.*
-```json
-{
-  "servers": [
-    {
-      "name": "docs",
-      "resources": [
-        { "uri": "doc://api-rules", "title": "API 开发规范", "description": "项目内部 API 规范", "text": "..." }
-      ]
-    }
-  ]
-}
+```bash
+export EASYCODE_PROVIDER="deepseek"
+export DEEPSEEK_API_KEY="sk-your-deepseek-key-here"
 ```
 
-### 2. Connectors (本地命令封装 / Command Connectors)
-`.easycode/connectors.json` —— 将常用 shell 命令封装为工具动作，供 AI 调用（受同一安全审查策略保护）。
-*`.easycode/connectors.json` — Wraps common shell commands as tools (guarded by the same security policies).*
-```json
-{
-  "tools": [
-    {
-      "name": "lint",
-      "description": "运行项目 Linter 校验代码",
-      "command": "bun run lint"
-    }
-  ]
-}
+| Provider | 必需配置 / Required |
+| :--- | :--- |
+| `deepseek` | `DEEPSEEK_API_KEY` |
+| `openai` | `OPENAI_API_KEY` |
+| `openai-compatible` | `OPENAI_COMPAT_API_KEY`, `OPENAI_COMPAT_API_URL` |
+
+### 3. 在仓库里开始工作 / Start In A Repository
+
+进入你的项目根目录，然后启动 EasyCode：
+
+*Open your repository root and start EasyCode:*
+
+```bash
+cd /path/to/your/repo
+easycode
 ```
 
-### 3. Skills (行为指令注入 / Skills)
-支持在 `.easycode/skills/`（项目级）或 `~/.easycode/skills/`（全局级）放置 markdown 编写的开发规范。
-*Markdown files in `.easycode/skills/` (project-scoped) or `~/.easycode/skills/` (globally).*
-*   **命令启用**：在 TUI 中使用 `/skill use <name>` 即可快速将特定开发领域规则融入会话。
-    *Via slash command: Use `/skill use <name>` in the TUI to quickly load the skill.*
-*   **自然语言启用**：也可以直接在对话中通过自然语言要求 AI 启用（例如：“使用代码审查规范”）。AI 会自动通过内置的 `skill` 工具完成按需渐进式加载。
-    *Via natural language: Simply ask the AI to load a skill in the conversation (e.g. "use the code-review skill"). The AI will automatically call the built-in `skill` tool for progressive loading.*
+在交互式会话里，你可以直接输入：
+
+*Inside the interactive session, try prompts like:*
+
+```text
+帮我解释这个项目的启动流程
+定位为什么用户登录测试失败
+把这个模块迁移到新的配置读取方式，先给我计划
+```
+
+如果只是一次性任务，也可以直接传 prompt：
+
+*For one-off tasks, pass the prompt directly:*
+
+```bash
+easycode "分析这个仓库如何处理错误重试"
+```
 
 ---
 
-## ⌨️ 交互式 Slash 命令 / Interactive Slash Commands
+## 三种工作模式 / Working Modes
 
-在交互会话（CLI / TUI）中，通过 `/` 前缀控制 Agent 的行为：
-*In interactive mode, use the `/` prefix to control session settings:*
-
-| 斜杠命令 / Command | 简体中文描述 | English Description |
+| 模式 / Mode | 适合场景 / Best for | 怎么使用 / How to use |
 | :--- | :--- | :--- |
-| `/model <provider> [id]` | 切换 AI 服务商或具体模型。 | Switch provider or model ID. |
-| `/thinking on\|off` | 开启或关闭 reasoning 思考路径的展示。 | Enable or disable model thinking. |
-| `/effort <level>` | 设置 DeepSeek 思考强度 (`low`, `medium`, `high`, `max`)。 | Set reasoning effort. |
-| `/lang <code>` | 切换 UI 语言（支持 `zh`, `en`, `ja`, `fr`, `ko`, `de`）。 | Set UI language. |
-| `/sessions` | 列出所有已保存的历史会话。 | List saved sessions. |
-| `/session switch <id>` | 切换到指定开发会话。 | Switch to another session. |
-| `/session delete <id>` | 删除指定会话（删除前将重要经验归档至长期项目记忆）。 | Archive summary to memory and delete session. |
-| `/settings` | 查看当前会话的预算、模型设置与状态。 | Show current session settings. |
+| 普通模式 / Normal | 小范围修复、代码解释、简单排障。<br>*Small fixes, code explanation, and simple debugging.* | 直接输入需求。<br>*Type your request directly.* |
+| Plan 模式 / Plan | 跨文件改动、重构、关键路径修改，需要先确认方案。<br>*Multi-file changes, refactors, and critical-path edits that need plan review first.* | 使用 `/plan <request>`，批准后再执行。<br>*Use `/plan <request>`, then approve before execution.* |
+| Goal 模式 / Goal | 较长目标，例如迁移模块、持续修复测试、分阶段重构。<br>*Longer goals such as module migration, ongoing test stabilization, or phased refactors.* | 使用 `/goal <objective>`，让 EasyCode 分阶段推进。<br>*Use `/goal <objective>` and let EasyCode work in phases.* |
+
+选择时可以按风险判断：
+
+*Choose by risk and scope:*
+
+- **低风险、目标明确**：用普通模式。  
+  *Low-risk and clear: use Normal mode.*
+- **改动较大、想先看方案**：用 Plan 模式。  
+  *Larger change or review needed: use Plan mode.*
+- **任务较长、需要持续推进**：用 Goal 模式。  
+  *Long-running objective: use Goal mode.*
 
 ---
 
-## 🧭 普通模式 / Plan 模式 / Goal 模式的适用场景
+## 常见任务示例 / Common Workflows
 
-EasyCode 支持三种执行策略：普通模式、Plan 模式、Goal 模式。  
-它们的选择逻辑是：**按任务边界、风险、以及你是否愿意参与中间决策**。
+### 理解代码 / Understand Code
 
-### 普通模式（默认）
-- **适合场景：** 单点修改、快速修复、局部排障、目标明确且改动范围可控的任务。
-- **特点：** 直接执行，默认减少中间提问，适合日常开发节奏。
-- **风险控制：** 复杂改动前可先切到 Plan 模式审批。
+```text
+这个仓库的请求入口在哪里？
+解释用户注册流程，重点说明数据校验和错误处理。
+这个函数被哪些地方调用？调用链是什么？
+```
 
-### Plan 模式
-- **适合场景：** 多步骤任务、跨文件改动、重构、接口兼容性敏感改造。
-- **特点：** 先给出 `<proposed_plan>`（分步骤、顺序、预期结果），等待用户批准再落地。
-- **风险控制：** 更适合需要透明决策链和高可追溯性、生产环境改动。
+### 修 Bug / Fix Bugs
 
-### Goal 模式
-- **适合场景：** 目标导向任务（如“完成某个重构收敛”）、需要持续迭代和复盘的复杂问题。
-- **特点：** 以最终目标为主线持续推进，自动做阶段化分解与复检。
-- **风险控制：** 在长期任务中更容易沉淀上下文、保持方向一致。
+```text
+定位这个测试失败的原因，并给出最小修复。
+用户保存设置后刷新丢失，帮我排查并修复。
+```
 
-### 你可以如何选
-- 选**普通模式**：一次性、低风险、可立即执行的任务。
-- 选**Plan 模式**：改动范围较大、可能触及关键路径、你希望先看见计划。
-- 选**Goal 模式**：边界较宽、存在探索性决策、需要持续对齐目标进度。
+### 重构 / Refactor
 
-### 精简版（双语 / Quick Reference）
-- **普通模式 / Normal mode**：直接执行、最少干预，适合小范围改动。  
-  *Execute directly with minimal intervention; best for small, low-risk tasks.*
-- **Plan 模式 / Plan mode**：先给出计划再执行，适合高风险/跨文件改动。  
-  *Submit a plan before execution; suited for high-risk, cross-file changes.*
-- **Goal 模式 / Goal mode**：按目标持续推进，适合长期探索和复杂任务。  
-  *Progress towards an explicit goal continuously; best for iterative complex work.*
+```text
+/plan 把这个模块里的重复校验逻辑抽成一个公共函数
+/plan 将旧的配置读取方式迁移到新的 settings API
+```
+
+### 长目标 / Long-Running Goals
+
+```text
+/goal 完成登录模块的测试稳定性修复，直到本地验证通过
+/goal 将支付模块迁移到新的 SDK，并保持现有行为兼容
+```
 
 ---
 
-## 🧪 统一验证与质量控制 / Quality Gate
+## 交互式命令速查 / Interactive Commands
 
-要执行统一的测试和网关检查以验证改动，只需在项目根目录运行：
-*To run the unified testing and linting gateway to verify changes:*
+| 命令 / Command | 用途 / Purpose |
+| :--- | :--- |
+| `/help` | 查看帮助。 / Show help. |
+| `/settings` | 查看当前模型、语言、技能和会话设置。 / Show active settings. |
+| `/provider <name>` | 切换 Provider。 / Switch provider. |
+| `/model <name>` | 切换模型。 / Switch model. |
+| `/thinking on\|off` | 开启或关闭思考展示。 / Toggle thinking display. |
+| `/effort <low\|medium\|high\|max>` | 设置思考强度。 / Set reasoning effort. |
+| `/lang <code>` | 切换界面语言。 / Change UI language. |
+| `/plan <request>` | 先生成计划，等待审批。 / Draft a plan before execution. |
+| `/goal <objective>` | 启动长期目标。 / Start a long-running goal. |
+| `/goal status` | 查看目标进度。 / Show goal progress. |
+| `/goal pause\|resume` | 暂停或恢复目标。 / Pause or resume a goal. |
+| `/sessions` | 查看历史会话。 / List saved sessions. |
+| `/session switch <id>` | 切换会话。 / Switch session. |
+| `/image <path-or-url>` | 给下一条消息附加图片。 / Attach an image. |
+| `/skill list` | 查看可用 Skills。 / List skills. |
+| `/skill use <name>` | 启用一个 Skill。 / Activate a skill. |
+| `//text` | 发送以 `/` 开头的普通文本。 / Send `/text` as a prompt. |
+
+---
+
+## 让 EasyCode 更懂你的项目 / Project Customization
+
+这些配置都是可选的。新用户可以先跳过，等日常使用稳定后再逐步加入。
+
+*These are optional. New users can skip them and add customization later.*
+
+| 能力 / Capability | 放在哪里 / Where | 什么时候用 / When to use |
+| :--- | :--- | :--- |
+| Skills | `.easycode/skills/` 或 `~/.easycode/skills/` | 固化团队开发规范、代码审查标准、测试要求。<br>*Capture team coding rules, review standards, and testing requirements.* |
+| MCP 上下文服务 / MCP context servers | `.easycode/mcp.json` | 接入符合 MCP 的资源或上下文服务，供 Agent 按需读取。<br>*Connect MCP-compatible resources or context services for the agent to read when needed.* |
+| 常用命令 / Commands | `.easycode/connectors.json` | 封装 lint、测试、构建等团队常用命令。<br>*Wrap common team commands such as lint, test, and build.* |
+| 联网搜索 / Web search | `TAVILY_API_KEY` 或 `.easycode/websearch.json` | 需要查公开文档、版本信息或外部资料时使用。<br>*Use when public docs, version details, or external references are needed.* |
+
+---
+
+## 验证改动 / Verify Changes
+
+如果你在开发 EasyCode 本身，推荐使用统一质量门：
+
+*If you are developing EasyCode itself, use the unified quality gate:*
 
 ```bash
 bun run gate
 ```
 
-**检查流水线依次包含 / The pipeline runs:**
-1. `typecheck` 静态类型检查 / Static type check.
-2. `bun test` 单元测试套件 / Unit tests.
-3. `fake eval` 模拟评估 / Offline fake evaluations.
-4. `APIx` 本地硬性测试指标（Hard-gate） / Local APIx hard-gate evaluation.
-5. `cache benchmark` 缓存命中与成本评估 / Cache hit and cost benchmark.
-6. `build` 生产打包验证 / Production bundle checks.
-7. 多 Provider 联合冒烟测试 / Multi-provider smoke tests.
+只想跑单元测试时：
 
-## 🏁 SWE-bench 适配 / SWE-bench Adapter
-
-仓库内置了一个最小 SWE-bench 预测脚本，用来把 EasyCode 接到官方 harness 的 `predictions.jsonl` 格式上：
-*The repo includes a minimal SWE-bench prediction adapter that lets EasyCode emit the `predictions.jsonl` format expected by the official harness.*
-
-先拿本地 smoke 测试集最省事：
-*The fastest path is to start from the bundled local smoke datasets:*
+*For unit tests only:*
 
 ```bash
-bun run swebench:dataset --preset lite
-bun run swebench:dataset --preset verified
+bun test
 ```
 
-默认会生成：
-*By default this writes:*
+在普通项目中，你也可以直接让 EasyCode 运行项目自己的验证命令，例如：
 
-- `evals/swebench/lite-smoke.jsonl`
-- `evals/swebench/verified-smoke.jsonl`
+*In your own repository, ask EasyCode to run your project checks, for example:*
 
-也可以按实例 id 自己导出：
-*You can also export a custom subset by instance id:*
-
-```bash
-bun run swebench:dataset \
-  --preset lite \
-  --instance-ids sympy__sympy-20590 \
-  --output /absolute/path/to/swebench-one.jsonl
+```text
+运行本项目的测试并修复失败项
 ```
-
-```bash
-bun run swebench:predictions --provider deepseek
-```
-
-默认行为：
-*Default behavior:*
-
-- 如果不传 `--dataset`，会从 Hugging Face 临时拉取 `Lite` smoke 子集到系统临时目录，跑完后删除。
-- 如果不传 `--output`，会把预测结果写到当前执行目录，例如 `./swebench-lite-smoke-deepseek-predictions.jsonl`。
-- 跑完后终端会打印一个结果表格，按实例展示 `status / patch / plan rounds / reason`。
-
-如果你想指定本地数据集或换成 Verified：
-*If you want a local dataset or the Verified preset instead:*
-
-```bash
-bun run swebench:predictions \
-  --provider deepseek \
-  --preset verified
-```
-
-```bash
-bun run swebench:predictions \
-  --provider deepseek \
-  --dataset /absolute/path/to/swebench-instances.jsonl \
-  --output ./predictions.jsonl \
-  --instance-ids sympy__sympy-20590
-```
-
-输入数据文件需要包含这些字段：
-*The local dataset file should contain these fields:*
-
-- `instance_id`
-- `repo`
-- `base_commit`
-- `problem_statement`
-- `hints_text`（可选 / optional）
-
-脚本会：
-*The adapter will:*
-
-1. 为每个实例镜像目标 GitHub 仓库并检出 `base_commit`。
-2. 在实例 worktree 内直接驱动 EasyCode runner。
-3. 如果 EasyCode 先返回 `<proposed_plan>`，自动继续一轮或多轮审批后的执行。
-4. 抽取 `git diff --binary` 作为 `model_patch`，逐行写入 `predictions.jsonl`。
-
-注意：
-*Notes:*
-
-- 这是无人值守 benchmark 模式，脚本会使用 `autoApprove(build rules)` 自动放行构建模式的权限请求，并自动批准 proposal plan。不要把它和有人手工审批的交互式结果混为一谈。
-- 官方评测仍建议用 SWE-bench 自己的 Docker harness 跑；这个脚本只负责生成预测文件，不替代官方验收测试。
-- 在 ARM Mac 上，本地评测通常需要在官方 harness 里额外加 `--namespace ''` 让镜像本地构建。
 
 ---
 
-## 📝 源码构建与开发 / Source Code & Development
+## 常用 CLI 选项 / CLI Options
 
-1.  **克隆项目 / Clone:**
-    ```bash
-    git clone https://github.com/FanFan-web-developer/easycode.git
-    cd easycode
-    ```
-2.  **安装依赖 / Install dependencies:**
-    ```bash
-    bun install
-    ```
-3.  **运行测试 / Run tests:**
-    ```bash
-    bun test
-    ```
-4.  **编译构建 / Build:**
-    ```bash
-    bun run build
-    ```
+| 选项 / Option | 说明 / Description |
+| :--- | :--- |
+| `--provider <name>` | 指定 Provider，例如 `deepseek`、`openai`、`openai-compatible`。<br>*Choose the provider, such as `deepseek`, `openai`, or `openai-compatible`.* |
+| `--model <id>` | 指定模型。<br>*Choose the model.* |
+| `--session <id>` | 继续指定会话。<br>*Resume a specific session.* |
+| `--root <path>` | 指定项目根目录。<br>*Set the project root directory.* |
+| `--no-tui` | 使用普通命令行输出。<br>*Use plain command-line output instead of the TUI.* |
+| `--logger` | 打开调试日志。<br>*Enable debug logs.* |
 
 ---
 
-## 📄 开源协议 / License
+## 从源码开发 / Develop From Source
+
+```bash
+git clone https://github.com/FanFan-web-developer/easycode.git
+cd easycode
+bun install
+bun run gate
+bun run build
+```
+
+---
+
+## 开源协议 / License
 
 本项目采用 [MIT License](./LICENSE) 开源协议。
+
 *Licensed under the [MIT License](./LICENSE).*
