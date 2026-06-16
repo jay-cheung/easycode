@@ -6,9 +6,9 @@ import type { ContextManagerLike } from "./context"
 import { createLogger, emitLog } from "./logger"
 import { detectUiLanguage, uiText } from "./i18n"
 import type { AgentMode, ImagePart, Message } from "./message"
-import { savePlan, loadStructuredPlanState } from "./plans"
+import { savePlan, loadStructuredPlanState, isPlanApprovalPrompt, isPlanRevisionPrompt } from "./plans"
 import { PlanTracker } from "./agent/planner"
-import { activateGoalPlan, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, clearGoalState, createGoalState, goalAcceptanceText, goalHasAcceptance, goalStateFromContext, goalStatusText, writeGoalState, type GoalState } from "./goal"
+import { activateGoalPlan, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, clearGoalState, createGoalState, goalHasAcceptance, goalStateFromContext, goalStatusText, writeGoalState, type GoalState } from "./goal"
 import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService } from "./permission"
 import { hasProvider, listProviders } from "./provider"
 import { normalizeSessionTokenUsage, SessionStore, type SessionTokenUsage } from "./session"
@@ -149,7 +149,7 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
     const controller = new AbortController()
     const permission = permissionService(args.mode, reader, () => controller.abort(), tui)
     const isTest = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test"
-    const runnerInstance = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent, sessionId: args.session ?? "once", forcePlanning: true })
+    const runnerInstance = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent, sessionId: args.session ?? "once", forcePlanning: false })
     const result = await runnerInstance.run(args.prompt, args.mode, { signal: controller.signal })
     timeline.finish()
     return { status: result.status, exitCode: result.status === "completed" ? 0 : 1 } satisfies CliRunResult
@@ -214,15 +214,12 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     await maybeShowWebSearchSetupHint(args.root, activeSettings.language, tui)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
-    const queuedPrompts: string[] = []
-    const queuedPromptImages: ImagePart[][] = []
-    const enqueuePrompt = (text: string, images: ImagePart[] = []) => {
-      queuedPrompts.push(text)
-      queuedPromptImages.push(images)
+    const queuedPrompts: Array<{ text: string; images: ImagePart[]; mode?: AgentMode }> = []
+    const enqueuePrompt = (text: string, images: ImagePart[] = [], mode?: AgentMode) => {
+      queuedPrompts.push({ text, images, mode })
     }
     const clearQueuedPrompts = () => {
       queuedPrompts.length = 0
-      queuedPromptImages.length = 0
     }
     let activeMode: AgentMode = "build"
     let goalState: GoalState | undefined
@@ -324,7 +321,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activePlanId: undefined,
       })
       emitGoalLifecycle("goal.definition", goalState, reason ? { reason } : {})
-      enqueuePrompt(buildGoalDefinitionPrompt(goalState ?? goal, reason))
+      enqueuePrompt(buildGoalDefinitionPrompt(goalState ?? goal, reason), [], "build")
     }
     const beginGoalPlanning = (goal: GoalState, reason?: string, advanceIteration = false) => {
       persistGoal({
@@ -338,7 +335,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         ...(reason ? { reason } : {}),
         advanceIteration,
       })
-      enqueuePrompt(buildGoalPlanningPrompt(goalState ?? goal, reason))
+      enqueuePrompt(buildGoalPlanningPrompt(goalState ?? goal, reason), [], "plan")
     }
     const beginGoalReview = (goal: GoalState, reason?: string) => {
       persistGoal({
@@ -348,7 +345,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activePlanId: undefined,
       })
       emitGoalLifecycle("goal.reviewing", goalState, reason ? { reason } : {})
-      enqueuePrompt(buildGoalAssessmentPrompt(goalState ?? goal, reason))
+      enqueuePrompt(buildGoalAssessmentPrompt(goalState ?? goal, reason), [], "build")
     }
     const pauseGoal = async (reason: string) => {
       if (!goalState) return
@@ -368,7 +365,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       if (!goalState) return
       persistGoal({ ...goalState, status: "completed", blocker: undefined, summary, activePlanId: undefined })
       emitGoalLifecycle("goal.completed", goalState, { summary })
-      writeSessionMessage(`Goal completed.\n${goalAcceptanceText(goalState)}\n${summary}`)
+      writeSessionMessage(`Goal completed.\n${summary}`)
     }
     const createSessionPermission = () => {
       if (!activeGoalAutomation()) return permissionService(activeMode, reader, () => activeAbort?.abort(), tui)
@@ -377,7 +374,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const getRunner = () => {
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
       const isTest = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test"
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: createSessionPermission(), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session, forcePlanning: true })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: createSessionPermission(), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session, forcePlanning: activeMode === "plan" })
       return runner
     }
     const writeSessionMessage = (text: string) => writeCliText(tui, text, uiText(activeSettings.language).sessionTitle)
@@ -404,8 +401,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
 
     while (true) {
       const queuedPrompt = queuedPrompts.shift()
-      const queuedImages = queuedPrompt === undefined ? undefined : queuedPromptImages.shift() ?? []
-      const prompt = (queuedPrompt ?? await question(reader, tui)).trim()
+      const queuedImages = queuedPrompt?.images
+      const queuedMode = queuedPrompt?.mode
+      const prompt = (queuedPrompt?.text ?? await question(reader, tui)).trim()
       if (prompt === eofPrompt) {
         const sessionContext = runner?.context ?? context
         await clearTransientSessionTaskState(sessionContext, args.root)
@@ -450,6 +448,11 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
             writeSessionMessage(`Goal started.\n${goalStatusText(goalState)}`)
           }
           await saveSession(runner?.context ?? context)
+        } else if (changed.planAction) {
+          await clearActivePlanIfPresent()
+          clearQueuedPrompts()
+          enqueuePrompt(changed.planAction.objective, [], "plan")
+          writeSessionMessage(`Draft planning started.\nRequest: ${changed.planAction.objective}`)
         } else if (changed.sessionAction?.type === "switch") {
           if (changed.sessionAction.target === session) {
             writeSessionMessage(uiText(activeSettings.language).sessionSwitchCurrent(session))
@@ -485,9 +488,13 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         continue
       }
 
+      activeMode = queuedMode ?? "build"
+      if (!queuedMode && !goalState && currentPlanID(context) && !isPlanApprovalPrompt(prompt) && !isPlanRevisionPrompt(prompt)) {
+        await clearActivePlanIfPresent()
+      }
       const activeRunner = getRunner()
       const images = queuedImages ?? pendingImages
-      if (!queuedImages) pendingImages = []
+      if (queuedImages === undefined) pendingImages = []
       const messageCountBeforeRun = activeRunner.context.state.messages.length
       activeAbort = new AbortController()
       const runInput = collectRunInput(reader, activeAbort, { push: (text) => enqueuePrompt(text) }, tui)
@@ -548,7 +555,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           persistGoal(activateGoalPlan(goalState, planId))
           emitGoalLifecycle("goal.executing", goalState, { planId })
           await saveSession(activeRunner.context)
-          enqueuePrompt("Proceed with the approved plan.")
+          enqueuePrompt("Proceed with the approved plan.", [], "build")
           continue
         }
 
@@ -613,7 +620,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         }
         
         runner = undefined
-        enqueuePrompt(planId ? "Proceed with the approved plan." : command.text, planId ? [] : images)
+        enqueuePrompt(planId ? "Proceed with the approved plan." : command.text, planId ? [] : images, "build")
         continue
       }
       if (goalState) {

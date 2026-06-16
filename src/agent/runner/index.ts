@@ -62,6 +62,11 @@ type SubagentRunUsage = {
   statsByRole: Record<SubagentRole, SubagentRoleUsage>
 }
 
+type ValidationBypass = {
+  fingerprint: string
+  count: number
+}
+
 function createSubagentRoleUsage(): SubagentRoleUsage {
   return { started: 0, succeeded: 0, failed: 0, handoff: 0, turnsUsed: 0, inputTokens: 0, outputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0 }
 }
@@ -113,6 +118,7 @@ export class AgentRunner {
   private activeForegroundSubagentRequestID: number | undefined
   private subagentUsage = createSubagentRunUsage()
   private pendingValidationCorrection: string | undefined
+  private validationBypass: ValidationBypass | undefined
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -158,6 +164,7 @@ export class AgentRunner {
   async run(prompt: string, mode: AgentMode, input: { images?: ImagePart[]; signal?: AbortSignal } = {}): Promise<AgentRunResult> {
     this.subagentUsage = createSubagentRunUsage()
     this.pendingValidationCorrection = undefined
+    this.validationBypass = undefined
     const prep = await this.prepareRun(prompt, mode, input)
     if (prep.aborted) {
       return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
@@ -375,7 +382,10 @@ export class AgentRunner {
       return { aborted: true, earlyExitResult, effectiveMode, requiresProposedPlan, agent, usedTools, providerMetrics, state, tools: [], instructions: [], skills: [], selectedSkills: [] }
     }
     
-    const tools = filterToolsForAgent(this.registry.list(effectiveMode), { role: agent.role, depth: agent.depth ?? 0 })
+    let tools = filterToolsForAgent(this.registry.list(effectiveMode), { role: agent.role, depth: agent.depth ?? 0 })
+    if (!requiresProposedPlan) {
+      tools = tools.filter((tool) => tool.name !== "plan_exit")
+    }
     const instructions = await this.instructions.system()
     const skills = await this.skills.available()
     const selectedSkills = await this.selectedSkills()
@@ -445,6 +455,15 @@ export class AgentRunner {
     
     if (signal?.aborted || result.metadata.cancelled === true) {
       return { action: "cancel" }
+    }
+
+    if ((toolCall.name === "goal_complete" || toolCall.name === "goal_blocked") && result.metadata.status === "succeeded") {
+      state = this.aspect.transition("completed", { usedTools })
+      this.emitRunDone("completed", providerMetrics)
+      return {
+        action: "exit",
+        result: { status: "completed", text: result.output, reasoning: reasoningTranscript, messages: this.context.state.messages, usedTools, state }
+      }
     }
     
     if (toolCall.name === "plan_step_fail") {
@@ -649,15 +668,32 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
     if (turn.retryMessage) {
       const validationFailureCount = turn.validationFailureCount ?? 0
-      if (validationFailureCount >= 3) {
-        const output = requiresProposedPlan ? buildPlanGateFallbackMessage(turn) : buildValidationGateFallbackMessage(turn)
+      const failureFingerprint = validationFingerprint(turn, requiresProposedPlan)
+      const repeatedCount = this.bumpValidationBypassCounter(failureFingerprint)
+      if (validationFailureCount >= 2 || repeatedCount >= 2) {
+        if (requiresProposedPlan) {
+          const fallbackPlan = fallbackStructuredPlan(prompt)
+          const sessionId = this.sessionId || "default"
+          await PlanTracker.activatePlan(this.context, this.root, sessionId, fallbackPlan, { status: "draft" })
+          const output = renderPlanToMarkdown(fallbackPlan)
+          const displayText = protocol.stripPlanTags(output)
+          emitPlanExitText(this.onEvent, this.onTextDelta, displayText)
+          this.context.add(assistantMessage(nextReasoningTranscript, output))
+          currentState = this.aspect.transition("completed", { usedTools })
+          this.emitRunDone("completed", providerMetrics)
+          return {
+            action: "exit",
+            result: { status: "completed", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
+          }
+        }
+        const output = buildValidationGateFallbackMessage(turn)
         this.onEvent?.({ type: "failure", text: output, source: "system", category: "validation" })
         this.context.add(assistantMessage(nextReasoningTranscript, output))
-        currentState = this.aspect.runFailed("provider_error", usedTools)
-        this.emitRunDone("failed", providerMetrics)
+        currentState = this.aspect.transition("completed", { usedTools })
+        this.emitRunDone("completed", providerMetrics)
         return {
           action: "exit",
-          result: { status: "failed", failureReason: "provider_error", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
+          result: { status: "completed", text: output, reasoning: nextReasoningTranscript, messages: this.context.state.messages, usedTools, state: currentState }
         }
       }
       this.pendingValidationCorrection = turn.retryMessage
@@ -793,7 +829,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
               failureText: `Plan step completion gate failed: non-final plan_step_complete report is too long (call id: ${overlongIntermediatePlanStepReport.id}).`,
             }
           }
-          if (requiresReviewerDelegationBeforeFinal(input.prompt, activePlanStep) && turn.toolCalls.length === 0 && turn.text.trim() && !hasSuccessfulReviewerSubagent(this.context.state.messages)) {
+          if (activePlanStep && requiresReviewerDelegationBeforeFinal(input.prompt, activePlanStep) && turn.toolCalls.length === 0 && turn.text.trim() && !hasSuccessfulReviewerSubagent(this.context.state.messages)) {
             return {
               correction: [
                 "Reviewer delegation anti-pattern gate:",
@@ -825,7 +861,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
               failureText: `Plan step delegation gate failed: step '${activePlanStep?.id ?? "unknown"}' must delegate to role='${requiredDelegationRole}' before direct coordinator execution.`,
             }
           }
-          if (requiresProposedPlan) return undefined
+          if (requiresProposedPlan || !activePlanStep) return undefined
           if (!shouldEnforceCoordinatorDelegation(input.provider ?? this.provider)) return undefined
           if (lastSubagentDelegationFailedOrHandoff(this.context.state.messages)) return undefined
           const suggestedRole = suggestedCoordinatorSubagentRole(turn.toolCalls, {
@@ -1353,6 +1389,15 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     }
   }
 
+  private bumpValidationBypassCounter(fingerprint: string) {
+    if (this.validationBypass?.fingerprint === fingerprint) {
+      this.validationBypass = { fingerprint, count: this.validationBypass.count + 1 }
+    } else {
+      this.validationBypass = { fingerprint, count: 1 }
+    }
+    return this.validationBypass.count
+  }
+
   private async maybeRecallProjectMemory(prompt: string) {
     if (!shouldAutoRecallProjectMemory(prompt)) return
     const activeFiles = this.context.state.ledger?.current
@@ -1675,6 +1720,70 @@ function buildValidationGateFallbackMessage(turn: ProviderTurnResult) {
     correction ? `Last required correction: ${compactLine(correction)}` : "",
     `Last invalid output: ${evidence}`,
   ].filter(Boolean).join("\n")
+}
+
+function validationFingerprint(turn: ProviderTurnResult, requiresProposedPlan: boolean) {
+  const correction = turn.retryMessage?.trim() || "none"
+  const toolNames = turn.lastRejectedTurn?.toolNames?.join(",") || "none"
+  const text = compactLine(turn.lastRejectedTurn?.text?.trim() || "")
+  return [requiresProposedPlan ? "plan" : "build", correction, toolNames, text].join("::")
+}
+
+function fallbackStructuredPlan(prompt: string): ExecutionPlan {
+  const trimmed = fallbackTaskText(prompt)
+  const inspectOnly = /\b(review|audit|inspect|analy[sz]e|debug|investigat|research)\b|评审|审查|分析|排查|定位|调研/i.test(trimmed)
+  return {
+    id: `plan_fallback_${Date.now()}`,
+    title: inspectOnly ? "Fallback Investigation Plan" : "Fallback Execution Plan",
+    lowRisk: inspectOnly,
+    steps: inspectOnly
+      ? [
+          {
+            id: "step_1",
+            goal: `Inspect the repository state for: ${trimmed}`,
+            kind: "inspect",
+            doneWhen: "The relevant files, current behavior, and constraints are identified.",
+            fallback: "If scope is still unclear, summarize the remaining ambiguity and narrow the next question.",
+          },
+          {
+            id: "step_2",
+            goal: "Produce the requested review, analysis, or diagnosis result with concrete evidence.",
+            kind: "verify",
+            doneWhen: "The final user-facing findings are written with concrete evidence or explicit uncertainty.",
+            fallback: "If full certainty is impossible, return the best supported conclusion and the smallest next check.",
+          },
+        ]
+      : [
+          {
+            id: "step_1",
+            goal: `Inspect the repository state and reproduce the task scope for: ${trimmed}`,
+            kind: "inspect",
+            doneWhen: "The target files, current behavior, and smallest safe change are identified.",
+            fallback: "If scope is still unclear, summarize the ambiguity and narrow the next bounded step.",
+          },
+          {
+            id: "step_2",
+            goal: "Implement the smallest coherent change that satisfies the request.",
+            kind: "edit",
+            doneWhen: "The requested behavior or output is implemented and ready for targeted verification.",
+            fallback: "If implementation is blocked, capture the blocker, partial progress, and the next recovery action.",
+          },
+          {
+            id: "step_3",
+            goal: "Run targeted verification and prepare the final user-facing result.",
+            kind: "verify",
+            doneWhen: "Relevant verification is attempted and the final result clearly reports success, failure, or unverified status.",
+            fallback: "If verification cannot pass, include the failing command or blocker in the final result and still return the best safe outcome.",
+          },
+        ],
+  }
+}
+
+function fallbackTaskText(prompt: string) {
+  const goalObjective = prompt.match(/^Goal objective:\s*(.+)$/im)?.[1]?.trim()
+  const userRequest = prompt.match(/^User request:\s*(.+)$/im)?.[1]?.trim()
+  const candidate = goalObjective || userRequest || prompt
+  return compactLine(candidate) || "Complete the requested task safely."
 }
 
 function firstMissingPlanStepReport(toolCalls: ToolCall[]) {

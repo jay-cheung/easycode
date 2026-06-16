@@ -322,7 +322,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       completionChecks: { type: "array", items: { type: "string" } },
     }, ["acceptanceCriteria", "completionChecks"]),
     permission: "goal_set_acceptance",
-    modes: ["build"],
+    modes: ["build", "plan"],
     patterns: () => ["*"],
     execute: async (input, ctx) => {
       const params = GoalSetAcceptanceInput.parse(input)
@@ -371,11 +371,11 @@ export function registerRetrievalTools(registry: ToolRegistry) {
 
   registry.register({
     name: "goal_complete",
-    description: "Mark the current goal as fully satisfied and stop automatic continuation.",
+    description: "Mark the current goal as fully satisfied and stop automatic continuation. Do not preface this call with a user-visible completion checklist; put the concise user-facing result summary in summary and keep detailed verification evidence internal.",
     inputSchema: GoalCompleteInput,
     jsonSchema: objectSchema({ summary: { type: "string" } }, ["summary"]),
     permission: "goal_complete",
-    modes: ["build"],
+    modes: ["build", "plan"],
     patterns: () => ["*"],
     execute: async (input, ctx) => {
       const params = GoalCompleteInput.parse(input)
@@ -425,7 +425,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
     inputSchema: GoalBlockedInput,
     jsonSchema: objectSchema({ reason: { type: "string" } }, ["reason"]),
     permission: "goal_blocked",
-    modes: ["build"],
+    modes: ["build", "plan"],
     patterns: () => ["*"],
     execute: async (input, ctx) => {
       const params = GoalBlockedInput.parse(input)

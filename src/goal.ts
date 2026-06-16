@@ -154,7 +154,7 @@ export function buildGoalPlanningPrompt(goal: GoalState, reason?: string) {
     "The proposed plan must move the goal measurably toward the listed acceptance criteria.",
     "You must do exactly one of the following:",
     "1. Call plan_exit with a small executable plan for the next slice.",
-    "2. Call goal_complete if the objective is fully satisfied.",
+    "2. Call goal_complete if the objective is fully satisfied. Do not print a completion checklist before the tool call; put only the concise user-facing result summary in the goal_complete summary.",
     "3. Call goal_blocked if progress now depends on user input, a denied high-risk action, or no safe next step exists.",
     "If the slice will use subagents, include explicit Research, Delegation, and Review phases and name the intended subagent roles.",
     "Anti-pattern warning: before outputting a review/repair/optimization plan, check whether reviewer can be delegated. If the review can be split into bounded scopes such as Code Complete dimensions, file groups, type safety, error handling, or test coverage, delegate reviewer first and synthesize only its conclusion.",
@@ -177,7 +177,7 @@ export function buildGoalAssessmentPrompt(goal: GoalState, reason?: string) {
     "First review the current repository state and run whatever bounded verification or review work is needed to judge the goal against the acceptance criteria.",
     "Use the listed completion checks as the minimum review/verification bar.",
     "After that, you must do exactly one of the following:",
-    "1. Call goal_complete only if every acceptance criterion is satisfied and review/verification found no remaining defect that blocks completion.",
+    "1. Call goal_complete only if every acceptance criterion is satisfied and review/verification found no remaining defect that blocks completion. Do not print the completion checklist before the tool call; keep detailed check evidence internal and put only the concise user-facing result summary in goal_complete.summary.",
     "2. Call plan_exit with the next bounded plan if the goal is not yet complete or if review found defects/gaps to fix.",
     "3. Call goal_blocked if safe progress now requires user input or an unavailable permission."
   )
