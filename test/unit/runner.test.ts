@@ -104,6 +104,46 @@ describe("agent runner ui events", () => {
     expect(result.toolCalls).toHaveLength(0)
   })
 
+  test("validated provider loop returns provider failures without running plan gates", async () => {
+    let validationCalls = 0
+    let emittedFailure = false
+    const result = await runValidatedProviderTurnLoop({
+      runProviderTurn: async () => ({
+        text: "",
+        reasoningText: "",
+        toolCalls: [],
+        failureText: "Unable to connect. Is the computer able to access the url?",
+        replayEvents: [{ type: "failure", text: "Unable to connect. Is the computer able to access the url?", source: "provider", category: "network" }],
+      }),
+      emitProviderTurn: (turn) => {
+        emittedFailure = turn.failureText?.includes("Unable to connect") ?? false
+      },
+      updateActiveHypothesis: () => {},
+      recordHypothesisViolation: () => {},
+      hypothesisCorrectionMessage: () => "hypothesis correction",
+      validateTurn: () => {
+        validationCalls += 1
+        return {
+          correction: "Planning mode hard gate:\n- Return a proposal plan.",
+          failureText: "Planning mode hard gate failed.",
+        }
+      },
+      evidenceRevision: 0,
+    }, {
+      agent: { kind: "build", name: "run", depth: 0, mode: "build", tools: "enabled", systemPrompt: "test" },
+      prompt: "review the code",
+      messages: [],
+      providerMessages: [],
+      tools: [],
+    })
+
+    expect(result.failureText).toContain("Unable to connect")
+    expect(result.retryMessage).toBeUndefined()
+    expect(result.validationFailureCount).toBeUndefined()
+    expect(validationCalls).toBe(0)
+    expect(emittedFailure).toBe(true)
+  })
+
   test("validated provider loop accepts raw proposed plan text without forcing plan_exit", async () => {
     const result = await runValidatedProviderTurnLoop({
       runProviderTurn: async () => ({

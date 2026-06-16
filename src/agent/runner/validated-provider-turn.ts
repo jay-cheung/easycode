@@ -41,6 +41,10 @@ export async function runValidatedProviderTurnLoop(
     const providerMessages = providerMessagesWithCorrections(input.providerMessages, correctionMessages)
     const turn = await deps.runProviderTurn({ ...input, providerMessages, emitDeltas: false })
     fallbackTurn = turn
+    if (turn.failureText || turn.cancelledOutput) {
+      deps.emitProviderTurn(turn)
+      return turn
+    }
     const validation = evaluateHypothesisTurn({
       reasoningText: turn.reasoningText,
       text: turn.text,
