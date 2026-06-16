@@ -1029,6 +1029,8 @@ describe("agent integration", () => {
     })
 
     let turnCount = 0
+    const chunks: string[] = []
+    const events: RunUiEvent[] = []
     const provider: Provider = {
       name: "test-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
@@ -1049,10 +1051,12 @@ describe("agent integration", () => {
       },
     }
 
-    const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
+    const result = await new AgentRunner({ root, provider, context, onTextDelta: (text) => chunks.push(text), onEvent: (event) => events.push(event) }).run("Execute the approved plan", "build")
 
     expect(result.status).toBe("completed")
     expect(result.text).toContain("Final verification report line 5")
+    expect(chunks.join("")).toContain("Final verification report line 5")
+    expect(events.filter((event) => event.type === "text_delta").map((event) => event.text).join("")).toContain("Final verification report line 5")
     expect(result.usedTools).toEqual(["plan_step_complete", "plan_step_complete"])
     expect(turnCount).toBe(2)
     await rm(root, { recursive: true, force: true })
@@ -1083,6 +1087,7 @@ describe("agent integration", () => {
     })
 
     let turnCount = 0
+    const chunks: string[] = []
     const provider: Provider = {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
@@ -1095,10 +1100,11 @@ describe("agent integration", () => {
       },
     }
 
-    const result = await new AgentRunner({ root, provider, context }).run("Execute the approved goal plan", "build")
+    const result = await new AgentRunner({ root, provider, context, onTextDelta: (text) => chunks.push(text) }).run("Execute the approved goal plan", "build")
 
     expect(result.status).toBe("completed")
     expect(result.text).toContain("Goal slice inspection report.")
+    expect(chunks.join("")).not.toContain("Goal slice inspection report.")
     expect(result.usedTools).toEqual(["plan_step_complete"])
     expect(turnCount).toBe(1)
     await rm(root, { recursive: true, force: true })

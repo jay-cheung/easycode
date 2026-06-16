@@ -12,6 +12,7 @@ import { createLogger, emitLog, type Logger } from "../../logger"
 import { ProjectMemoryStore, renderProjectMemoryRecall, shouldAutoRecallProjectMemory, type ProjectMemoryRecord } from "../../memory"
 import * as protocol from "../protocol"
 import { defaultSessionSettings, type SessionSettings } from "../../settings"
+import { goalStateFromContext } from "../../goal"
 import type { RunUiEvent } from "../../ui/timeline"
 import { createAgent } from "../protocol"
 import type { Agent, AgentRunResult, AgentRunnerOptions } from "../types"
@@ -544,6 +545,11 @@ export class AgentRunner {
     }
 
     if (toolCall.name === "plan_step_complete" && result.metadata.status === "succeeded" && result.metadata.planCompleted === true) {
+      const activeGoal = goalStateFromContext(this.context)
+      if (activeGoal?.status !== "executing") {
+        emitPlanExitText(this.onEvent, this.onTextDelta, result.output)
+        this.context.add(assistantMessage(reasoningTranscript, result.output))
+      }
       state = this.aspect.transition("completed", { usedTools })
       this.emitRunDone("completed", providerMetrics)
       return {
