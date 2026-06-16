@@ -44,19 +44,17 @@
 - Active structured plans persist their current step, step-status map, and lifecycle status during the live session without requiring raw message-history reconstruction.
 - Active structured plans replan only on explicit revision/scope-change prompts; ordinary status or progress questions do not rewrite the saved plan.
 - MCP stays default-allowed, and WebSearch is default-allowed with structured citations, logger events, eval fixtures, and Tavily-only live search when configured.
-- `web_fetch` stays default-allowed for bounded readonly HTTP/HTTPS fetches with structured citation metadata, and supported readonly `curl` usage is redirected to that internal tool instead of bash.
+- `web_fetch` stays default-allowed for bounded readonly HTTP/HTTPS fetches with structured citation metadata, and supported readonly `curl` bash usage keeps `web_fetch` replacement metadata without being blocked solely for replaceability.
 - LSP/AST indexing demonstrates an advantage over text search by resolving definitions/references and constraining edits to symbols rather than same-name text matches.
 
 ## Safety
 - Workspace writes outside the project root fail.
-- macOS native bash writes may still use the current session's per-user temp/cache root under `var/folders` without triggering a sandbox-bypass prompt.
+- Bash scratch I/O may use `/tmp`, `/private/tmp`, `/dev/null`, `/private/dev/null`, and the current session's per-user temp/cache root under `var/folders` without a bypass prompt.
 - EasyCode never edits files before a proposed plan is explicitly approved.
-- Dangerous bash commands fail.
-- Replaceable bash inspections that already have internal tool coverage fail fast with a structured hint to use the matching internal tool instead.
-- Replaceable bash `curl` fetches fail fast only when they are safely representable as readonly `web_fetch` calls, including a translated suggestion for the supported flags.
-- Only narrowly-bounded bash scopes can auto-approve without a manual prompt: non-replaceable readonly fallback scopes, plus the exact verification/test allowlist. Unsafe, side-effectful, or replaceable bash commands still require review or fail.
-- Native write-sandbox bypass and explicit outside-path bypass require a risk prompt and user approval.
-- Repeated approved bash commands reuse the current session approval and do not prompt again.
+- File deletion and git remote bash commands fail hard.
+- Replaceable bash inspections run but keep structured audit metadata such as `commandClass` and `replaceableBy`.
+- Ordinary bash runs without manual approval; high-risk bash first goes through command-review and asks the user only when the reviewer returns `ask_user` or cannot decide.
+- Explicit outside-project paths fail with structured `path_boundary_blocked` feedback instead of requesting `sandbox_bypass`; `/tmp` and `/dev/null` remain allowed scratch exceptions.
 - Bash timeout returns structured metadata.
 - Large command output is truncated.
 

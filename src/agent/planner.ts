@@ -89,6 +89,8 @@ Use the named roles consistently:
 - tester: bounded verification or test execution
 - docs_researcher: bounded docs/spec research
 - summary: context summarization only
+If a step is about checking which project-local skill/script file is actually used, inspecting script paths/entrypoints, or reading a bounded script artifact, mark it as executorHint="subagent" with subagentRole="explorer".
+If a step is about diagnosing why a project-local skill/script failed, reproducing a script error, or collecting bounded script failure evidence, mark it as executorHint="subagent" with subagentRole="debugger".
 Do not leave delegation steps without executor metadata.
 Always include lowRisk as a boolean:
 - true only for short read-only/review/documentation plans that do not edit files, run risky commands, touch secrets/auth/payment/database/deploy paths, or require debugger/tester execution.
@@ -136,6 +138,7 @@ The JSON format must strictly match:
 }
 
 You may keep or revise hidden internal executor metadata (\`executorHint\`, \`subagentRole\`) when it helps execution, but user-visible markdown will not show those fields.
+For project-local script/path inspection use \`executorHint: "subagent"\` with \`subagentRole: "explorer"\`; for bounded script failure diagnosis use \`subagentRole: "debugger"\`.
 Always include lowRisk as a boolean. Use false unless the revised remaining work is short, read-only/review/documentation-only, and does not require debugger/tester, risky commands, edits, deploys, credentials, auth, payment, or database work.
 
 Only return the JSON object, wrapped in a markdown code block: \`\`\`json ... \`\`\`. Do not output any other text or explanation.`

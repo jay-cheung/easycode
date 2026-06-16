@@ -1,7 +1,8 @@
 import path from "node:path"
 import { statSync } from "node:fs"
 import { z } from "zod"
-import { isDangerousCommand, looksLikeNativeSandboxDenial, SandboxPathEscapeError, type BashResult, type SandboxExecuteOptions } from "../sandbox"
+import { classifyBashSafety } from "../bash-safety"
+import { allowedExternalPathDescription, isDangerousCommand, looksLikeNativeSandboxDenial, SandboxPathEscapeError, type BashResult, type SandboxExecuteOptions } from "../sandbox"
 import type { ToolContext, ToolResult } from "./registry"
 
 const OptionalString = z.string().nullish().transform((value) => value ?? undefined)
@@ -37,7 +38,10 @@ export type BashCommandAnalysis = {
 }
 
 const exactBashApprovalPrefix = "bash:exact:"
+const reviewBashApprovalPrefix = "bash:review:"
 const autoApprovedFileReadBytes = 256 * 1024
+const skillScriptApprovalPrefix = "bash:scoped:skill_script:"
+const skillScriptInterpreters = new Set(["node", "nodejs", "python", "python3", "bun", "bash", "sh"])
 
 export function analyzeBashCommand(command: string): BashCommandAnalysis {
   const normalizedCommand = normalizeBashCommand(command)
@@ -78,7 +82,9 @@ export function analyzeBashCommand(command: string): BashCommandAnalysis {
 export function bashApprovalForCommand(command: string, cwd = process.cwd()): BashApproval {
   const trimmed = command.trim()
   if (!trimmed) return exactBashApproval(trimmed)
-  if (isDangerousCommand(trimmed)) return rawBashApproval(trimmed, false)
+  const safety = classifyBashSafety({ command: trimmed })
+  if (safety.action === "deny") return rawBashApproval(trimmed, false)
+  if (safety.action === "review") return reviewBashApproval(trimmed, safety.riskTags)
   const analysis = analyzeBashCommand(trimmed)
   if (analysis.commandClass === "git_inspect" || analysis.commandClass === "file_read" || analysis.commandClass === "text_search" || analysis.commandClass === "line_read") {
     return exactBashApproval(trimmed)
@@ -86,7 +92,7 @@ export function bashApprovalForCommand(command: string, cwd = process.cwd()): Ba
   const words = shellWords(trimmed)
   if (!words || words.length === 0) return exactBashApproval(trimmed)
   const [program = "", ...args] = words
-  const normalizedProgram = path.basename(program)
+  const normalizedProgram = path.basename(program).toLowerCase()
   if (normalizedProgram === "git") return exactBashApproval(trimmed)
   if (normalizedProgram === "pwd") return scopedBashApproval("pwd", "project", [])
   if (normalizedProgram === "cat") {
@@ -101,12 +107,25 @@ export function bashApprovalForCommand(command: string, cwd = process.cwd()): Ba
     const searchScope = readonlySearchScope(normalizedProgram, args, cwd)
     return searchScope ? scopedBashApproval(normalizedProgram, searchScope.scope, searchScope.rememberPatterns) : exactBashApproval(trimmed)
   }
+  const skillScript = projectSkillScriptScope(normalizedProgram, args, cwd)
+  if (skillScript) return skillScriptBashApproval(skillScript.interpreter, skillScript.scriptPath)
   if (!["ls", "wc", "find"].includes(normalizedProgram)) return exactBashApproval(trimmed)
   const pathArgs = args.filter((arg) => !arg.startsWith("-"))
   if (pathArgs.length > 1) return exactBashApproval(trimmed)
   const rawPath = pathArgs[0] ?? "."
   const resolved = path.resolve(cwd, rawPath)
   return scopedBashApproval(normalizedProgram, normalizedPath(resolved), pathRememberPatterns(normalizedProgram, resolved))
+}
+
+function reviewBashApproval(command: string, riskTags: string[]): BashApproval {
+  const riskScope = riskTags.length > 0 ? riskTags.join("+") : "high_risk"
+  const target = `${reviewBashApprovalPrefix}${riskScope}:${command}`
+  return {
+    target,
+    rememberPatterns: [target],
+    label: `command-review ${riskScope}`,
+    repeatSafe: false,
+  }
 }
 
 function exactBashApproval(command: string): BashApproval {
@@ -139,6 +158,17 @@ export function scopedBashApproval(kind: string, scope: string, rememberPatterns
   }
 }
 
+function skillScriptBashApproval(interpreter: string, scriptPath: string): BashApproval {
+  const normalizedScriptPath = normalizedPath(scriptPath)
+  const target = `${skillScriptApprovalPrefix}${interpreter}:${normalizedScriptPath}`
+  return {
+    target,
+    rememberPatterns: [target],
+    label: `skill script ${interpreter} ${normalizedScriptPath}`,
+    repeatSafe: true,
+  }
+}
+
 function pathRememberPatterns(kind: string, resolved: string) {
   const normalized = normalizedPath(resolved)
   const parent = normalizedPath(path.dirname(resolved))
@@ -151,6 +181,14 @@ function pathRememberPatterns(kind: string, resolved: string) {
 function pathLooksDirectory(filePath: string) {
   try {
     return statSync(filePath).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+function pathLooksFile(filePath: string) {
+  try {
+    return statSync(filePath).isFile()
   } catch {
     return false
   }
@@ -223,6 +261,17 @@ function readonlySearchScope(kind: "rg" | "grep", args: string[], cwd: string) {
   const resolved = path.resolve(cwd, pathArgs[0] ?? ".")
   if (!pathLooksDirectory(resolved) && !pathLooksSmallFile(resolved) && pathArgs.length > 0) return undefined
   return { scope: normalizedPath(resolved), rememberPatterns: pathRememberPatterns(kind, resolved) }
+}
+
+function projectSkillScriptScope(program: string, args: string[], cwd: string) {
+  if (!skillScriptInterpreters.has(program)) return undefined
+  const scriptArg = args.find((arg) => arg && !arg.startsWith("-"))
+  if (!scriptArg) return undefined
+  const resolved = path.resolve(cwd, scriptArg)
+  if (!pathLooksFile(resolved)) return undefined
+  const normalized = normalizedPath(resolved)
+  if (!/\/\.easycode\/skills\/[^/]+\/scripts\/.+$/.test(normalized)) return undefined
+  return { interpreter: program, scriptPath: resolved }
 }
 
 function searchPathArgs(kind: "rg" | "grep", args: string[]) {
@@ -467,72 +516,45 @@ export async function executeBashWithSandboxRecovery(params: z.infer<typeof Bash
     result = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, signal: ctx.signal })
   } catch (error) {
     if (!(error instanceof SandboxPathEscapeError)) throw error
-    const approved = await requestSandboxBypass(ctx, params, {
-      reason: "path_boundary_escape",
-      risk: "Reruns this command without EasyCode's explicit project-root path boundary check. The command may read from or reference paths outside the project root.",
-      failure: error.message,
-      reference: error.reference,
-      resolved: error.resolved,
-    })
-    if (!approved) throw error
-    options.bypassPathBoundary = true
-    result = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, signal: ctx.signal })
+    return pathBoundaryBlockedResult(params.command, error)
   }
   if (!looksLikeNativeSandboxDenial(result)) return result
 
-  const approved = await requestSandboxBypass(ctx, params, {
-    reason: "native_write_sandbox_denial",
-    risk: "Reruns this command without the macOS write sandbox. The command may write outside the project root, including temp, cache, or home directories.",
-    failure: sandboxFailureSummary(result),
-  })
-  if (!approved) {
-    return { ...result, stderr: appendLine(result.stderr, "Sandbox bypass was not approved; command was not retried.") }
-  }
-
-  const retried = await ctx.sandbox.execute(params, ctx.agentMode, { ...options, bypassNativeWriteSandbox: true, signal: ctx.signal })
-  return { ...retried, stderr: retried.stderr, sandboxBypassed: true }
-}
-
-async function requestSandboxBypass(ctx: ToolContext, params: z.infer<typeof BashInput>, metadata: Record<string, unknown>) {
-  const reason = typeof metadata.reason === "string" ? metadata.reason : "sandbox_bypass"
-  const approval = sandboxBypassApproval(reason, params.command, bashCwd(ctx, params.cwd))
-  try {
-    await ctx.permission.authorize({
-      permission: "sandbox_bypass",
-      patterns: [approval.target],
-      always: approval.rememberPatterns,
-      metadata: {
-        tool: "bash",
-        command: params.command,
-        cwd: params.cwd,
-        approvalScope: approval.label,
-        rememberOnApprove: true,
-        rememberPatterns: approval.rememberPatterns,
-        ...metadata,
-      },
-    })
-    return true
-  } catch {
-    return false
-  }
-}
-
-function sandboxBypassApproval(reason: string, command: string, cwd: string): BashApproval {
-  if (reason === "path_boundary_escape") {
-    const approval = bashApprovalForCommand(command, cwd)
-    return {
-      target: `${reason}:${approval.target}`,
-      rememberPatterns: approval.rememberPatterns.map((pattern) => `${reason}:${pattern}`),
-      label: `${reason} ${approval.label}`,
-      repeatSafe: approval.repeatSafe,
-    }
-  }
-  const exact = exactBashApproval(command)
   return {
-    target: `${reason}:${exact.target}`,
-    rememberPatterns: exact.rememberPatterns.map((pattern) => `${reason}:${pattern}`),
-    label: `${reason} ${exact.label}`,
-    repeatSafe: true,
+    ...result,
+    stderr: appendLine(result.stderr, `Native write sandbox blocked this command and sandbox_bypass is disabled. Try a project-local path or allowed scratch path instead. Allowed scratch paths: ${allowedExternalPathDescription().join(", ")}.`),
+    error: "native_write_sandbox_blocked",
+    recoveryHint: "Use project-local paths, /tmp, or /dev/null; do not ask for sandbox_bypass.",
+  }
+}
+
+function pathBoundaryBlockedResult(command: string, error: SandboxPathEscapeError): BashResult {
+  const allowedScratchRoots = allowedExternalPathDescription()
+  const recoveryHint = `The command referenced a path outside the project root. Use a project-local path, /tmp, or /dev/null; otherwise ask the user to provide the file contents manually. Allowed scratch paths: ${allowedScratchRoots.join(", ")}.`
+  return {
+    command,
+    exitCode: 1,
+    stdout: "",
+    stderr: [
+      "path_boundary_blocked",
+      `Reference: ${error.reference}`,
+      `Resolved: ${error.resolved}`,
+      `Project root: ${error.root}`,
+      recoveryHint,
+    ].join("\n"),
+    timedOut: false,
+    cancelled: false,
+    truncated: false,
+    durationMs: 0,
+    nativeWriteSandbox: false,
+    sandboxBypassed: false,
+    pathBoundaryBypassed: false,
+    error: "path_boundary_blocked",
+    pathBoundaryReference: error.reference,
+    pathBoundaryResolved: error.resolved,
+    pathBoundaryRoot: error.root,
+    allowedScratchRoots,
+    recoveryHint,
   }
 }
 
@@ -552,11 +574,6 @@ export function bashResultToToolResult(command: string, result: BashResult): Too
       ...metadata,
     },
   }
-}
-
-
-function sandboxFailureSummary(result: BashResult) {
-  return [result.stderr, result.stdout].filter(Boolean).join("\n").trim().slice(0, 1_000)
 }
 
 

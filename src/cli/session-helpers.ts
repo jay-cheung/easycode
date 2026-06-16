@@ -293,16 +293,6 @@ function permissionPrompt(request: PermissionRequest) {
   if (request.permission === "bash" && typeof request.metadata.command === "string") {
     return `Allow bash for ${request.metadata.command}?${scope}\n[Y]es/[a]lways/[n]o`
   }
-  if (request.permission === "sandbox_bypass") {
-    const risk = typeof request.metadata.risk === "string" ? request.metadata.risk : "This command will be retried without the native write sandbox."
-    const reason = typeof request.metadata.reason === "string" ? `Reason: ${request.metadata.reason}\n` : ""
-    const command = typeof request.metadata.command === "string" ? request.metadata.command : patterns
-    const failure = typeof request.metadata.failure === "string" && request.metadata.failure ? `\nFailure: ${request.metadata.failure}` : ""
-    return `EasyCode sandbox blocked this command.
-${reason}Risk: ${risk}
-Command: ${command}${scope}${failure}
-Allow sandbox bypass for this command? [Y]es/[a]lways/[n]o`
-  }
   return `Allow ${request.permission} for ${patterns}? [Y]es/[a]lways/[n]o`
 }
 

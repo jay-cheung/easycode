@@ -2,6 +2,7 @@ import path from "node:path"
 import os from "node:os"
 import { mkdir, readdir, rename, rm } from "node:fs/promises"
 import type { AgentMode } from "./message"
+import { isHardDeniedBashCommand } from "./bash-safety"
 
 export type BashResult = {
   command: string
@@ -19,6 +20,12 @@ export type BashResult = {
   nativeWriteSandbox: boolean
   sandboxBypassed: boolean
   pathBoundaryBypassed: boolean
+  error?: string
+  pathBoundaryReference?: string
+  pathBoundaryResolved?: string
+  pathBoundaryRoot?: string
+  allowedScratchRoots?: string[]
+  recoveryHint?: string
 }
 
 export type SandboxOptions = {
@@ -89,9 +96,7 @@ function keyDiagnosticLines(text: string) {
 }
 
 export function isDangerousCommand(command: string) {
-  const text = command.trim().toLowerCase()
-  const downloadPipeShell = /\b(curl|wget)\b[\s\S]*\|[\s\S]*(?:\b(?:sh|bash|source)\b|\/bin\/(?:sh|bash)\b)/.test(text)
-  return /(^|\s)rm\s+-rf(\s|$|\/)/.test(text) || text.startsWith("sudo ") || text.startsWith("git push") || text.startsWith("docker ") || downloadPipeShell || /chmod\s+-r\s+\//.test(text)
+  return isHardDeniedBashCommand(command)
 }
 
 export function isReadOnlyCommand(command: string) {
@@ -134,9 +139,28 @@ function macosSessionTempWriteRoots() {
   return sandboxProfilePathVariants(parent)
 }
 
+export function allowedExternalPathRoots() {
+  return [
+    ...sandboxProfilePathVariants("/tmp"),
+    ...sandboxProfilePathVariants(os.tmpdir()),
+    ...macosSessionTempWriteRoots(),
+  ].filter((value, index, values) => values.indexOf(value) === index)
+}
+
+export function allowedExternalPathDescription() {
+  return [...allowedExternalPathRoots(), "/dev/null", "/private/dev/null"]
+}
+
+function isAllowedExternalCommandPath(target: string) {
+  const normalized = normalizeSandboxProfilePath(target)
+  if (normalized === "/dev/null" || normalized === "/private/dev/null") return true
+  return allowedExternalPathRoots().some((root) => normalized === root || normalized.startsWith(`${root}/`))
+}
+
 export function macosSandboxProfile(root: string) {
   const writableRoots = [
     ...sandboxProfilePathVariants(root).map((value) => `(subpath "${escapeSandboxString(value)}")`),
+    ...sandboxProfilePathVariants("/tmp").map((value) => `(subpath "${escapeSandboxString(value)}")`),
     ...macosSessionTempWriteRoots().map((value) => `(subpath "${escapeSandboxString(value)}")`),
   ]
   return `(version 1)
@@ -246,7 +270,7 @@ export class Sandbox {
     if (!options.bypassPathBoundary) {
       for (const reference of shellPathReferences(input.command)) {
         const resolved = path.resolve(cwd, reference)
-        if (!this.contains(resolved)) throw new SandboxPathEscapeError(reference, resolved, this.root)
+        if (!this.contains(resolved) && !isAllowedExternalCommandPath(resolved)) throw new SandboxPathEscapeError(reference, resolved, this.root)
       }
     }
 

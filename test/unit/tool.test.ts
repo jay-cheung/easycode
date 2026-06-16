@@ -941,7 +941,7 @@ describe("tool", () => {
     expect(commit.output).toContain("unrelated staged files")
   })
 
-  test("git_branch read stays readonly while create requires explicit approval", async () => {
+  test("git_branch read stays readonly and create is allowed by default in build mode", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     await git(root, ["init"])
@@ -957,8 +957,8 @@ describe("tool", () => {
 
     expect(current.metadata.status).toBe("succeeded")
     expect(current.metadata.permissionAction).toBe("allow")
-    expect(created.metadata.status).toBe("denied")
-    expect(requested).toEqual(["bash:scoped:git:branch:create:explicit-name"])
+    expect(created.metadata.status).toBe("succeeded")
+    expect(requested).toEqual([])
   })
 
   test("git_branch create is rejected in plan mode", async () => {
@@ -989,7 +989,7 @@ describe("tool", () => {
     expect(result.metadata.stderr).toBeUndefined()
   })
 
-  test("bash asks before bypassing native write sandbox failures", async () => {
+  test("bash returns native write sandbox failures without bypass approval", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const requests: string[] = []
@@ -998,40 +998,35 @@ describe("tool", () => {
       root,
       execute: async (_input: unknown, _mode: unknown, options?: { bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean }) => {
         calls.push(options)
-        return options?.bypassNativeWriteSandbox
-          ? bashResult({ command: "pwd", exitCode: 0, stdout: "ok", nativeWriteSandbox: false, sandboxBypassed: true })
-          : bashResult({
-              command: "pwd",
-              exitCode: 1,
-              stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
-              nativeWriteSandbox: true,
-              sandboxBypassed: false,
-            })
+        return bashResult({
+          command: "pwd",
+          exitCode: 1,
+          stderr: "fatal: could not open '/dev/null' for reading and writing: Operation not permitted",
+          nativeWriteSandbox: true,
+          sandboxBypassed: false,
+        })
       },
     } as unknown as Sandbox
     const permission = new PermissionService(
       [
         { permission: "bash", pattern: "*", action: "allow" },
-        { permission: "sandbox_bypass", pattern: "*", action: "ask" },
       ],
       (request) => {
         requests.push(request.permission)
-        expect(request.metadata.reason).toBe("native_write_sandbox_denial")
-        expect(request.metadata.risk).toContain("without the macOS write sandbox")
         return "once"
       },
     )
 
     const result = await registry.run("bash", { command: "pwd" }, { agentMode: "build", sandbox, permission, skills: new SkillService(root), messages: [] })
 
-    expect(requests).toEqual(["sandbox_bypass"])
-    expect(calls.map((call) => Boolean(call?.bypassNativeWriteSandbox))).toEqual([false, true])
-    expect(result.output).toBe("ok")
-    expect(result.metadata.status).toBe("succeeded")
-    expect(result.metadata.sandboxBypassed).toBe(true)
+    expect(requests).toEqual([])
+    expect(calls.map((call) => Boolean(call?.bypassNativeWriteSandbox))).toEqual([false])
+    expect(result.output).toContain("sandbox_bypass is disabled")
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.sandboxBypassed).toBe(false)
   })
 
-  test("bash repeats reuse the first approval in the same permission service", async () => {
+  test("ordinary bash repeats do not require approval", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     let asks = 0
@@ -1048,7 +1043,37 @@ describe("tool", () => {
     expect(first.metadata.status).toBe("succeeded")
     expect(second.metadata.status).toBe("succeeded")
     expect(third.metadata.status).toBe("succeeded")
-    expect(asks).toBe(2)
+    expect(asks).toBe(0)
+  })
+
+  test("project-local skill scripts run without repeated approval across argument changes", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const scriptsDir = path.join(root, ".easycode", "skills", "demo-skill", "scripts")
+    await mkdir(scriptsDir, { recursive: true })
+    await Bun.write(path.join(scriptsDir, "fetch.js"), "console.log('ok')\n")
+    await Bun.write(path.join(scriptsDir, "other.js"), "console.log('ok')\n")
+
+    const requests: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requests.push(request.patterns.join(","))
+      return "once"
+    })
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+
+    const first = await registry.run("bash", { command: "node .easycode/skills/demo-skill/scripts/fetch.js BTC 60" }, ctx)
+    const second = await registry.run("bash", { command: "node .easycode/skills/demo-skill/scripts/fetch.js ETH 120" }, ctx)
+    const third = await registry.run("bash", { command: "node .easycode/skills/demo-skill/scripts/other.js BTC 60" }, ctx)
+
+    expect(first.metadata.status).toBe("succeeded")
+    expect(second.metadata.status).toBe("succeeded")
+    expect(third.metadata.status).toBe("succeeded")
+    expect(requests).toHaveLength(0)
   })
 
   test("auto-reviewed non-replaceable bash results are marked as allowed after review", async () => {
@@ -1107,7 +1132,7 @@ describe("tool", () => {
     expect(result.metadata.permissionAction).toBe("allow")
   })
 
-  test("non-autoapproved git bash still requires manual approval", async () => {
+  test("non-dangerous git bash runs without manual approval", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const sandbox = {
@@ -1125,9 +1150,7 @@ describe("tool", () => {
     const gitDiff = await registry.run("bash", { command: "git diff HEAD~1 --stat" }, ctx)
 
     expect(gitDiff.metadata.status).toBe("succeeded")
-    expect(requested).toEqual([
-      "bash:exact:git diff HEAD~1 --stat",
-    ])
+    expect(requested).toEqual([])
   })
 
   test("unsupported curl patterns still fall back to bash instead of a fake web_fetch replacement", async () => {
@@ -1156,14 +1179,10 @@ describe("tool", () => {
     expect(curlWithOutput.metadata.replaceableBy).toEqual([])
     expect(curlPost.metadata.status).toBe("succeeded")
     expect(curlPost.metadata.replaceableBy).toEqual([])
-    expect(requested).toEqual([
-      "bash:exact:curl -H Authorization:secret https://example.com",
-      "bash:exact:curl -o page.html https://example.com",
-      "bash:exact:curl -X POST https://example.com",
-    ])
+    expect(requested).toEqual([])
   })
 
-  test("blocks replaceable bash commands and points to internal tools", async () => {
+  test("replaceable bash commands run while retaining audit metadata", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const permission = new PermissionService(defaultPermissionRules("build"), () => {
@@ -1172,9 +1191,7 @@ describe("tool", () => {
     const sandbox = {
       root,
       resolve: (target = ".") => path.resolve(root, target),
-      execute: async () => {
-        throw new Error("sandbox execute should not be reached")
-      },
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
     } as unknown as Sandbox
     const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
 
@@ -1182,36 +1199,24 @@ describe("tool", () => {
     const grepResult = await registry.run("bash", { command: "grep -n foo src/index.ts | head -20" }, ctx)
     const curlResult = await registry.run("bash", { command: "curl --retry 2 --connect-timeout 5 --url https://example.com/api -H 'Accept: application/json' -A easycode/1.0" }, ctx)
 
-    expect(gitStatus.metadata.status).toBe("failed")
-    expect(gitStatus.metadata.error).toBe("bash_replaced_by_internal_tool")
+    expect(gitStatus.metadata.status).toBe("succeeded")
+    expect(gitStatus.metadata.error).toBeUndefined()
     expect(gitStatus.metadata.commandClass).toBe("git_inspect")
     expect(gitStatus.metadata.replaceableBy).toEqual(["git_status"])
-    expect(gitStatus.output).toContain("git_status")
+    expect(gitStatus.output).toContain("ok")
 
-    expect(grepResult.metadata.status).toBe("failed")
-    expect(grepResult.metadata.error).toBe("bash_replaced_by_internal_tool")
+    expect(grepResult.metadata.status).toBe("succeeded")
+    expect(grepResult.metadata.error).toBeUndefined()
     expect(grepResult.metadata.commandClass).toBe("text_search")
     expect(grepResult.metadata.replaceableBy).toEqual(["rg_search", "grep"])
-    expect(grepResult.output).toContain("rg_search")
 
-    expect(curlResult.metadata.status).toBe("failed")
-    expect(curlResult.metadata.error).toBe("bash_replaced_by_internal_tool")
+    expect(curlResult.metadata.status).toBe("succeeded")
+    expect(curlResult.metadata.error).toBeUndefined()
     expect(curlResult.metadata.commandClass).toBe("http_fetch")
     expect(curlResult.metadata.replaceableBy).toEqual(["web_fetch"])
-    expect(curlResult.metadata.suggestedWebFetchInput).toEqual({
-      method: "GET",
-      url: "https://example.com/api",
-      headers: {
-        accept: "application/json",
-        "user-agent": "easycode/1.0",
-      },
-      retries: 2,
-      timeoutMs: 5000,
-    })
-    expect(curlResult.output).toContain("web_fetch")
   })
 
-  test("bash does not retry sandbox bypass when rejected", async () => {
+  test("bash does not retry native sandbox bypass", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const calls: Array<{ bypassNativeWriteSandbox?: boolean; bypassPathBoundary?: boolean } | undefined> = []
@@ -1231,7 +1236,6 @@ describe("tool", () => {
     const permission = new PermissionService(
       [
         { permission: "bash", pattern: "*", action: "allow" },
-        { permission: "sandbox_bypass", pattern: "*", action: "ask" },
       ],
       () => "reject",
     )
@@ -1240,18 +1244,17 @@ describe("tool", () => {
 
     expect(calls).toHaveLength(1)
     expect(result.metadata.status).toBe("failed")
-    expect(result.output).toContain("Sandbox bypass was not approved")
+    expect(result.output).toContain("sandbox_bypass is disabled")
   })
 
-  test("bash asks before bypassing explicit path boundary", async () => {
+  test("bash returns structured failure for explicit path boundary", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const requests: string[] = []
     const sandbox = {
       root,
-      execute: async (input: { command: string }, _mode: unknown, options?: { bypassPathBoundary?: boolean }) => {
-        if (!options?.bypassPathBoundary) throw new SandboxPathEscapeError("/var/folders", "/var/folders", root)
-        return bashResult({ command: input.command, exitCode: 0, stdout: "ok", pathBoundaryBypassed: true })
+      execute: async (_input: { command: string }, _mode: unknown, _options?: { bypassPathBoundary?: boolean }) => {
+        throw new SandboxPathEscapeError("/var/folders", "/var/folders", root)
       },
     } as unknown as Sandbox
     const result = await registry.run(
@@ -1263,13 +1266,9 @@ describe("tool", () => {
         permission: new PermissionService(
           [
             { permission: "bash", pattern: "*", action: "allow" },
-            { permission: "sandbox_bypass", pattern: "*", action: "ask" },
           ],
           (request) => {
             requests.push(request.permission)
-            expect(request.metadata.reason).toBe("path_boundary_escape")
-            expect(request.metadata.risk).toContain("project-root path boundary")
-            expect(request.metadata.reference).toBe("/var/folders")
             return "once"
           },
         ),
@@ -1278,13 +1277,16 @@ describe("tool", () => {
       },
     )
 
-    expect(requests).toEqual(["sandbox_bypass"])
-    expect(result.metadata.status).toBe("succeeded")
-    expect(result.metadata.pathBoundaryBypassed).toBe(true)
+    expect(requests).toEqual([])
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("path_boundary_blocked")
+    expect(result.output).toContain("path_boundary_blocked")
+    expect(result.output).toContain("/tmp")
+    expect(result.output).toContain("/dev/null")
     expect(result.metadata.sandboxBypassed).toBe(false)
   })
 
-  test("read-only ls approvals reuse scoped outside-path approvals", async () => {
+  test("outside paths stay blocked without reusable bypass approval", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
     const outside = await mkdtemp(path.join(os.tmpdir(), "easycode-outside-"))
@@ -1296,9 +1298,8 @@ describe("tool", () => {
     })
     const sandbox = {
       root,
-      execute: async (input: { command: string }, _mode: unknown, options?: { bypassPathBoundary?: boolean }) => {
-        if (!options?.bypassPathBoundary) throw new SandboxPathEscapeError(outside, outside, root)
-        return bashResult({ command: input.command, exitCode: 0, stdout: "ok", pathBoundaryBypassed: true })
+      execute: async (_input: { command: string }, _mode: unknown, _options?: { bypassPathBoundary?: boolean }) => {
+        throw new SandboxPathEscapeError(outside, outside, root)
       },
     } as unknown as Sandbox
     const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
@@ -1306,11 +1307,10 @@ describe("tool", () => {
     const first = await registry.run("bash", { command: `ls ${path.join(outside, "a")}` }, ctx)
     const second = await registry.run("bash", { command: `ls ${path.join(outside, "b")}` }, ctx)
 
-    expect(first.metadata.status).toBe("succeeded")
-    expect(second.metadata.status).toBe("succeeded")
-    expect(requests).toHaveLength(2)
-    expect(requests[0]).toContain("bash:readonly ls")
-    expect(requests[1]).toContain("sandbox_bypass:path_boundary_escape readonly ls")
+    expect(first.metadata.status).toBe("failed")
+    expect(second.metadata.status).toBe("failed")
+    expect(requests).toHaveLength(0)
+    expect(first.metadata.error).toBe("path_boundary_blocked")
   })
 })
 

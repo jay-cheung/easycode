@@ -219,6 +219,8 @@ function inferSubagentRole(goal: string, kind: PlanStepKind, doneWhen: string, f
   if (/\bdebugger\b/.test(text)) return "debugger"
   if (/\btester\b/.test(text)) return "tester"
   if (/\bsummary\b/.test(text)) return "summary"
+  if (isSkillScriptFailureDiagnosis(text)) return "debugger"
+  if (kind === "inspect" && isSkillScriptInspection(text)) return "explorer"
   if (!/\bdelegate\b|delegate_subagent|subagent|委派|子\s*agent/i.test(text)) return undefined
   if (/\b(web_fetch|web_search|https?:\/\/|api\b|http\b|public data|external docs?|external spec|data source|mcp|connector|fetch data|market data|stock data)\b|公开\s*api|外部接口|外部资料|数据源|网页|抓取|行情/i.test(text)) return "docs_researcher"
   if (kind === "verify" || kind === "gate") return "tester"
@@ -232,10 +234,22 @@ function inferSubagentRole(goal: string, kind: PlanStepKind, doneWhen: string, f
 function inferExecutorHint(goal: string, kind: PlanStepKind, doneWhen: string, fallback: string): PlanStepExecutorHint | undefined {
   const text = `${goal}\n${doneWhen}\n${fallback}`.toLowerCase()
   if (/\bdelegate\b|delegate_subagent|subagent|委派|子\s*agent/i.test(text)) return "subagent"
+  if (isSkillScriptFailureDiagnosis(text)) return "subagent"
+  if ((kind === "inspect" || kind === "verify" || kind === "gate") && isSkillScriptInspection(text)) return "subagent"
   if ((kind === "inspect" || kind === "verify" || kind === "gate") && /\bresearch\b|调研|review|审查|评审|debug|排查|定位|test|验证/i.test(text)) {
     return "subagent"
   }
   return undefined
+}
+
+function isSkillScriptInspection(text: string) {
+  return /\b(skill script|script path|script file|script entry|script source|inspect script|check script|which script|trace script)\b|脚本路径|脚本文件|脚本入口|脚本来源|查脚本|看脚本|定位脚本/.test(text)
+}
+
+function isSkillScriptFailureDiagnosis(text: string) {
+  return /\b(skill script|script)\b/.test(text) &&
+    (/\b(debug|diagnos|trace|repro|stderr|stack|exception|module not found|permission denied|error|failure|flake|flaky|logs?)\b/.test(text) ||
+      /脚本失败|脚本报错|脚本异常|脚本错误|脚本定位|脚本排障|脚本排查|脚本日志|复现脚本/.test(text))
 }
 
 function normalizeStringArray(value: unknown) {

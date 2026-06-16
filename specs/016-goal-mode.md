@@ -157,8 +157,8 @@ Suggested role boundaries:
 
 - `explorer`: pure code/config/log fact-finding
 - `reviewer`: bounded correctness or regression review for one implementation slice
-- `debugger`: isolate failure causes, with tightly bounded verification bash
-- `tester`: run tests and quality checks, with tightly bounded verification bash
+- `debugger`: isolate failure causes; bash access is available only when the role's tool list permits it and still uses the shared bash safety policy
+- `tester`: run tests and quality checks; bash access is available only when the role's tool list permits it and still uses the shared bash safety policy
 - `docs_researcher`: off-repo or MCP-backed documentation evidence
 
 Plans in goal mode may continue to carry hidden execution metadata such as:
@@ -181,8 +181,8 @@ In practice:
 
 - low-risk read/search/retrieval work auto-runs
 - repo-local bounded edits auto-run
-- bounded verification bash auto-runs
-- high-risk shell, sensitive files, and sandbox bypass still stop for the user
+- ordinary bash auto-runs behind hard sandbox/path boundaries
+- high-risk shell goes through command-review first and asks the user only when the reviewer cannot safely decide
 
 ### 8. Goal Permission Profile
 
@@ -199,23 +199,17 @@ Auto-allow by default:
 - `goal_set_acceptance`, `goal_complete`, `goal_blocked`
 - `delegate_subagent`
 
-Auto-allow but still sandbox-bound:
-
-- bounded verification commands such as `bun test`, `bun run typecheck`, `bun run gate`, `npm test`, and similar explicit quality commands
-
 Still ask or deny:
 
-- `git push`
-- `sudo`
-- `rm -rf`
-- `docker`
-- `sandbox_bypass`
+- file deletion commands such as `rm`, `rmdir`, `unlink`, `find ... -delete`, and `git clean`
+- git remote operations such as `git push`, `git pull`, `git fetch`, `git clone`, `git remote`, and `git ls-remote`
+- high-risk shell commands when command-review returns `ask_user`
 - reads from `.env` or `secrets/*`
-- shell commands that do not match the bounded verification allowlist
+- explicit outside-project command paths, except `/tmp`, `/private/tmp`, the system temp root, `/dev/null`, and `/private/dev/null`
 
 Additional requirements:
 
-- `debugger` and `tester` subagents must continue using a stricter shell allowlist than the coordinator.
+- Subagent tool availability restrictions remain role-specific; roles without bash in their tool list still cannot call bash even though the permission profile shares one safety strategy.
 - Goal mode must not weaken existing sensitive-file or privilege boundaries just because the run is automated.
 
 ## State Machines

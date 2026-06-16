@@ -10,17 +10,17 @@
 - Relative paths resolve against the project root.
 - `.env*` defaults to ask.
 - `secrets/**` defaults to deny.
-- The macOS native write sandbox may also allow the current session's per-user temp/cache root under `var/folders` so implicit TLS/toolchain scratch writes do not force a bypass prompt for ordinary networked commands.
+- The macOS native write sandbox also allows `/tmp`, `/private/tmp`, `/dev/null`, `/private/dev/null`, and the current session's per-user temp/cache root under `var/folders` for ordinary scratch I/O.
 
 ## Bash
 - Default timeout is 120 seconds.
 - Default output cap is 64KB.
-- Dangerous commands are denied: `rm -rf`, `sudo`, `git push`, `docker`, `curl | sh`, recursive chmod on `/`.
-- Replaceable bash inspections that already map to internal tools are blocked instead of auto-approved: simple `git status|diff|log`, project-local `cat`, `rg` / `grep`, `sed -n` line reads, and supported readonly `curl` fetches that can be safely represented through `web_fetch`.
-- Safe bash auto-review in `build` mode stays narrow: non-replaceable readonly fallback scopes may auto-approve only when there is no equivalent internal tool path (`pwd`, `ls`, `find`, and `wc`), and exact verification/test commands may auto-approve only when they match the bounded allowlist (`bun`/`npm`/`pnpm` test-build-typecheck-verify-gate forms, `go test`, `cargo test`, `pytest`, `node --test`, `vitest`, `jest`, `mocha`).
-- macOS native write-sandbox denials may be retried without the native write sandbox only after an explicit `sandbox_bypass` permission prompt.
-- Explicit command paths outside the project may be retried only after an explicit `sandbox_bypass` permission prompt. Dangerous-command checks still apply.
-- Repeated `bash` and `sandbox_bypass` approvals are cached by reviewed scope for the current in-memory session only. Simple read-only commands may use a narrow path scope; complex or side-effectful commands use exact-command scope.
+- Hard-denied commands are file deletion and git remote operations: `rm`, `rmdir`, `unlink`, `trash`, `find ... -delete`, `git clean`, `git push`, `git pull`, `git fetch`, `git clone`, `git remote`, `git ls-remote`, and remote submodule updates.
+- Ordinary bash is allowed by default in build mode, including pipes, inline `node` / `python`, verification commands, readonly commands, and project-local skill scripts.
+- High-risk commands use command-review before any user prompt: `sudo`, `docker` / similar container entrypoints, `curl|sh` remote script execution, package install/update commands, `chmod` / `chown` / `chgrp`, background process launch, sensitive path access, and network upload/sync forms.
+- Replaceable bash inspections still attach `commandClass` / `replaceableBy` audit metadata, but they are no longer blocked solely because an internal tool exists.
+- `sandbox_bypass` is not part of the default flow. Native write-sandbox denials and explicit outside-project path references return structured tool failures to the model.
+- Explicit command paths outside the project are blocked unless they resolve under `/tmp`, `/private/tmp`, the current system temp root, `/dev/null`, or `/private/dev/null`.
 - Timed-out processes return `timedOut=true`.
 
 ## Retrieval

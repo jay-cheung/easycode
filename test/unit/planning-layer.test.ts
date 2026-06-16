@@ -123,6 +123,38 @@ describe("Planning Layer & Executable Plans", () => {
     expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
   })
 
+  test("normalizeExecutionPlan routes skill script inspection to explorer even without explicit delegation text", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_skill_script_inspect",
+      steps: [
+        {
+          id: "step_1",
+          goal: "查脚本并确认当前 skill 实际使用哪个脚本入口",
+          kind: "inspect",
+          doneWhen: "The script path and entry file are identified.",
+        },
+      ],
+    }))
+
+    expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
+  })
+
+  test("normalizeExecutionPlan routes skill script failure diagnosis to debugger", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_skill_script_debug",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Diagnose why the skill script fails with module not found and capture the script logs",
+          kind: "inspect",
+          doneWhen: "The failure cause is reproduced with bounded evidence.",
+        },
+      ],
+    }))
+
+    expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "debugger" })
+  })
+
   test("normalizeExecutionPlan conservatively infers missing lowRisk", () => {
     const readonlyPlan = parseExecutionPlanFromResponse(JSON.stringify({
       id: "plan_readonly",

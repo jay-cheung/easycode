@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { PermissionAction } from "./message"
+import { containsSensitivePath } from "./bash-safety"
 
 export type PermissionRule = {
   permission: string
@@ -78,23 +79,6 @@ export function matchPattern(pattern: string, value: string) {
   return patternRegExp(pattern).test(value.replaceAll("\\", "/"))
 }
 
-function isCurlPipedToShellCommand(pattern: string) {
-  let command = pattern
-  if (command.startsWith("bash:exact:")) {
-    command = command.slice("bash:exact:".length)
-  }
-  const text = command.trim().toLowerCase()
-  if (!/\b(curl|wget)\b/.test(text)) return false
-  const parts = text.split("|")
-  if (parts.length < 2) return false
-  const afterPipe = parts[parts.length - 1].trim()
-  const words = afterPipe.split(/\s+/)
-  const program = words[0]
-  if (["sh", "bash", "source", "/bin/sh", "/bin/bash"].includes(program)) return true
-  if (program === "sudo" && words[1] && ["sh", "bash", "/bin/sh", "/bin/bash"].includes(words[1])) return true
-  return false
-}
-
 function isSafeProjectRootEditPattern(pattern: string) {
   const normalized = pattern.replaceAll("\\", "/").trim()
 
@@ -117,10 +101,6 @@ function isSafeProjectRootEditPattern(pattern: string) {
 }
 
 export function evaluatePermission(permission: string, pattern: string, rules: PermissionRule[]): PermissionAction {
-  if (permission === "bash" && isCurlPipedToShellCommand(pattern)) {
-    return "deny"
-  }
-
   const matches = rules.filter((rule) => matchPattern(rule.permission, permission) && matchPattern(rule.pattern, pattern))
 
   // If the permission is edit/write, and we only matched catch-all rule(s) (pattern === "*"),
@@ -153,7 +133,7 @@ export class PermissionService {
   readonly pending = new Map<string, PermissionRequest>()
   private readonly waiters = new Map<string, PendingPermission>()
   private readonly askHandler?: (request: PermissionRequest) => PermissionReply | Promise<PermissionReply>
-  private readonly autoReviewer?: PermissionAutoReviewer
+  private autoReviewer?: PermissionAutoReviewer
 
   constructor(rules: PermissionRule[], askHandler?: (request: PermissionRequest) => PermissionReply | Promise<PermissionReply>, autoReviewer?: PermissionAutoReviewer) {
     this.rules = rules
@@ -173,6 +153,16 @@ export class PermissionService {
     const service = new PermissionService(rules, this.askHandler, this.autoReviewer)
     service.approved.push(...this.approved)
     return service
+  }
+
+  withAutoReviewer(autoReviewer: PermissionAutoReviewer) {
+    const previous = this.autoReviewer
+    const chained: PermissionAutoReviewer = async (request) => {
+      const first = await previous?.(request)
+      return first ?? autoReviewer(request)
+    }
+    this.autoReviewer = chained
+    return this
   }
 
   evaluate(permission: string, pattern: string): PermissionAction {
@@ -280,11 +270,6 @@ function isAutoApprovedVerificationBashCommand(command: string) {
   return /^(bun test|bun run test|bun run build|bun run typecheck|bun run verify|bun run gate|bunx vitest|bun x vitest|npm test|npm run test|npm run build|npm run typecheck|npm run verify|pnpm test|pnpm run test|pnpm run build|pnpm run typecheck|pnpm run verify|pnpm exec tsc|pnpm exec vitest|npx tsc|npx vitest|go test|cargo test|pytest|python -m pytest|node --test|vitest|jest|mocha)(?:\s+.+)?$/i.test(trimmed)
 }
 
-function containsSensitivePath(value: string) {
-  const normalized = value.replaceAll("\\", "/").toLowerCase()
-  return /(^|[/\s"'=])\.env(?:[^/\s"'=]*)?(?:[/\s"'=]|$)/.test(normalized) || /(^|[/\s"'=])secrets?(?:[/\s"'=]|$)/.test(normalized)
-}
-
 export function defaultPermissionRules(mode: "build" | "plan" | "goal"): PermissionRule[] {
   const base: PermissionRule[] = [
     { permission: "read", pattern: "*", action: "allow" },
@@ -295,11 +280,7 @@ export function defaultPermissionRules(mode: "build" | "plan" | "goal"): Permiss
     { permission: "grep", pattern: "*", action: "allow" },
     { permission: "write", pattern: "*", action: "ask" },
     { permission: "edit", pattern: "*", action: "ask" },
-    { permission: "bash", pattern: "rm -rf*", action: "deny" },
-    { permission: "bash", pattern: "sudo*", action: "deny" },
-    { permission: "bash", pattern: "git push*", action: "deny" },
-    { permission: "bash", pattern: "docker*", action: "deny" },
-    { permission: "sandbox_bypass", pattern: "*", action: "ask" },
+    ...bashSafetyPermissionRules(),
     { permission: "skill", pattern: "*", action: "ask" },
     { permission: "mcp", pattern: "*", action: "allow" },
     { permission: "web_search", pattern: "*", action: "allow" },
@@ -312,47 +293,31 @@ export function defaultPermissionRules(mode: "build" | "plan" | "goal"): Permiss
     { permission: "goal_complete", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
     { permission: "goal_blocked", pattern: "*", action: mode === "build" || mode === "goal" ? "allow" : "deny" },
   ]
-  if (mode !== "goal") base.push({ permission: "bash", pattern: "*", action: "ask" })
-  if (mode === "goal") {
-    base.push(...verificationBashAllowPatterns.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })))
-  }
+  base.push({ permission: "bash", pattern: "*", action: "allow" })
   return base
 }
 
-const verificationBashAllowPatterns = [
-  "bash:exact:bun test*",
-  "bash:exact:bun run test*",
-  "bash:exact:bun run build*",
-  "bash:exact:bun run typecheck*",
-  "bash:exact:bun run verify*",
-  "bash:exact:bun run gate*",
-  "bash:exact:bunx vitest*",
-  "bash:exact:bun x vitest*",
-  "bash:exact:npm test*",
-  "bash:exact:npm run test*",
-  "bash:exact:npm run build*",
-  "bash:exact:npm run typecheck*",
-  "bash:exact:npm run verify*",
-  "bash:exact:pnpm test*",
-  "bash:exact:pnpm run test*",
-  "bash:exact:pnpm run build*",
-  "bash:exact:pnpm run typecheck*",
-  "bash:exact:pnpm run verify*",
-  "bash:exact:pnpm exec tsc*",
-  "bash:exact:pnpm exec vitest*",
-  "bash:exact:npx tsc*",
-  "bash:exact:npx vitest*",
-  "bash:exact:go test*",
-  "bash:exact:cargo test*",
-  "bash:exact:pytest*",
-  "bash:exact:python -m pytest*",
-  "bash:exact:node --test*",
-  "bash:exact:vitest*",
-  "bash:exact:jest*",
-  "bash:exact:mocha*",
-] as const
+function bashSafetyPermissionRules(): PermissionRule[] {
+  return [
+    { permission: "bash", pattern: "rm*", action: "deny" },
+    { permission: "bash", pattern: "rmdir*", action: "deny" },
+    { permission: "bash", pattern: "unlink*", action: "deny" },
+    { permission: "bash", pattern: "trash*", action: "deny" },
+    { permission: "bash", pattern: "find* -delete*", action: "deny" },
+    { permission: "bash", pattern: "git clean*", action: "deny" },
+    { permission: "bash", pattern: "git push*", action: "deny" },
+    { permission: "bash", pattern: "git pull*", action: "deny" },
+    { permission: "bash", pattern: "git fetch*", action: "deny" },
+    { permission: "bash", pattern: "git clone*", action: "deny" },
+    { permission: "bash", pattern: "git remote*", action: "deny" },
+    { permission: "bash", pattern: "git ls-remote*", action: "deny" },
+    { permission: "bash", pattern: "git submodule*--remote*", action: "deny" },
+    { permission: "bash", pattern: "bash:review:*", action: "ask" },
+  ]
+}
 
 export function defaultSubagentPermissionRules(role: SubagentPermissionRole): PermissionRule[] {
+  void role
   const base: PermissionRule[] = [
     { permission: "read", pattern: "*", action: "allow" },
     { permission: "read", pattern: "*.env", action: "ask" },
@@ -362,7 +327,6 @@ export function defaultSubagentPermissionRules(role: SubagentPermissionRole): Pe
     { permission: "grep", pattern: "*", action: "allow" },
     { permission: "write", pattern: "*", action: "deny" },
     { permission: "edit", pattern: "*", action: "deny" },
-    { permission: "sandbox_bypass", pattern: "*", action: "deny" },
     { permission: "skill", pattern: "*", action: "allow" },
     { permission: "mcp", pattern: "*", action: "allow" },
     { permission: "web_search", pattern: "*", action: "allow" },
@@ -372,42 +336,9 @@ export function defaultSubagentPermissionRules(role: SubagentPermissionRole): Pe
     { permission: "plan_step_complete", pattern: "*", action: "deny" },
     { permission: "plan_step_fail", pattern: "*", action: "deny" },
   ]
-  const bashRules: PermissionRule[] = [
-    { permission: "bash", pattern: "rm -rf*", action: "deny" },
-    { permission: "bash", pattern: "sudo*", action: "deny" },
-    { permission: "bash", pattern: "git push*", action: "deny" },
-    { permission: "bash", pattern: "docker*", action: "deny" },
-  ]
-  if (role === "explorer" || role === "reviewer") {
-    bashRules.push(
-      { permission: "bash", pattern: "bash:exact:*", action: "deny" },
-      { permission: "bash", pattern: "bash:scoped:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:pwd:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:ls:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:find:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:wc:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:cat:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:rg:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:grep:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:sed:*", action: "deny" },
-      { permission: "bash", pattern: "bash:readonly:curl:*", action: "deny" },
-    )
-    return [
-      ...base,
-      { permission: "bash", pattern: "bash:readonly:git:diff:project", action: "allow" },
-      { permission: "bash", pattern: "bash:readonly:git:status:project", action: "allow" },
-      { permission: "bash", pattern: "bash:readonly:git:log:project", action: "allow" },
-      { permission: "bash", pattern: "bash:readonly:git:branch:project", action: "allow" },
-      ...bashRules,
-    ]
-  }
-  if (role !== "debugger" && role !== "tester") {
-    bashRules.push({ permission: "bash", pattern: "*", action: "deny" })
-    return [...base, ...bashRules]
-  }
   return [
     ...base,
-    ...verificationBashAllowPatterns.map((pattern) => ({ permission: "bash", pattern, action: "allow" as const })),
-    ...bashRules,
+    ...bashSafetyPermissionRules(),
+    { permission: "bash", pattern: "*", action: "allow" },
   ]
 }

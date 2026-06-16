@@ -4,7 +4,8 @@ import { PermissionDeniedError, PermissionRejectedError, type PermissionRequest,
 import type { Sandbox } from "../sandbox"
 import type { SkillServiceLike } from "../skill"
 import type { ContextManagerLike } from "../context/types"
-import { BashInput, analyzeBashCommand, bashApprovalForCommand, bashCwd, suggestedWebFetchInputForCommand } from "./bash"
+import { BashInput, bashApprovalForCommand, bashCwd } from "./bash"
+import { classifyBashSafety } from "../bash-safety"
 import { findDuplicateInspection } from "./utils/duplicate-inspection"
 import { invalidProviderToolArguments } from "./utils/arguments"
 
@@ -79,8 +80,6 @@ export class ToolRegistry implements ToolRegistryLike {
     if (!parsed.success) {
       return { title: "Invalid tool input", output: `Invalid arguments for ${name}: ${parsed.error.message}`, metadata: { status: "failed", validation: parsed.error.issues } }
     }
-    const bashReplacementResult = tool.name === "bash" ? replaceableBashBlockedResult(parsed.data) : undefined
-    if (bashReplacementResult) return bashReplacementResult
     const duplicateInspection = findDuplicateInspection(ctx.messages, name, parsed.data)
     if (duplicateInspection) {
       return {
@@ -128,31 +127,11 @@ function toolCancelledResult(name: string): ToolResult {
   return { title: name, output: "Tool cancelled by user.", metadata: { status: "failed", cancelled: true, error: "AbortError" } }
 }
 
-function replaceableBashBlockedResult(input: unknown): ToolResult | undefined {
-  const params = BashInput.parse(input)
-  const analysis = analyzeBashCommand(params.command)
-  if (!analysis.shouldBlock || analysis.replaceableBy.length === 0) return undefined
-  const suggestedWebFetchInput = analysis.commandClass === "http_fetch" ? suggestedWebFetchInputForCommand(params.command) : undefined
-  const suggestionText = suggestedWebFetchInput ? ` Suggested web_fetch input: ${JSON.stringify(suggestedWebFetchInput)}.` : ""
-  return {
-    title: params.command,
-    output: `Replaceable bash blocked. Use internal tool(s): ${analysis.replaceableBy.join(", ")} instead of bash for ${JSON.stringify(analysis.normalizedCommand)}.${suggestionText}`,
-    metadata: {
-      status: "failed",
-      error: "bash_replaced_by_internal_tool",
-      command: params.command,
-      normalizedCommand: analysis.normalizedCommand,
-      commandClass: analysis.commandClass,
-      replaceableBy: analysis.replaceableBy,
-      ...(suggestedWebFetchInput ? { suggestedWebFetchInput } : {}),
-    },
-  }
-}
-
 function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContext, patterns: string[]): Omit<PermissionRequest, "id"> {
   if (tool.name === "bash") {
     const params = BashInput.parse(input)
     const approval = bashApprovalForCommand(params.command, bashCwd(ctx, params.cwd))
+    const safety = classifyBashSafety({ command: params.command })
     return {
       permission: tool.permission,
       patterns: [approval.target],
@@ -163,6 +142,10 @@ function permissionRequestForTool(tool: ToolDef, input: unknown, ctx: ToolContex
         approvalScope: approval.label,
         rememberOnApprove: approval.repeatSafe,
         rememberPatterns: approval.rememberPatterns,
+        bashSafetyAction: safety.action,
+        bashSafetyReason: safety.reason,
+        bashSafetyRiskTags: safety.riskTags,
+        bashReviewContext: safety.reviewContext,
       },
     }
   }

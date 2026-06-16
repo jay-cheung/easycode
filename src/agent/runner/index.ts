@@ -27,6 +27,7 @@ import { activeHypothesisFromLedger, activeHypothesisMessages, compactLine, hypo
 import { effectiveModeForPrompt, markSkillLoadedInSettings, pendingSelectedSkillsForSettings, permissionServiceForMode, selectedSkillsForSettings } from "./runner-support"
 import { ledgerRecord } from "../ledger"
 import { runValidatedProviderTurnLoop } from "./validated-provider-turn"
+import { createCommandReviewAutoReviewer } from "./command-review"
 import { appendOutput, assistantMessage, compactPrompt, explorationSummaryReadinessMessage, explorationSummaryStep, ledgerValue, summaryLanguageHint } from "./runner-helpers"
 import { createCancelledRunResult } from "./runner-outcomes"
 import { prepareProviderTurnRequest } from "./runner-turn-prep"
@@ -124,7 +125,7 @@ export class AgentRunner {
     this.subagentLogger = createSubagentLogger(options.root, options.sessionId, options.logger)
     this.subagentAspect = createRunAspect(this.subagentLogger)
     this.subagentRegistry = this.subagentAspect.instrumentRegistry(createBuiltinRegistry())
-    this.permission = options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))
+    this.permission = (options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))).withAutoReviewer(createCommandReviewAutoReviewer(this.provider, this.logger))
     this.context = this.aspect.instrumentContext(options.context ?? new ContextManager())
     this.hasProposedPlan = this.context.state.messages.some(
       (m) => m.role === "assistant" && m.parts.some((p) => p.type === "text" && protocol.hasProposedPlanText(p.text))
@@ -1257,8 +1258,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     return runToolCall({
       registry: this.subagentRegistry,
       sandbox: this.subagentSandbox,
-      permission: new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject"),
-      permissionFor: () => new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject"),
+      permission: new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject").withAutoReviewer(createCommandReviewAutoReviewer(this.provider, this.subagentLogger)),
+      permissionFor: () => new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject").withAutoReviewer(createCommandReviewAutoReviewer(this.provider, this.subagentLogger)),
       skills: this.subagentSkills,
       context,
       toolProgressIntervalMs: 0,

@@ -2,6 +2,36 @@
 
 Status: Draft
 
+## Step 61: Guarded Bash Default-Allow And Command Review
+
+- Scope: reduce main-flow bash approval fatigue while preserving hard boundaries for deletion, git remote operations, and outside-project paths.
+- Implementation:
+  - Added a shared bash safety classifier that returns `allow`, `review`, or `deny`; main-flow bash and bash-capable subagents now share the same deny/review policy while role-specific tool availability remains unchanged.
+  - Changed default bash permissions so ordinary bash, inline script pipelines, verification commands, readonly commands, and project-local skill scripts run without repeated manual approval.
+  - Hard-denied file deletion and git remote commands, and routed high-risk non-denied commands such as `sudo`, container commands, remote script execution, package mutations, chmod/chown, background processes, sensitive paths, and upload/sync forms through a provider-backed command-review auto-reviewer.
+  - Removed the `sandbox_bypass` retry flow: outside-project command paths now return structured `path_boundary_blocked` feedback to the model, while `/tmp`, `/private/tmp`, the system temp root, `/dev/null`, and `/private/dev/null` are allowed scratch exceptions.
+  - Stopped blocking replaceable bash commands solely because an internal tool exists; bash results still carry `commandClass` and `replaceableBy` audit metadata.
+- Verification:
+  - `bun test test/unit/permission.test.ts test/unit/command-review.test.ts test/unit/sandbox.test.ts test/unit/tool.test.ts`
+  - `bun test test/integration/agent.test.ts --test-name-pattern "sandbox path-boundary|permission|subagent|bash"`
+  - `bun run typecheck`
+- Notes: command-review is an approval reducer, not a security boundary; hard denies, path boundaries, and sandbox behavior still enforce the real limits.
+
+## Step 60: Scope Skill Script Bash Approval And Pre-Assign Script Delegation
+
+- Scope: stop repeated permission prompts for the same project-local skill script without widening shell auto-approval, and make script inspection / script troubleshooting plans explicitly delegate before execution starts.
+- Implementation:
+  - Updated `src/tool/bash.ts` so direct interpreter launches of project-local `.easycode/skills/*/scripts/*` files now use a stable reviewed scope keyed by interpreter plus resolved script path, instead of treating every argument change as a brand-new exact bash approval.
+  - Kept the first run of those skill scripts on the manual-review path by leaving `src/permission.ts` auto-review behavior unchanged for non-readonly script execution scopes.
+  - Updated `src/plans.ts` plus `src/agent/planner.ts` so “查脚本 / inspect script entrypoint” style steps infer `executorHint: "subagent"` with `subagentRole: "explorer"`, while bounded script failure diagnosis infers `subagentRole: "debugger"` even when the markdown plan forgot to say “delegate”.
+  - Added focused regression coverage in `test/unit/tool.test.ts`, `test/unit/permission.test.ts`, and `test/unit/planning-layer.test.ts`, and synchronized `specs/005-boundary-conditions.md` plus `specs/acceptance.md` with the refined approval/delegation contract.
+- Verification:
+  - `bun test test/unit/tool.test.ts test/unit/permission.test.ts test/unit/planning-layer.test.ts`
+  - `bun test test/integration/agent.test.ts --test-name-pattern "forced planning can activate a delegated inspect step and continue in the same session|coordinator retries pure fact-finding turns through delegate_subagent|coordinator retries even a single fact-finding tool through delegate_subagent"`
+  - `bun run typecheck`
+  - `bun run gate` was started but produced no sub-check output for over two minutes, so it was manually stopped instead of being treated as a local assertion failure.
+- Notes: this slice deliberately narrows reuse to the same interpreter + same skill script entrypoint; it does not auto-approve arbitrary `node` / `python` commands, and different script files still require separate approval.
+
 ## Step 59: Evidence-First Tool Result Budgeting
 
 - Scope: replace scattered provider-visible large-output truncation with a single evidence-first tool result budget, while keeping run-specific evidence out of static prompts.

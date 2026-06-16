@@ -787,7 +787,7 @@ describe("agent integration", () => {
       name: "test-provider",
       async *stream(input): AsyncIterable<ProviderEvent> {
         if (!input.messages.some((message) => message.role === "tool")) {
-          yield { type: "tool_call", call: { id: "call_1", name: "bash", input: { command: "cat /tmp/apix_baseline.json" } } }
+          yield { type: "tool_call", call: { id: "call_1", name: "bash", input: { command: "cat /var/apix_baseline.json" } } }
           return
         }
         yield { type: "text_delta", text: "I will recover with a project-local report path." }
@@ -797,13 +797,12 @@ describe("agent integration", () => {
       root,
       resolve: () => root,
       execute: async () => {
-        throw new SandboxPathEscapeError("/tmp/apix_baseline.json", "/tmp/apix_baseline.json", root)
+        throw new SandboxPathEscapeError("/var/apix_baseline.json", "/var/apix_baseline.json", root)
       },
     } as unknown as Sandbox
     const permission = new PermissionService(
       [
         { permission: "bash", pattern: "*", action: "allow" },
-        { permission: "sandbox_bypass", pattern: "*", action: "ask" },
       ],
       () => "reject",
     )
@@ -812,11 +811,10 @@ describe("agent integration", () => {
 
     expect(result.status).toBe("completed")
     const current = context.state.ledger?.current ?? []
-    expect(current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "last_tool_failure", value: expect.stringContaining("bash failed bash_replaced_by_internal_tool") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "failure", subject: "last_tool_failure", value: expect.stringContaining("bash failed path_boundary_blocked") }))
     expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "tool_failure_scope_rule", value: expect.stringContaining("not abandoning or silently shrinking scope") }))
     expect(current).toContainEqual(expect.objectContaining({ kind: "intent", subject: "main_objective_still_active", value: "跑完整 APIx 评测并保留全量报告" }))
-    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "next_recovery_action", value: expect.stringContaining(".easycode/reports") }))
-    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "next_recovery_action", value: expect.stringContaining("avoid /tmp and /dev/null") }))
+    expect(current).toContainEqual(expect.objectContaining({ kind: "constraint", subject: "next_recovery_action", value: expect.stringContaining("allowed scratch paths like /tmp and /dev/null") }))
     await rm(root, { recursive: true, force: true })
   })
 
@@ -872,7 +870,7 @@ describe("agent integration", () => {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
         yield { type: "reasoning_delta", text: "loop reasoning ".repeat(500) }
-        yield { type: "tool_call", call: { id: "call_sleep", name: "bash", input: { command: "sleep 5" } } }
+        yield { type: "tool_call", call: { id: "call_sleep", name: "bash", input: { command: "sudo sleep 5" } } }
         yield { type: "done" }
       },
     }
@@ -1309,7 +1307,7 @@ describe("agent integration", () => {
       const testsAlreadyRan = hasToolResult(messages, "bash")
       if (!testsAlreadyRan) {
         return [
-          { type: "tool_call" as const, call: call("bash", { command: "bun run test" }) },
+          { type: "tool_call" as const, call: call("bash", { command: "chmod +x src/add.ts" }) },
           { type: "done" as const }
         ]
       }
@@ -2002,7 +2000,7 @@ describe("agent integration", () => {
         if (input.prompt === "Attempt to touch a file in the repo and report what happens.") {
           const bashResult = results.find((result) => result.tool === "bash")
           if (!bashResult) {
-            yield { type: "tool_call", call: { id: "call_bash", name: "bash", input: { command: "touch debug-side-effect.txt" } } }
+            yield { type: "tool_call", call: { id: "call_bash", name: "bash", input: { command: "rm debug-side-effect.txt" } } }
             return
           }
           if (bashResult.status === "failed" || bashResult.status === "denied") {
@@ -2045,7 +2043,7 @@ describe("agent integration", () => {
           return
         }
         if (input.prompt === "Try the same denied shell mutation twice and report blocker metadata.") {
-          yield { type: "tool_call", call: { id: `call_bash_${results.length}`, name: "bash", input: { command: "touch debug-side-effect.txt" } } }
+          yield { type: "tool_call", call: { id: `call_bash_${results.length}`, name: "bash", input: { command: "rm debug-side-effect.txt" } } }
           return
         }
       },

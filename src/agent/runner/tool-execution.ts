@@ -183,8 +183,8 @@ function toolFailureSummary(
 
 function recoveryHintForToolFailure(call: ToolCall, result: { output: string; metadata: Record<string, unknown> }) {
   const output = `${result.output}\n${JSON.stringify(result.metadata)}\n${JSON.stringify(call.input)}`
-  if (call.name === "bash" && /SandboxPathEscapeError|path_boundary_escape|Path escapes project root|\/tmp|\/dev\/null|Operation not permitted|native_write_sandbox_denial/i.test(output)) {
-    return "next_recovery_action: keep command goal; use project-local paths like .easycode/tmp or .easycode/reports; avoid /tmp and /dev/null; request bypass only with user approval."
+  if (call.name === "bash" && /SandboxPathEscapeError|path_boundary_escape|path_boundary_blocked|Path escapes project root|Operation not permitted|native_write_sandbox_denial|native_write_sandbox_blocked/i.test(output)) {
+    return "next_recovery_action: keep command goal; use project-local paths or allowed scratch paths like /tmp and /dev/null; do not request sandbox_bypass."
   }
   if (call.name === "bash" && /JSON\.parse|Unexpected token|SyntaxError/i.test(output)) {
     return "next_recovery_action: keep requested scope; separate runner noise from machine JSON; parse project-local report or direct script output."
