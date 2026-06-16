@@ -80,13 +80,13 @@ function splitSentences(text: string) {
 }
 
 function looksLikeHypothesis(text: string) {
-  const hasCoreSignal =
-    /\b(root cause|cause|bug|issue|problem|failure|failing|fix|solution|culprit)\b/i.test(text)
-    || /\b(need to|should|must|will)\s+(fix|change|update|rename|edit|remove|adjust|use)\b/i.test(text)
+  const hasDiagnosisSignal = /\b(root cause|cause|bug|issue|problem|failure|failing|culprit)\b/i.test(text)
+  const hasResolutionSignal = /\b(the|this|current)?\s*(fix|solution)\s+(is|are|was|will be|should be|must be)\b/i.test(text)
+  const hasCoreSignal = hasDiagnosisSignal || hasResolutionSignal
   if (!hasCoreSignal) return false
   const processOnly =
     /\b(inspect|check|re-?read|read|search|look|verify|test|review)\b/i.test(text)
-    && !/\b(bug|issue|problem|root cause|cause|fix|solution|culprit)\b/i.test(text)
+    && !hasCoreSignal
   if (processOnly) return false
   return /( is | are | should | need to | must | will | maybe | perhaps | could be | might be )/i.test(` ${text.toLowerCase()} `)
 }

@@ -698,6 +698,37 @@ describe("cli integration", () => {
     await rm(root, { recursive: true, force: true })
   }, { timeout: 12_000 })
 
+  test("ordinary interactive prompts enter planning mode before execution", async () => {
+    const root = await tmpdir()
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("hello\n")
+    await waitForOutput(() => stdout, "<proposed_plan>", 5_000)
+    await waitForOutput(() => stdout, "[A]pprove & execute", 5_000)
+    child.stdin.write("r\n:exit\n")
+    child.stdin.end()
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+
+    expect(status).toBe(0)
+    expect(stdout).toContain("<proposed_plan>")
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
+    expect(logText).toContain("\"name\":\"provider.input\"")
+    expect(logText).toContain("\"mode\":\"plan\"")
+    expect(logText).not.toContain("\"mode\":\"build\",\"prompt\":\"hello\"")
+    expect(stderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 12_000 })
+
   test("non-low-risk default approval keeps [A] behavior and logs user_default", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {

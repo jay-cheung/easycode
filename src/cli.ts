@@ -149,7 +149,7 @@ async function runOnce(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0) {
     const controller = new AbortController()
     const permission = permissionService(args.mode, reader, () => controller.abort(), tui)
     const isTest = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test"
-    const runnerInstance = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent, sessionId: args.session ?? "once" })
+    const runnerInstance = createRunner({ root: args.root, provider: args.provider, mode: args.mode, logger, permission, settings, onEvent, sessionId: args.session ?? "once", forcePlanning: true })
     const result = await runnerInstance.run(args.prompt, args.mode, { signal: controller.signal })
     timeline.finish()
     return { status: result.status, exitCode: result.status === "completed" ? 0 : 1 } satisfies CliRunResult
@@ -368,7 +368,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     const getRunner = () => {
       tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
       const isTest = process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test"
-      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: createSessionPermission(), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session, forcePlanning: goalState?.status === "planning" })
+      runner ??= createRunner({ root: args.root, provider: activeSettings.provider, mode: activeMode, logger, context, permission: createSessionPermission(), settings: activeSettings, onEvent, onBackgroundContextUpdate: () => saveSession(context), sessionId: session, forcePlanning: true })
       return runner
     }
     const writeSessionMessage = (text: string) => writeCliText(tui, text, uiText(activeSettings.language).sessionTitle)

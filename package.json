@@ -8,6 +8,8 @@
     "dev": "bun run src/cli.ts --provider deepseek --logger -k",
     "dev:openai": "bun run src/cli.ts --provider openai --logger",
     "mcp:test:server": "bun run dev/mcp/test-server.ts",
+    "swebench:dataset": "bun run dev/quality/swebench-dataset.ts",
+    "swebench:predictions": "bun run dev/quality/swebench.ts",
     "gate": "bun run dev/quality/quality-gate.ts",
     "test": "bun test",
     "eval": "bun run dev/quality/eval.ts",

@@ -256,6 +256,57 @@ describe("agent runner ui events", () => {
     }
   })
 
+  test("planning mode allows bounded coordinator inspection before the plan hard gate", async () => {
+    const root = await tmpdir()
+    try {
+      let providerCalls = 0
+      const provider: Provider = {
+        name: "custom",
+        capabilities: {
+          apiStyle: "local",
+          supportsImages: false,
+          supportsThinking: false,
+          supportsReasoningEffort: false,
+          effortValues: [],
+          supportsJsonObjectResponse: false,
+          supportsMaxOutputTokens: false,
+          promptCacheMode: "none",
+        },
+        async *stream(input): AsyncGenerator<ProviderEvent, void, unknown> {
+          providerCalls += 1
+          const corrections = input.providerMessages
+            .filter((message) => message.role === "system")
+            .map((message) => message.content)
+            .join("\n")
+          if (providerCalls === 1) {
+            expect(corrections.includes("Coordinator delegation gate")).toBe(false)
+            yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
+            return
+          }
+          yield { type: "text_delta", text: "<proposed_plan>\n# Plan\n- Inspect src/add.ts\n</proposed_plan>" }
+          yield { type: "done" }
+        },
+      }
+
+      const runner = new AgentRunner({
+        root,
+        provider,
+        registry: createBuiltinRegistry(),
+        permission: PermissionService.autoApprove(defaultPermissionRules("build")),
+        forcePlanning: true,
+      })
+
+      const result = await runner.run("review 当前代码", "build")
+
+      expect(providerCalls).toBe(2)
+      expect(result.status).toBe("completed")
+      expect(result.usedTools).toEqual(["read"])
+      expect(result.text).toContain("# Plan")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   test("active plan steps suppress the exploration checkpoint prompt", () => {
     const context = new ContextManager()
     context.add(textMessage("user", "Review the current changes"))

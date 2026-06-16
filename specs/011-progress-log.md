@@ -2,6 +2,47 @@
 
 Status: Draft
 
+## Step 55: Bundle Directly Runnable Local SWE-bench Smoke Sets
+
+- Scope: make the new SWE-bench adapter usable immediately by adding a local dataset exporter plus bundled smoke JSONL subsets, so users can benchmark EasyCode without first hand-curating task rows.
+- Implementation:
+  - Added `dev/quality/swebench-dataset.ts` plus the `bun run swebench:dataset` script entry so the repo can fetch `Lite` or `Verified` rows from the Hugging Face datasets server, export contiguous slices or specific `instance_id`s, and write trimmed local JSONL files containing the exact fields the adapter expects.
+  - Added `test/unit/swebench-dataset.test.ts` to lock the exporter CLI parsing contract.
+  - Updated `README.md` so the benchmark workflow now starts with generating `evals/swebench/lite-smoke.jsonl` or `evals/swebench/verified-smoke.jsonl`, then feeding those directly into `bun run swebench:predictions`.
+- Verification:
+  - `bun run swebench:dataset --preset lite`
+  - `bun run swebench:dataset --preset verified`
+  - `bun test test/unit/swebench.test.ts test/unit/swebench-dataset.test.ts`
+  - `bun run typecheck`
+- Notes: the bundled local datasets are intentionally small smoke subsets, not full benchmark mirrors; full-size runs should still export larger subsets or consume the upstream dataset directly.
+
+## Step 56: Default SWE-bench Predictions To Temp Dataset And Cwd Output
+
+- Scope: remove the mandatory `--dataset` and `--output` ceremony from the SWE-bench prediction flow so a user can run `bun run swebench:predictions --provider ...` directly, with the dataset fetched ephemerally and predictions written to the current directory by default.
+- Implementation:
+  - Updated `dev/quality/swebench.ts` so `--dataset` is optional, `--preset` selects the remote smoke source when no local dataset is supplied, the script fetches the trimmed dataset into a temporary directory through the existing exporter, removes that temp dataset after the run, and prints a terminal summary table with per-instance status, patch presence, plan rounds, and failure reason.
+  - Changed prediction output defaults so omitted `--output` writes a provider/preset-labeled JSONL file into the current working directory instead of forcing a manually chosen path.
+  - Expanded `test/unit/swebench.test.ts` and `README.md` to lock and document the new zero-prep CLI behavior.
+- Verification:
+  - `bun test test/unit/swebench.test.ts test/unit/swebench-dataset.test.ts`
+  - `bun run typecheck`
+  - `bun run swebench:predictions --help`
+- Notes: repository mirrors/worktrees still use the configured workspace directory; the “temporary only” change in this slice applies to the fetched dataset input, not the git checkout workspace cache.
+
+## Step 54: Add A Minimal SWE-bench Prediction Adapter
+
+- Scope: let EasyCode run unattended against SWE-bench-style task instances by adding a local adapter that mirrors target repos, auto-approves proposal-plan handoff, and emits official-harness-compatible `predictions.jsonl`.
+- Implementation:
+  - Added `dev/quality/swebench.ts` plus the `bun run swebench:predictions` script entry so the repo can load local SWE-bench JSON/JSONL task files, prepare per-instance worktrees from GitHub + `base_commit`, drive `createRunner(...)` directly, auto-continue past `<proposed_plan>` turns, and capture `git diff --binary` as `model_patch`.
+  - Added `test/unit/swebench.test.ts` to lock the CLI parsing, dataset loading, prompt construction, and git-diff extraction helpers without touching the main runtime contract.
+  - Updated `README.md` with the benchmark caveats and the exact adapter contract: this path only generates predictions, while official SWE-bench Docker evaluation still happens in the upstream harness.
+- Verification:
+  - `bun test test/unit/swebench.test.ts`
+  - `bun run typecheck`
+  - `bun run swebench:predictions --help`
+  - `bun run gate` was started but did not return in a reasonable time and was terminated; no failing local sub-check output was produced before termination.
+- Notes: the adapter deliberately runs in unattended mode with auto-approved build permissions and auto-approved proposal-plan continuation, because benchmark generation cannot stop for human approval mid-instance.
+
 ## Step 53: Centralize Goal Phase Guards And Tighten Resume/Prompt Bounds
 
 - Scope: close review findings around goal lifecycle consistency by moving phase validation into the shared goal module, making paused-goal resume count as a new iteration, and bounding subagent prompt carry-over so prior delegated results do not expand indefinitely.
@@ -1533,3 +1574,26 @@ Status: Draft
   - Correctness: goal review can no longer silently report blockers and still transition to `completed`, and long-running structured review plans no longer receive a stray “ask the user whether to continue exploring” prompt mid-step.
   - Maintainability: the exploration checkpoint logic now keys off explicit structured-plan state instead of only global step count, which better matches the controller architecture.
   - Verification: reran `bun test test/unit/tool.test.ts test/unit/runner.test.ts test/unit/logger.test.ts test/unit/session.test.ts test/unit/tui.test.ts` and `bun run typecheck`.
+
+## Step 57: Planning Delegation Deadlock And Hypothesis Drift Narrowing
+
+- Scope: fix two runtime false positives exposed by the `trading` session: planning-mode bounded inspection getting trapped by the coordinator delegation gate, and action-routing sentences being misclassified as hypothesis drift.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so the coordinator delegation gate is skipped while `requiresProposedPlan` is active, leaving plan-phase bounded inspection governed by the existing planning hard gate instead of conflicting with the prompt rule that forbids `delegate_subagent` during the initial planning gate.
+  - Narrowed `src/agent/hypothesis.ts` so hypothesis extraction now keys off diagnosis-style statements and explicit `the fix/solution is ...` phrasing, instead of treating generic `should use` / `need to use` execution-routing sentences as competing hypotheses.
+  - Added focused regression coverage in `test/unit/runner.test.ts` and `test/unit/hypothesis.test.ts` for planning-mode bounded inspection and for action-sentence non-detection while preserving real diagnostic-drift detection.
+- Code Complete review result:
+  - Correctness: planning runs can now do bounded coordinator reads before submitting a plan, and routing/tool-choice chatter no longer self-triggers hypothesis-drift retries.
+  - Maintainability: plan-phase and execution-phase gates now have clearer responsibilities, while hypothesis extraction is closer to the actual “lock diagnosis, not tool routing” policy.
+  - Verification: reran focused runner/hypothesis coverage for the affected runtime paths.
+
+## Step 58: Restore Default CLI Force-Planning
+
+- Scope: fix the remaining `trading` workflow bug where ordinary CLI prompts still entered `build` directly, so the coordinator delegation gate could loop on bounded retrieval before any plan was proposed.
+- Implementation:
+  - Updated `src/cli.ts` so both single-run and interactive sessions create the runner with `forcePlanning: true`, leaving the runner’s own `planIdRecord` checks to keep active approved-plan execution in `build` while making fresh user prompts honor the prompt contract that requires an initial proposal plan.
+  - Added `test/integration/cli.test.ts` coverage proving a normal interactive fake-provider prompt now logs `provider.input` with `mode: "plan"` and surfaces a `<proposed_plan>` before any execution.
+- Code Complete review result:
+  - Correctness: ordinary prompts now reach the planning hard gate first, so they cannot bypass planning and fall straight into execution-only delegation loops.
+  - Maintainability: CLI entry behavior now matches the runtime prompt contract instead of having a goal-only exception path that was easy to forget when debugging sessions from logs.
+  - Verification: reran focused CLI integration plus the runner/hypothesis/typecheck checks covering the affected plan/delegation paths.

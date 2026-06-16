@@ -781,6 +781,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
               failureText: `Plan step delegation gate failed: step '${activePlanStep?.id ?? "unknown"}' must delegate to role='${requiredDelegationRole}' before direct coordinator execution.`,
             }
           }
+          if (requiresProposedPlan) return undefined
           if (!shouldEnforceCoordinatorDelegation(input.provider ?? this.provider)) return undefined
           if (lastSubagentDelegationFailedOrHandoff(this.context.state.messages)) return undefined
           const suggestedRole = suggestedCoordinatorSubagentRole(turn.toolCalls, {

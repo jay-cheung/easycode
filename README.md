@@ -204,6 +204,87 @@ bun run gate
 6. `build` 生产打包验证 / Production bundle checks.
 7. 多 Provider 联合冒烟测试 / Multi-provider smoke tests.
 
+## 🏁 SWE-bench 适配 / SWE-bench Adapter
+
+仓库内置了一个最小 SWE-bench 预测脚本，用来把 EasyCode 接到官方 harness 的 `predictions.jsonl` 格式上：
+*The repo includes a minimal SWE-bench prediction adapter that lets EasyCode emit the `predictions.jsonl` format expected by the official harness.*
+
+先拿本地 smoke 测试集最省事：
+*The fastest path is to start from the bundled local smoke datasets:*
+
+```bash
+bun run swebench:dataset --preset lite
+bun run swebench:dataset --preset verified
+```
+
+默认会生成：
+*By default this writes:*
+
+- `evals/swebench/lite-smoke.jsonl`
+- `evals/swebench/verified-smoke.jsonl`
+
+也可以按实例 id 自己导出：
+*You can also export a custom subset by instance id:*
+
+```bash
+bun run swebench:dataset \
+  --preset lite \
+  --instance-ids sympy__sympy-20590 \
+  --output /absolute/path/to/swebench-one.jsonl
+```
+
+```bash
+bun run swebench:predictions --provider deepseek
+```
+
+默认行为：
+*Default behavior:*
+
+- 如果不传 `--dataset`，会从 Hugging Face 临时拉取 `Lite` smoke 子集到系统临时目录，跑完后删除。
+- 如果不传 `--output`，会把预测结果写到当前执行目录，例如 `./swebench-lite-smoke-deepseek-predictions.jsonl`。
+- 跑完后终端会打印一个结果表格，按实例展示 `status / patch / plan rounds / reason`。
+
+如果你想指定本地数据集或换成 Verified：
+*If you want a local dataset or the Verified preset instead:*
+
+```bash
+bun run swebench:predictions \
+  --provider deepseek \
+  --preset verified
+```
+
+```bash
+bun run swebench:predictions \
+  --provider deepseek \
+  --dataset /absolute/path/to/swebench-instances.jsonl \
+  --output ./predictions.jsonl \
+  --instance-ids sympy__sympy-20590
+```
+
+输入数据文件需要包含这些字段：
+*The local dataset file should contain these fields:*
+
+- `instance_id`
+- `repo`
+- `base_commit`
+- `problem_statement`
+- `hints_text`（可选 / optional）
+
+脚本会：
+*The adapter will:*
+
+1. 为每个实例镜像目标 GitHub 仓库并检出 `base_commit`。
+2. 在实例 worktree 内直接驱动 EasyCode runner。
+3. 如果 EasyCode 先返回 `<proposed_plan>`，自动继续一轮或多轮审批后的执行。
+4. 抽取 `git diff --binary` 作为 `model_patch`，逐行写入 `predictions.jsonl`。
+
+注意：
+*Notes:*
+
+- 这是无人值守 benchmark 模式，脚本会使用 `autoApprove(build rules)` 自动放行构建模式的权限请求，并自动批准 proposal plan。不要把它和有人手工审批的交互式结果混为一谈。
+- 官方评测仍建议用 SWE-bench 自己的 Docker harness 跑；这个脚本只负责生成预测文件，不替代官方验收测试。
+- 在 ARM Mac 上，本地评测通常需要在官方 harness 里额外加 `--namespace ''` 让镜像本地构建。
+
 ---
 
 ## 📝 源码构建与开发 / Source Code & Development
