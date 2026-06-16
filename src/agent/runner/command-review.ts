@@ -9,8 +9,7 @@ type CommandReviewDecision = {
 
 export function createCommandReviewAutoReviewer(provider: Provider, logger?: Logger): PermissionAutoReviewer {
   return async (request) => {
-    if (!isCommandReviewRequest(request)) return undefined
-    const review = await runCommandReviewSubagent(provider, request, logger)
+    const review = await runPermissionReviewSubagent(provider, request, logger)
     if (!review) return undefined
     if (review.decision === "allow_once") return "once"
     if (review.decision === "reject") return "reject"
@@ -18,22 +17,29 @@ export function createCommandReviewAutoReviewer(provider: Provider, logger?: Log
   }
 }
 
-function isCommandReviewRequest(request: PermissionRequest) {
-  return request.permission === "bash" && request.metadata.bashSafetyAction === "review"
-}
-
-async function runCommandReviewSubagent(provider: Provider, request: PermissionRequest, logger?: Logger): Promise<CommandReviewDecision | undefined> {
+async function runPermissionReviewSubagent(provider: Provider, request: PermissionRequest, logger?: Logger): Promise<CommandReviewDecision | undefined> {
   const command = typeof request.metadata.command === "string" ? request.metadata.command : request.patterns.join(", ")
   const cwd = typeof request.metadata.cwd === "string" ? request.metadata.cwd : undefined
   const riskTags = Array.isArray(request.metadata.bashSafetyRiskTags) ? request.metadata.bashSafetyRiskTags.filter((item): item is string => typeof item === "string") : []
   const prompt = [
-    "You are EasyCode's command-review subagent.",
-    "Review this bash permission request. You cannot call tools. Return only JSON with decision and reason.",
+    "You are EasyCode's hidden permission-review subagent.",
+    "Review this permission request. You cannot call tools. Return only JSON with decision and reason.",
     "Allowed decisions: allow_once, reject, ask_user.",
-    "Reject destructive commands, git remote operations, credential exposure, or clear host/environment escape.",
+    "Default-allowed requests and hard-denied requests are handled before this review; this request reached you because it requires a safety decision.",
+    "Reject destructive commands, git remote operations, credential exposure, unsafe sensitive-file access, or clear host/environment escape.",
     "Ask the user when intent or blast radius is ambiguous.",
-    "Allow once only when the command is useful, bounded to the project or allowed scratch paths, and the risk tags are acceptable.",
-    JSON.stringify({ command, cwd, patterns: request.patterns, riskTags, reason: request.metadata.bashSafetyReason }, null, 2),
+    "Allow once only when the request is useful, bounded to the project or allowed scratch paths, and the risk tags are acceptable.",
+    JSON.stringify({
+      permission: request.permission,
+      tool: request.metadata.tool,
+      command,
+      cwd,
+      patterns: request.patterns,
+      always: request.always,
+      riskTags,
+      reason: request.metadata.bashSafetyReason,
+      metadata: request.metadata,
+    }, null, 2),
   ].join("\n")
   let text = ""
   try {
@@ -42,23 +48,23 @@ async function runCommandReviewSubagent(provider: Provider, request: PermissionR
       prompt,
       messages: [],
       providerMessages: [
-        { role: "system", content: "You are a narrow command-review subagent. Return strict JSON only." },
+        { role: "system", content: "You are a narrow hidden permission-review subagent. Return strict JSON only." },
         { role: "user", content: prompt },
       ],
       tools: [],
     })) {
       if (event.type === "text_delta") text += event.text
       if (event.type === "failure") {
-        emitLog(logger, { type: "state", name: "command_review.failed", detail: { command, output: event.error.output || event.error.message } })
+        emitLog(logger, { type: "state", name: "permission_review.failed", detail: { permission: request.permission, command, output: event.error.output || event.error.message } })
         return undefined
       }
     }
   } catch (error) {
-    emitLog(logger, { type: "state", name: "command_review.error", detail: { command, error: error instanceof Error ? error.message : String(error) } })
+    emitLog(logger, { type: "state", name: "permission_review.error", detail: { permission: request.permission, command, error: error instanceof Error ? error.message : String(error) } })
     return undefined
   }
   const parsed = parseCommandReviewDecision(text)
-  emitLog(logger, { type: "state", name: "command_review.decision", detail: { command, decision: parsed?.decision ?? "unparsed", reason: parsed?.reason } })
+  emitLog(logger, { type: "state", name: "permission_review.decision", detail: { permission: request.permission, command, decision: parsed?.decision ?? "unparsed", reason: parsed?.reason } })
   return parsed
 }
 

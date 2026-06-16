@@ -78,4 +78,50 @@ describe("command review", () => {
 
     expect(requested).toEqual(["bash:review:sudo:sudo true"])
   })
+
+  test("non-bash ask requests are reviewed internally before manual ask", async () => {
+    let asks = 0
+    const service = new PermissionService(
+      [{ permission: "write", pattern: "*", action: "ask" }],
+      () => {
+        asks += 1
+        return "reject"
+      },
+      createCommandReviewAutoReviewer(reviewerProvider('{"decision":"allow_once","reason":"project-local write"}')),
+    )
+
+    await service.authorize({
+      permission: "write",
+      patterns: ["src/generated.ts"],
+      always: ["src/generated.ts"],
+      metadata: { tool: "write", rememberOnApprove: false },
+    })
+
+    expect(asks).toBe(0)
+  })
+
+  test("hard deny skips internal review", async () => {
+    let reviewerCalls = 0
+    const service = new PermissionService(
+      [{ permission: "bash", pattern: "rm*", action: "deny" }],
+      () => "once",
+      createCommandReviewAutoReviewer({
+        name: "review-test",
+        async *stream(): AsyncIterable<ProviderEvent> {
+          reviewerCalls += 1
+          yield { type: "text_delta", text: '{"decision":"allow_once"}' }
+          yield { type: "done" }
+        },
+      }),
+    )
+
+    await expect(service.authorize({
+      permission: "bash",
+      patterns: ["rm -rf tmp"],
+      always: ["rm -rf tmp"],
+      metadata: { tool: "bash", command: "rm -rf tmp" },
+    })).rejects.toThrow("Permission denied")
+
+    expect(reviewerCalls).toBe(0)
+  })
 })
