@@ -49,6 +49,7 @@ export const WebFetchInput = z.object({
 
 export const PlanStepCompleteInput = z.object({
   message: z.string().optional(),
+  report: z.string().trim().min(1),
 })
 
 export const PlanStepFailInput = z.object({

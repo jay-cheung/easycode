@@ -210,13 +210,14 @@ export function registerRetrievalTools(registry: ToolRegistry) {
 
   registry.register({
     name: "plan_step_complete",
-    description: "Mark the current active plan step as completed and advance to the next step.",
+    description: "Mark the current active plan step as completed with a required progress report and advance to the next step.",
     inputSchema: PlanStepCompleteInput,
-    jsonSchema: objectSchema({ message: { type: "string" } }, []),
+    jsonSchema: objectSchema({ message: { type: "string" }, report: { type: "string" } }, ["report"]),
     permission: "plan_step_complete",
     modes: ["build"],
     patterns: () => ["*"],
     execute: async (input, ctx) => {
+      const params = PlanStepCompleteInput.parse(input)
       if (!ctx.context) return { title: "Error", output: "Context manager missing.", metadata: { status: "failed" } }
       const ledger = ctx.context.state.ledger
       const planIdRecord = ledger?.current.find(r => r.subject === "current_plan_id" && r.status === "current")
@@ -235,6 +236,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const { plan, checkpoint } = state
       const stepStatuses = { ...checkpoint.stepStatuses, [currentStepId]: "completed" as const }
       const nextStep = nextIncompletePlanStep(plan, stepStatuses)
+      const report = params.report.trim()
       
       if (nextStep) {
         await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {
@@ -244,8 +246,13 @@ export function registerRetrievalTools(registry: ToolRegistry) {
         })
         return {
           title: "Plan Step Completed",
-          output: `Step ${currentStepId} completed successfully. Proceeding to Step ${nextStep.id}: ${nextStep.goal}. Continue immediately with that step and do not ask the user whether to continue.`,
-          metadata: { status: "succeeded", nextStepId: nextStep.id }
+          output: [
+            `Step ${currentStepId} completed successfully.`,
+            params.message?.trim() ? `Completion summary: ${params.message.trim()}` : "",
+            `Report:\n${report}`,
+            `Proceeding to Step ${nextStep.id}: ${nextStep.goal}. Continue immediately with that step and do not ask the user whether to continue.`,
+          ].filter(Boolean).join("\n"),
+          metadata: { status: "succeeded", nextStepId: nextStep.id, report, message: params.message?.trim() }
         }
       } else {
         await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {
@@ -257,8 +264,8 @@ export function registerRetrievalTools(registry: ToolRegistry) {
         
         return {
           title: "Plan Completed",
-          output: `All steps in plan ${plan.title || planId} completed successfully!`,
-          metadata: { status: "succeeded", planCompleted: true }
+          output: report,
+          metadata: { status: "succeeded", planCompleted: true, report, message: params.message?.trim() }
         }
       }
     }

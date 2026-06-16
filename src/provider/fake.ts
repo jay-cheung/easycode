@@ -372,14 +372,14 @@ export class FakeProvider implements Provider {
     if (currentPrompt.includes("proceed with the approved plan")) {
       if (prompt.includes("queued-ok")) {
         yield { type: "text_delta", text: "Queued done." }
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "Queued done." }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Queued done.", report: "Queued done." }) }
         yield { type: "done" }
         return
       }
       if (prompt.includes("delayed")) {
         await new Promise((resolve) => setTimeout(resolve, 1_000))
         yield { type: "text_delta", text: "Delayed done." }
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "Delayed done." }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Delayed done.", report: "Delayed done." }) }
         yield { type: "done" }
         return
       }
@@ -391,14 +391,14 @@ export class FakeProvider implements Provider {
           return
         }
         yield { type: "text_delta", text: "Environment read handled." }
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "Environment read handled." }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Environment read handled.", report: "Environment read handled." }) }
         yield { type: "done" }
         return
       }
       if (input.providerMessages.some((message) => message.parts?.some((part) => part.type === "image"))) {
         yield { type: "reasoning_delta", text: "I should inspect the attached image." }
         yield { type: "text_delta", text: "Image received." }
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "Image received." }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "Image received.", report: "Image received." }) }
         yield { type: "done" }
         return
       }
@@ -406,7 +406,7 @@ export class FakeProvider implements Provider {
 
     if ((prompt.includes("low-risk-plan") || prompt.includes("high-risk-plan")) && currentPrompt.includes("proceed with the approved plan")) {
       if (!hasToolResult(input.messages, "plan_step_complete")) {
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "fake plan step complete" }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "fake plan step complete", report: "Fake plan executed." }) }
         yield { type: "done" }
         return
       }
@@ -433,7 +433,7 @@ export class FakeProvider implements Provider {
         return
       }
       if (!stepDone) {
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "delegated inspection complete" }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "delegated inspection complete", report: "Delegated inspection complete." }) }
         yield { type: "done" }
         return
       }
@@ -465,7 +465,7 @@ export class FakeProvider implements Provider {
           yield { type: "done" }
           return
         }
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-multi-slice-e2e slice 1 complete" }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-multi-slice-e2e slice 1 complete", report: "Slice 1 explorer findings for goal-multi-slice-e2e are complete." }) }
         yield { type: "done" }
         return
       }
@@ -482,7 +482,7 @@ export class FakeProvider implements Provider {
           yield { type: "done" }
           return
         }
-        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-multi-slice-e2e slice 2 complete" }) }
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-multi-slice-e2e slice 2 complete", report: "Slice 2 explorer findings for goal-multi-slice-e2e are complete." }) }
         yield { type: "done" }
         return
       }

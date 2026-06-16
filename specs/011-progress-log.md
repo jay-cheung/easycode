@@ -2,6 +2,34 @@
 
 Status: Draft
 
+## Step 63: Harden plan_step_complete With Required Reports
+
+- Scope: replace the soft post-completion synthesis fallback with a stricter plan-step completion contract, so every `plan_step_complete` carries an explicit report and final plan completion can end immediately without losing the promised user-facing output.
+- Implementation:
+  - Updated `src/tool/builtins/common.ts` and `src/tool/builtins/retrieval-tools.ts` so `plan_step_complete` now requires a non-empty `report`, preserves optional `message` as a short label only, includes progress reports in intermediate-step tool output, and returns the final report itself when the last step completes the plan.
+  - Updated `src/agent/runner/index.ts` and `src/prompt/agent.ts` so the active-step reminder plus validation gate now reject `plan_step_complete` calls that omit `report`, and the final-step instruction explicitly requires the final user-facing deliverable inside that report instead of a later placeholder turn.
+  - Updated `src/provider/fake.ts` plus `test/integration/agent.test.ts` so fake/default plan execution paths, delegated plan slices, goal slices, and exhausted-subagent fallbacks all comply with the new required-report protocol, including a regression test that fails closed when `plan_step_complete` omits `report`.
+- Verification:
+  - `bun test test/integration/agent.test.ts --test-name-pattern "running plans continue across steps without another user prompt|goal-backed plans still return to the controller immediately after the final step|plan_step_complete without a report is rejected by the validation gate|forced planning can activate a delegated inspect step and continue in the same session|plan-step delegation gate does not block direct coordinator tools when the assigned subagent role is exhausted"`
+  - `bun test test/integration/cli.test.ts --test-name-pattern "session queues input typed during an active run|logger session renders like normal mode and writes session logs"`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: this supersedes the softer non-goal follow-up-turn workaround from Step 62; final plan completion is immediate again, but only after the model supplies the actual report inside `plan_step_complete.report`.
+
+## Step 62: Restore Final Output After Non-Goal Plan Completion
+
+- Scope: stop ordinary plan executions from terminating on the last `plan_step_complete` before the promised user-facing report or summary is emitted, while preserving the immediate handoff from goal execution back to goal review.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so only goal-backed executing slices still exit immediately on the final `plan_step_complete`; ordinary build-plan runs now schedule one follow-up assistant turn for the final user-facing answer instead of ending on the generic "Plan Completed" tool result.
+  - Updated `src/prompt/agent.ts` so the active-step contract tells the model not to mark the final step complete before its report, review, summary, or explanation is actually ready.
+  - Updated `src/provider/fake.ts` and `test/integration/agent.test.ts` so the fake provider and runner integration coverage follow the new contract: final plan completion yields a final synthesis turn, while goal execution still returns directly to the outer controller.
+- Verification:
+  - `bun test test/integration/agent.test.ts --test-name-pattern "running plans continue across steps without another user prompt|goal-backed plans still return to the controller immediately after the final step|forced planning can activate a delegated inspect step and continue in the same session|plan-step delegation gate does not block direct coordinator tools when the assigned subagent role is exhausted"`
+  - `bun test test/integration/cli.test.ts --test-name-pattern "session queues input typed during an active run|logger session renders like normal mode and writes session logs"`
+  - `bun run typecheck`
+  - `bun run gate`
+- Notes: the original regression came from the deliberate "exit immediately after final plan_step_complete" runner rule; that behavior remains correct for goal review boundaries, but ordinary plan execution now gets a dedicated final-answer turn.
+
 ## Step 61: Guarded Bash Default-Allow And Command Review
 
 - Scope: reduce main-flow bash approval fatigue while preserving hard boundaries for deletion, git remote operations, and outside-project paths.

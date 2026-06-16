@@ -590,7 +590,8 @@ Fallback: ${s.fallback || "none"}
 Executor Hint: ${s.executorHint ?? "main"}${s.subagentRole ? ` (${s.subagentRole})` : ""}
 
 Focus ONLY on achieving the goal of this step. Do not deviate.
-When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' to proceed.
+When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' with a non-empty 'report' string that explains what was completed.
+If this is the final step, that 'report' must be the final user-facing deliverable, not a promise to write it later.
 After a step is completed, continue immediately with the next plan step in the same run. Do not ask the user whether to continue between steps.
 ${s.executorHint === "subagent" && s.subagentRole ? `This step is assigned to a subagent. Before any non-coordinator tool use, you MUST call 'delegate_subagent' with role='${s.subagentRole}'. Do not execute this step directly from the coordinator.` : ""}
 If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear explanation.`
@@ -760,6 +761,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
                 "- Fold already gathered evidence into the proposal plan itself.",
               ].join("\n"),
               failureText: "Planning mode hard gate failed: the model must submit a proposal plan before ending the planning run.",
+            }
+          }
+          const missingPlanStepReport = firstMissingPlanStepReport(turn.toolCalls)
+          if (missingPlanStepReport) {
+            return {
+              correction: [
+                "Plan step completion gate:",
+                "- Every plan_step_complete call must include a non-empty 'report' field.",
+                "- Use 'message' only as a short label or summary; the real completion content belongs in 'report'.",
+                "- If this completion ends the plan, put the final user-facing report in 'report' now instead of promising to write it later.",
+              ].join("\n"),
+              failureText: `Plan step completion gate failed: plan_step_complete must include a non-empty report (call id: ${missingPlanStepReport.id}).`,
             }
           }
           if (requiresReviewerDelegationBeforeFinal(input.prompt, activePlanStep) && turn.toolCalls.length === 0 && turn.text.trim() && !hasSuccessfulReviewerSubagent(this.context.state.messages)) {
@@ -1644,4 +1657,14 @@ function buildValidationGateFallbackMessage(turn: ProviderTurnResult) {
     correction ? `Last required correction: ${compactLine(correction)}` : "",
     `Last invalid output: ${evidence}`,
   ].filter(Boolean).join("\n")
+}
+
+function firstMissingPlanStepReport(toolCalls: ToolCall[]) {
+  return toolCalls.find((call) => call.name === "plan_step_complete" && !hasNonEmptyPlanStepReport(call.input))
+}
+
+function hasNonEmptyPlanStepReport(input: unknown) {
+  if (!input || typeof input !== "object") return false
+  const report = (input as { report?: unknown }).report
+  return typeof report === "string" && report.trim().length > 0
 }

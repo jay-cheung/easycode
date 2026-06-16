@@ -18,6 +18,7 @@ import { defaultSessionSettings } from "../../src/settings"
 import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
 import type { RunUiEvent } from "../../src/ui/timeline"
 import { ledgerRecord } from "../../src/agent/ledger"
+import { createGoalState, writeGoalState } from "../../src/goal"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -1030,25 +1031,103 @@ describe("agent integration", () => {
           .filter((part) => part.toolName === "plan_step_complete" && part.status === "succeeded")
           .length
         if (completedSteps === 0) {
-          yield { type: "tool_call", call: { id: "call_complete_1", name: "plan_step_complete", input: { message: "inspection done" } } }
+          yield { type: "tool_call", call: { id: "call_complete_1", name: "plan_step_complete", input: { message: "inspection done", report: "Inspection completed for src/add.ts." } } }
           return
         }
         if (completedSteps === 1) {
           const latestToolResult = [...toolResults(input.messages)].reverse().find((part) => part.toolName === "plan_step_complete")
           expect(latestToolResult?.output).toContain("Continue immediately with that step")
-          yield { type: "tool_call", call: { id: "call_complete_2", name: "plan_step_complete", input: { message: "verification done" } } }
+          yield { type: "tool_call", call: { id: "call_complete_2", name: "plan_step_complete", input: { message: "verification done", report: "Final verification report." } } }
           return
         }
-        yield { type: "text_delta", text: "Plan finished." }
       },
     }
 
     const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
 
     expect(result.status).toBe("completed")
-    expect(result.text).toContain("All steps in plan Auto Continue Plan completed successfully!")
+    expect(result.text).toContain("Final verification report.")
     expect(result.usedTools).toEqual(["plan_step_complete", "plan_step_complete"])
     expect(turnCount).toBe(2)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("goal-backed plans still return to the controller immediately after the final step", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_goal_slice",
+      title: "Goal Review Slice",
+      lowRisk: true,
+      steps: [
+        { id: "step_1", goal: "Inspect src/add.ts", kind: "inspect", doneWhen: "Inspection is complete." },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    const goal = createGoalState("Finish the delegated review flow")
+    writeGoalState(context, {
+      ...goal,
+      status: "executing",
+      acceptanceCriteria: ["The completed slice returns control to goal review."],
+      completionChecks: ["Review the finished slice before closing the goal."],
+    })
+
+    let turnCount = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        turnCount += 1
+        if (turnCount === 1) {
+          yield { type: "tool_call", call: { id: "call_complete_1", name: "plan_step_complete", input: { message: "inspection done", report: "Goal slice inspection report." } } }
+          return
+        }
+        yield { type: "text_delta", text: "This post-plan text should never be emitted while a goal slice is executing." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Execute the approved goal plan", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("Goal slice inspection report.")
+    expect(result.usedTools).toEqual(["plan_step_complete"])
+    expect(turnCount).toBe(1)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("plan_step_complete without a report is rejected by the validation gate", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_report_required",
+      title: "Report Required Plan",
+      lowRisk: true,
+      steps: [
+        { id: "step_1", goal: "Inspect src/add.ts", kind: "inspect", doneWhen: "Inspection is complete." },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    let turnCount = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        turnCount += 1
+        yield { type: "tool_call", call: { id: `call_complete_${turnCount}`, name: "plan_step_complete", input: { message: "inspection done" } } }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
+
+    expect(result.status).toBe("failed")
+    expect(turnCount).toBe(3)
+    expect(result.text).toContain("Every plan_step_complete call must include a non-empty 'report' field.")
     await rm(root, { recursive: true, force: true })
   })
 
@@ -1108,9 +1187,10 @@ describe("agent integration", () => {
             return
           }
           if (completeCount === 0) {
-            yield { type: "tool_call", call: { id: "call_complete", name: "plan_step_complete", input: { message: "inspection complete" } } }
+            yield { type: "tool_call", call: { id: "call_complete", name: "plan_step_complete", input: { message: "inspection complete", report: "Delegated slice final report." } } }
             return
           }
+          return
         }
         if (input.prompt === "Inspect src/add.ts") {
           yield { type: "text_delta", text: "Found export function add in src/add.ts; it currently returns a - b." }
@@ -1127,7 +1207,7 @@ describe("agent integration", () => {
     expect(planResult.text).toContain("<proposed_plan>")
     expect(stored?.plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
     expect(executeResult.status).toBe("completed")
-    expect(executeResult.text).toContain("All steps in plan Delegated slice completed successfully!")
+    expect(executeResult.text).toContain("Delegated slice final report.")
     expect(executeResult.usedTools).toEqual(["delegate_subagent", "plan_step_complete"])
     expect(toolResults(executeResult.messages).some((part) =>
       part.toolName === "delegate_subagent" &&
@@ -1861,7 +1941,10 @@ describe("agent integration", () => {
             yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
             return
           }
-          yield { type: "tool_call", call: { id: "call_step_complete", name: "plan_step_complete", input: { summary: "Coordinator inspected src/add.ts directly after explorer exhaustion." } } }
+          if (!results.some((result) => result.tool === "plan_step_complete")) {
+            yield { type: "tool_call", call: { id: "call_step_complete", name: "plan_step_complete", input: { message: "Coordinator inspected src/add.ts directly after explorer exhaustion.", report: "Coordinator inspected src/add.ts directly after explorer exhaustion." } } }
+            return
+          }
         }
       },
     }
@@ -1871,7 +1954,7 @@ describe("agent integration", () => {
 
     expect(result.status).toBe("completed")
     expect(result.usedTools).toEqual(["read", "plan_step_complete"])
-    expect(result.text).toContain("All steps in plan Inspect despite exhausted explorer budget completed successfully!")
+    expect(result.text).toContain("Coordinator inspected src/add.ts directly after explorer exhaustion.")
     await rm(root, { recursive: true, force: true })
   })
 
