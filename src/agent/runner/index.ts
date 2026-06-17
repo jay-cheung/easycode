@@ -88,6 +88,7 @@ function shouldEnforceCoordinatorDelegation(provider: Provider) {
 
 export class AgentRunner {
   readonly root: string
+  readonly rawProvider: Provider
   readonly provider: Provider
   readonly registry: ToolRegistryLike
   readonly permission: PermissionService
@@ -127,12 +128,13 @@ export class AgentRunner {
     this.forcePlanning = options.forcePlanning
     this.logger = options.logger
     this.aspect = options.aspect ?? createRunAspect(options.logger)
+    this.rawProvider = options.provider
     this.provider = this.aspect.instrumentProvider(options.provider)
     this.registry = this.aspect.instrumentRegistry(options.registry ?? createBuiltinRegistry())
     this.subagentLogger = createSubagentLogger(options.root, options.sessionId, options.logger)
     this.subagentAspect = createRunAspect(this.subagentLogger)
     this.subagentRegistry = this.subagentAspect.instrumentRegistry(createBuiltinRegistry())
-    this.permission = (options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))).withAutoReviewer(createCommandReviewAutoReviewer(this.provider, this.logger))
+    this.permission = (options.permission ?? PermissionService.autoApprove(defaultPermissionRules("build"))).withAutoReviewer(createCommandReviewAutoReviewer(this.rawProvider, this.subagentLogger))
     this.context = this.aspect.instrumentContext(options.context ?? new ContextManager())
     this.hasProposedPlan = this.context.state.messages.some(
       (m) => m.role === "assistant" && m.parts.some((p) => p.type === "text" && protocol.hasProposedPlanText(p.text))
@@ -1314,8 +1316,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     return runToolCall({
       registry: this.subagentRegistry,
       sandbox: this.subagentSandbox,
-      permission: new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject").withAutoReviewer(createCommandReviewAutoReviewer(this.provider, this.subagentLogger)),
-      permissionFor: () => new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject").withAutoReviewer(createCommandReviewAutoReviewer(this.provider, this.subagentLogger)),
+      permission: new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject").withAutoReviewer(createCommandReviewAutoReviewer(this.rawProvider, this.subagentLogger)),
+      permissionFor: () => new PermissionService(defaultSubagentPermissionRules(taskState.packet.role), () => "reject").withAutoReviewer(createCommandReviewAutoReviewer(this.rawProvider, this.subagentLogger)),
       skills: this.subagentSkills,
       context,
       toolProgressIntervalMs: 0,

@@ -1079,7 +1079,7 @@ describe("tool", () => {
   test("auto-reviewed non-replaceable bash results are marked as allowed after review", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()
-    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+    const permission = new PermissionService([{ permission: "bash", pattern: "*", action: "ask" }], () => {
       throw new Error("manual prompt should not be reached")
     }, defaultPermissionAutoReviewer)
 
@@ -1097,7 +1097,7 @@ describe("tool", () => {
       resolve: (target = ".") => path.resolve(root, target),
       execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
     } as unknown as Sandbox
-    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+    const permission = new PermissionService([{ permission: "bash", pattern: "*", action: "ask" }], () => {
       throw new Error("manual prompt should not be reached")
     }, defaultPermissionAutoReviewer)
     const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
@@ -1116,7 +1116,7 @@ describe("tool", () => {
       resolve: (target = ".") => path.resolve(root, target),
       execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
     } as unknown as Sandbox
-    const permission = new PermissionService(defaultPermissionRules("build"), () => {
+    const permission = new PermissionService([{ permission: "bash", pattern: "*", action: "ask" }], () => {
       throw new Error("manual prompt should not be reached")
     }, defaultPermissionAutoReviewer)
 
@@ -1130,6 +1130,9 @@ describe("tool", () => {
 
     expect(result.metadata.status).toBe("succeeded")
     expect(result.metadata.permissionAction).toBe("allow")
+    expect(result.metadata.permissionSource).toBe("auto_review")
+    expect(result.metadata.permissionAutoReviewSource).toBe("default_auto_reviewer")
+    expect(result.metadata.permissionReviewReason).toBe("bounded verification command")
   })
 
   test("non-dangerous git bash runs without manual approval", async () => {
@@ -1180,6 +1183,31 @@ describe("tool", () => {
     expect(curlPost.metadata.status).toBe("succeeded")
     expect(curlPost.metadata.replaceableBy).toEqual([])
     expect(requested).toEqual([])
+  })
+
+  test("complex bash without a clear replacement requires review", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const requested: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(request.patterns.join(","))
+      return "once"
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+    const command = "node scripts/analyze.js > /tmp/report.txt && cat /tmp/report.txt"
+
+    const result = await registry.run("bash", { command }, ctx)
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.patterns).toEqual([`bash:review:shell_complexity:${command}`])
+    expect(result.metadata.permissionSource).toBe("manual")
+    expect(result.metadata.approvalScope).toBe("command-review shell_complexity")
+    expect(requested).toEqual([`bash:review:shell_complexity:${command}`])
   })
 
   test("replaceable bash commands run while retaining audit metadata", async () => {

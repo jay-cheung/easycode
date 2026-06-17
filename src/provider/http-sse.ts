@@ -42,7 +42,7 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
     yield { type: "request", request: { url: this.url, method: "POST", body } }
 
     const tlsConfig = getTlsConfig()
-    const fetchOptions: RequestInit & { tls?: unknown } = {
+    const fetchOptions: RequestInit & { tls?: unknown; verbose?: boolean } = {
       method: "POST",
       headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
       body: JSON.stringify(body),
@@ -50,6 +50,9 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
     }
     if (tlsConfig) {
       fetchOptions.tls = tlsConfig
+    }
+    if (process.env.EASYCODE_FETCH_VERBOSE === "1" || process.env.EASYCODE_FETCH_VERBOSE === "true") {
+      fetchOptions.verbose = true
     }
 
     let response: Response

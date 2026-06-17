@@ -141,32 +141,46 @@ describe("permission", () => {
   })
 
   test("auto reviewer approves repeat-safe readonly bash scopes", async () => {
-    const service = new PermissionService(defaultPermissionRules("build"), () => {
+    const service = new PermissionService([{ permission: "bash", pattern: "*", action: "ask" }], () => {
       throw new Error("manual prompt should not be reached")
     }, defaultPermissionAutoReviewer)
 
-    await service.authorize({
+    const authorization = await service.authorize({
       permission: "bash",
       patterns: ["bash:readonly:git:status:project"],
       always: ["bash:readonly:git:status:project"],
       metadata: { tool: "git_status", command: "git status --short", rememberOnApprove: true, rememberPatterns: ["bash:readonly:git:status:project"] },
     })
 
+    expect(authorization).toEqual(expect.objectContaining({
+      source: "auto_review",
+      reply: "once",
+      autoReviewSource: "default_auto_reviewer",
+      reason: "repeat-safe readonly scope",
+      rememberedPatterns: ["bash:readonly:git:status:project"],
+    }))
     expect(service.evaluate("bash", "bash:readonly:git:status:project")).toBe("allow")
   })
 
   test("auto reviewer approves bounded verification bash commands", async () => {
-    const service = new PermissionService(defaultPermissionRules("build"), () => {
+    const service = new PermissionService([{ permission: "bash", pattern: "*", action: "ask" }], () => {
       throw new Error("manual prompt should not be reached")
     }, defaultPermissionAutoReviewer)
 
-    await service.authorize({
+    const authorization = await service.authorize({
       permission: "bash",
       patterns: ["bash:exact:bun run typecheck"],
       always: ["bash:exact:bun run typecheck"],
       metadata: { tool: "bash", command: "bun run typecheck", rememberOnApprove: true, rememberPatterns: ["bash:exact:bun run typecheck"] },
     })
 
+    expect(authorization).toEqual(expect.objectContaining({
+      source: "auto_review",
+      reply: "once",
+      autoReviewSource: "default_auto_reviewer",
+      reason: "bounded verification command",
+      rememberedPatterns: ["bash:exact:bun run typecheck"],
+    }))
     expect(service.evaluate("bash", "bash:exact:bun run typecheck")).toBe("allow")
   })
 

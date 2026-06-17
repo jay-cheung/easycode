@@ -169,7 +169,24 @@ export class LoggingRunAspect implements RunAspect {
         }
         try {
           const result = await registry.run(name, input, ctx)
-          if (tool && permissionEvaluationLogged && result.metadata.status !== "denied") emitLog(logger, { type: "tool", name: "permission.allowed", detail: { tool: name, permission: tool.permission } })
+          if (tool && permissionEvaluationLogged && result.metadata.status !== "denied") {
+            emitLog(logger, {
+              type: "tool",
+              name: "permission.allowed",
+              detail: {
+                tool: name,
+                permission: tool.permission,
+                action: result.metadata.permissionAction,
+                source: result.metadata.permissionSource,
+                reply: result.metadata.permissionReply,
+                autoReviewSource: result.metadata.permissionAutoReviewSource,
+                reason: result.metadata.permissionReviewReason,
+                approvalScope: result.metadata.approvalScope,
+                rememberedPatterns: result.metadata.permissionRememberedPatterns,
+                patterns: result.metadata.patterns,
+              },
+            })
+          }
           emitLog(logger, { type: "tool", name: "tool.execute.done", detail: { tool: name, status: result.metadata.status, outputLength: result.output.length } })
           return result
         } catch (error) {

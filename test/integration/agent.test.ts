@@ -18,7 +18,7 @@ import { defaultSessionSettings } from "../../src/settings"
 import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
 import type { RunUiEvent } from "../../src/ui/timeline"
 import { ledgerRecord } from "../../src/agent/ledger"
-import { createGoalState, writeGoalState } from "../../src/goal"
+import { createGoalState, goalStateFromContext, writeGoalState } from "../../src/goal"
 
 async function fixture() {
   const root = await mkdtemp(path.join(os.tmpdir(), "easycode-agent-"))
@@ -195,6 +195,7 @@ describe("agent integration", () => {
     expect(events.some((event) => event.type === "provider" && event.name === "provider.input_tokens" && typeof event.detail?.tokenEstimate === "number")).toBe(true)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.tool_call" && event.detail?.tool === "read")).toBe(true)
     expect(events.some((event) => event.type === "tool" && event.name === "permission.evaluate" && event.detail?.tool === "edit")).toBe(true)
+    expect(events.some((event) => event.type === "tool" && event.name === "permission.allowed" && event.detail?.tool === "edit" && event.detail?.source === "preapproved")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "provider -> tool_call_message" && event.detail?.tool === "bash" && typeof event.detail?.command === "string" && typeof event.detail?.commandClass === "string")).toBe(true)
     expect(events.some((event) => event.type === "data" && event.name === "tool_result -> context" && event.detail?.tool === "bash" && typeof event.detail?.command === "string" && typeof event.detail?.normalizedCommand === "string" && typeof event.detail?.commandClass === "string")).toBe(true)
@@ -1107,6 +1108,40 @@ describe("agent integration", () => {
     expect(chunks.join("")).not.toContain("Goal slice inspection report.")
     expect(result.usedTools).toEqual(["plan_step_complete"])
     expect(turnCount).toBe(1)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("goal_complete exits immediately without a follow-up provider turn", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    const goal = createGoalState("Finish the review")
+    writeGoalState(context, {
+      ...goal,
+      status: "reviewing",
+      acceptanceCriteria: ["The review has a final result."],
+      completionChecks: ["The final result was verified."],
+    })
+
+    let turnCount = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        turnCount += 1
+        if (turnCount === 1) {
+          yield { type: "tool_call", call: { id: "call_goal_complete", name: "goal_complete", input: { summary: "Final goal summary." } } }
+          return
+        }
+        throw new Error("goal_complete should have ended the run before another provider turn")
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Assess the goal", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toBe("Final goal summary.")
+    expect(result.usedTools).toEqual(["goal_complete"])
+    expect(turnCount).toBe(1)
+    expect(goalStateFromContext(context)?.status).toBe("completed")
     await rm(root, { recursive: true, force: true })
   })
 
@@ -2141,6 +2176,44 @@ describe("agent integration", () => {
     expect(subagentTranscript).toContain("Subagent 1")
     expect(subagentTranscript).toContain("role=docs_researcher")
     expect(subagentTranscript).toContain("task=Summarize src/add.ts")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("command review uses the shared subagent logger and transcript", async () => {
+    const root = await fixture()
+    const logger = createLogger({ root, session: "command-review" })
+    const command = "printf command-review-ok > /tmp/easycode-command-review.txt && cat /tmp/easycode-command-review.txt"
+    const provider: Provider = {
+      name: "test-provider",
+      model: "main-model",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("hidden permission-review")) {
+          yield { type: "text_delta", text: '{"decision":"allow_once","reason":"bounded scratch write"}' }
+          return
+        }
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        if (!results.some((result) => result.tool === "bash")) {
+          yield { type: "tool_call", call: { id: "call_bash_review", name: "bash", input: { command } } }
+          return
+        }
+        yield { type: "text_delta", text: "Reviewed command completed." }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, logger, sessionId: "command-review" }).run("Run reviewed bash", "build")
+
+    expect(result.status).toBe("completed")
+    expect(result.text).toContain("Reviewed command completed.")
+    const mainTranscript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "command-review.txt")).text()
+    const subagentTranscript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "command-review.subagents.txt")).text()
+    const subagentLog = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "command-review.subagents.jsonl")).text()
+    expect(mainTranscript).not.toContain("permission_reviewer")
+    expect(subagentTranscript).toContain("role=permission_reviewer")
+    expect(subagentTranscript).toContain("task=Review permission for bash")
+    expect(subagentLog).toContain("\"name\":\"subagent.request\"")
+    expect(subagentLog).toContain("\"role\":\"permission_reviewer\"")
+    expect(subagentLog).toContain("\"name\":\"permission_review.decision\"")
+    expect(subagentLog).toContain("\"name\":\"provider.transcript\"")
     await rm(root, { recursive: true, force: true })
   })
 

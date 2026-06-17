@@ -20,7 +20,7 @@ export type LoggerOptions = {
 
 export function emitLog(logger: Logger | undefined, event: Omit<LogEvent, "at">) {
   if (!logger) return
-  logger({ at: Date.now(), ...event })
+  logger(sanitizeLogEvent({ at: Date.now(), ...event }))
 }
 
 export function createLogger(options: LoggerOptions = {}): Logger {
@@ -33,15 +33,16 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   let transcriptTurn = 0
   let previousTranscriptInput = ""
   const logger = ((event: LogEvent) => {
-    appendFileSync(filePath, `${JSON.stringify(event)}\n`)
-    if (event.type === "provider" && event.name === "provider.transcript") {
+    const safeEvent = sanitizeLogEvent(event)
+    appendFileSync(filePath, `${JSON.stringify(safeEvent)}\n`)
+    if (safeEvent.type === "provider" && safeEvent.name === "provider.transcript") {
       transcriptTurn += 1
-      appendFileSync(transcriptFilePath, formatTranscriptTurn(transcriptTurn, event, previousTranscriptInput))
-      previousTranscriptInput = stringDetail(event.detail?.input)
+      appendFileSync(transcriptFilePath, formatTranscriptTurn(transcriptTurn, safeEvent, previousTranscriptInput))
+      previousTranscriptInput = stringDetail(safeEvent.detail?.input)
       return
     }
-    if (event.type === "provider" && event.name === "provider.validation_rejected") {
-      appendFileSync(transcriptFilePath, formatTranscriptValidation(event))
+    if (safeEvent.type === "provider" && safeEvent.name === "provider.validation_rejected") {
+      appendFileSync(transcriptFilePath, formatTranscriptValidation(safeEvent))
     }
   }) as Logger
   logger.filePath = filePath
@@ -50,13 +51,66 @@ export function createLogger(options: LoggerOptions = {}): Logger {
 }
 
 export function formatLogEvent(event: LogEvent) {
-  const line = `[easycode] ${JSON.stringify(event)}`
-  if (event.type === "provider" && event.name === "provider.input_tokens") return `\x1b[1;32m${line}\x1b[0m`
-  if (event.type === "provider" && (event.name === "provider.summary_request" || event.name === "provider.summary_output" || event.name === "provider.subagent_route")) return `\x1b[1;35m${line}\x1b[0m`
-  if (event.type === "state" && event.name.startsWith("subagent.")) return `\x1b[1;35m${line}\x1b[0m`
-  if (event.type === "provider" && (event.name === "provider.response" || event.name === "provider.response.raw")) return `\x1b[1;33m${line}\x1b[0m`
-  if (event.type === "state") return `\x1b[1;36m${line}\x1b[0m`
+  const safeEvent = sanitizeLogEvent(event)
+  const line = `[easycode] ${JSON.stringify(safeEvent)}`
+  if (safeEvent.type === "provider" && safeEvent.name === "provider.input_tokens") return `\x1b[1;32m${line}\x1b[0m`
+  if (safeEvent.type === "provider" && (safeEvent.name === "provider.summary_request" || safeEvent.name === "provider.summary_output" || safeEvent.name === "provider.subagent_route")) return `\x1b[1;35m${line}\x1b[0m`
+  if (safeEvent.type === "state" && safeEvent.name.startsWith("subagent.")) return `\x1b[1;35m${line}\x1b[0m`
+  if (safeEvent.type === "provider" && (safeEvent.name === "provider.response" || safeEvent.name === "provider.response.raw")) return `\x1b[1;33m${line}\x1b[0m`
+  if (safeEvent.type === "state") return `\x1b[1;36m${line}\x1b[0m`
   return line
+}
+
+export function sanitizeLogEvent(event: LogEvent): LogEvent {
+  return sanitizeValue(event, new Set()) as LogEvent
+}
+
+function sanitizeValue(value: unknown, seen: Set<unknown>, key = ""): unknown {
+  if (typeof value === "string") return sanitizeText(sensitiveKey(key) ? "[redacted]" : value)
+  if (typeof value !== "object" || value === null) return value
+  if (seen.has(value)) return "[circular]"
+  seen.add(value)
+
+  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, seen))
+
+  const output: Record<string, unknown> = {}
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    output[entryKey] = sensitiveKey(entryKey)
+      ? redactSensitiveField(entryValue)
+      : sanitizeValue(entryValue, seen, entryKey)
+  }
+  return output
+}
+
+function redactSensitiveField(value: unknown) {
+  if (typeof value === "string" && /^Bearer\s+/i.test(value)) return "Bearer [redacted]"
+  return "[redacted]"
+}
+
+function sensitiveKey(key: string) {
+  const lower = key.toLowerCase()
+  return /^(authorization|proxy-authorization)$/i.test(key)
+    || /api[_-]?key|access[_-]?key|secret|password|credential/i.test(key)
+    || /(^|[_-])(access[_-]?token|refresh[_-]?token|id[_-]?token|token)($|[_-])/i.test(lower)
+    || /(?:access|refresh|id)token/.test(lower)
+}
+
+function sanitizeText(text: string) {
+  let output = text
+  for (const secret of sensitiveEnvValues()) {
+    output = output.split(secret).join("[redacted]")
+  }
+  return output
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}/g, "sk-[redacted]")
+    .replace(/([A-Za-z_][A-Za-z0-9_]*(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL)[A-Za-z0-9_]*\s*[:=]\s*)[^\s"',}]+/gi, "$1[redacted]")
+}
+
+function sensitiveEnvValues() {
+  return Object.entries(process.env)
+    .filter(([key, value]) => Boolean(value) && sensitiveKey(key) && (value?.length ?? 0) >= 6)
+    .map(([, value]) => value as string)
+    .sort((left, right) => right.length - left.length)
 }
 
 function safeLogSegment(value: string) {

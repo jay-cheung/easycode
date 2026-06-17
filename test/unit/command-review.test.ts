@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { createCommandReviewAutoReviewer } from "../../src/agent/runner/command-review"
+import type { LogEvent } from "../../src/logger"
 import { PermissionService } from "../../src/permission"
 import type { Provider, ProviderEvent } from "../../src/provider"
 
@@ -41,10 +42,33 @@ describe("command review", () => {
       createCommandReviewAutoReviewer(reviewerProvider('{"decision":"allow_once","reason":"bounded"}')),
     )
 
-    await service.authorize(reviewRequest("sudo true"))
+    const authorization = await service.authorize(reviewRequest("sudo true"))
 
+    expect(authorization).toEqual(expect.objectContaining({
+      source: "auto_review",
+      reply: "once",
+      autoReviewSource: "command_review",
+      reason: "bounded",
+    }))
     expect(asks).toBe(0)
     expect(service.evaluate("bash", "bash:review:sudo:sudo true")).toBe("ask")
+  })
+
+  test("writes command review turns through the shared subagent logger context", async () => {
+    const events: LogEvent[] = []
+    const service = new PermissionService(
+      [{ permission: "bash", pattern: "bash:review:*", action: "ask" }],
+      () => "reject",
+      createCommandReviewAutoReviewer(reviewerProvider('{"decision":"allow_once","reason":"bounded"}'), (event) => events.push(event)),
+    )
+
+    await service.authorize(reviewRequest("sudo true"))
+
+    expect(events.some((event) => event.type === "state" && event.name === "subagent.request" && event.detail?.role === "permission_reviewer")).toBe(true)
+    expect(events.some((event) => event.type === "state" && event.name === "subagent.start" && event.detail?.role === "permission_reviewer")).toBe(true)
+    expect(events.some((event) => event.type === "state" && event.name === "subagent.result" && event.detail?.role === "permission_reviewer" && event.detail?.status === "allow_once")).toBe(true)
+    expect(events.some((event) => event.type === "provider" && event.name === "provider.transcript" && event.detail?.subagentRole === "permission_reviewer" && String(event.detail?.subagentTask).includes("sudo true"))).toBe(true)
+    expect(events.some((event) => event.type === "state" && event.name === "permission_review.decision" && event.detail?.decision === "allow_once")).toBe(true)
   })
 
   test("reject blocks without manual ask", async () => {
@@ -95,6 +119,31 @@ describe("command review", () => {
       patterns: ["src/generated.ts"],
       always: ["src/generated.ts"],
       metadata: { tool: "write", rememberOnApprove: false },
+    })
+
+    expect(asks).toBe(0)
+  })
+
+  test("bash exact ask requests are reviewed internally before manual ask", async () => {
+    let asks = 0
+    const service = new PermissionService(
+      [{ permission: "bash", pattern: "bash:exact:*", action: "ask" }],
+      () => {
+        asks += 1
+        return "reject"
+      },
+      createCommandReviewAutoReviewer(reviewerProvider('{"decision":"allow_once","reason":"bounded exact command"}')),
+    )
+
+    await service.authorize({
+      permission: "bash",
+      patterns: ["bash:exact:python3 << 'PYEOF'\nprint('ok')\nPYEOF"],
+      always: ["bash:exact:python3 << 'PYEOF'\nprint('ok')\nPYEOF"],
+      metadata: {
+        tool: "bash",
+        command: "python3 << 'PYEOF'\nprint('ok')\nPYEOF",
+        rememberOnApprove: false,
+      },
     })
 
     expect(asks).toBe(0)

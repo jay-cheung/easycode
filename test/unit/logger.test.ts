@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { createLogger, formatLogEvent, type LogEvent } from "../../src/logger"
+import { createLogger, formatLogEvent, sanitizeLogEvent, type LogEvent } from "../../src/logger"
 
 function event(type: LogEvent["type"]): LogEvent {
   return { at: 1, type, name: `${type}.event` }
@@ -118,5 +118,61 @@ describe("logger", () => {
   test("highlights provider summary events", () => {
     expect(formatLogEvent({ at: 1, type: "provider", name: "provider.summary_request" })).toContain("\x1b[1;35m")
     expect(formatLogEvent({ at: 1, type: "provider", name: "provider.summary_output" })).toContain("\x1b[1;35m")
+  })
+
+  test("redacts API keys and authorization values from structured logs and transcripts", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-logger-redact-"))
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "sk-live-secret-123456"
+    try {
+      const logger = createLogger({ root, session: "redact" })
+      logger({
+        at: 1,
+        type: "provider",
+        name: "provider.transcript",
+        detail: {
+          headers: {
+            authorization: "Bearer sk-live-secret-123456",
+            "x-api-key": "sk-live-secret-123456",
+          },
+          input: [
+            '<message index="0" role="user">',
+            "Authorization: Bearer sk-live-secret-123456",
+            "DEEPSEEK_API_KEY=sk-live-secret-123456",
+            "</message>",
+          ].join("\n"),
+          output: "used sk-live-secret-123456",
+        },
+      })
+
+      const jsonl = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "redact.jsonl")).text()
+      const transcript = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "redact.txt")).text()
+      expect(jsonl).not.toContain("sk-live-secret-123456")
+      expect(transcript).not.toContain("sk-live-secret-123456")
+      expect(jsonl).toContain("Bearer [redacted]")
+      expect(jsonl).toContain("[redacted]")
+      expect(transcript).toContain("Bearer [redacted]")
+
+      const formatted = formatLogEvent({
+        at: 1,
+        type: "error",
+        name: "provider.error",
+        detail: { message: "Authorization: Bearer sk-live-secret-123456" },
+      })
+      expect(formatted).not.toContain("sk-live-secret-123456")
+      expect(formatted).toContain("Bearer [redacted]")
+
+      const sanitized = sanitizeLogEvent({
+        at: 1,
+        type: "provider",
+        name: "provider.response",
+        detail: { apiKey: "sk-live-secret-123456" },
+      })
+      expect(sanitized.detail?.apiKey).toBe("[redacted]")
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+      await rm(root, { recursive: true, force: true })
+    }
   })
 })

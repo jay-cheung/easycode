@@ -20,7 +20,7 @@ export function createSubagentLogger(root: string, sessionId: string | undefined
 export function withSubagentLogContext(
   provider: Provider,
   logger: Logger | undefined,
-  input: { requestId: number; role: SubagentTaskPacket["role"]; task: string },
+  input: { requestId: number | string; role: string; task: string },
 ) {
   if (!logger) return provider
   const contextualLogger = ((event) => {

@@ -270,6 +270,37 @@ describe("provider", () => {
     }
   })
 
+  test("passes Bun fetch verbose diagnostics only when requested", async () => {
+    const previousKey = process.env.DEEPSEEK_API_KEY
+    const previousVerbose = process.env.EASYCODE_FETCH_VERBOSE
+    const seenVerbose: unknown[] = []
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    globalThis.fetch = (async (_url: Parameters<typeof fetch>[0], init: Parameters<typeof fetch>[1]) => {
+      seenVerbose.push((init as RequestInit & { verbose?: boolean }).verbose)
+      throw new Error("The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()")
+    }) as unknown as typeof fetch
+    try {
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
+
+      delete process.env.EASYCODE_FETCH_VERBOSE
+      let stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      await stream.next()
+      await expect(stream.next()).rejects.toThrow("socket connection was closed unexpectedly")
+
+      process.env.EASYCODE_FETCH_VERBOSE = "1"
+      stream = provider.stream({ mode: "build", prompt: "hi", messages: [], providerMessages: [{ role: "user", content: "hi" }], tools: [] })[Symbol.asyncIterator]()
+      await stream.next()
+      await expect(stream.next()).rejects.toThrow("socket connection was closed unexpectedly")
+
+      expect(seenVerbose).toEqual([undefined, true])
+    } finally {
+      if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previousKey
+      if (previousVerbose === undefined) delete process.env.EASYCODE_FETCH_VERBOSE
+      else process.env.EASYCODE_FETCH_VERBOSE = previousVerbose
+    }
+  })
+
   test("surfaces response body read failures in provider errors", async () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"

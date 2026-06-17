@@ -89,6 +89,9 @@ export function bashApprovalForCommand(command: string, cwd = process.cwd()): Ba
   if (analysis.commandClass === "git_inspect" || analysis.commandClass === "file_read" || analysis.commandClass === "text_search" || analysis.commandClass === "line_read") {
     return exactBashApproval(trimmed)
   }
+  if (isComplexShellCommand(trimmed) && analysis.replaceableBy.length === 0) {
+    return reviewBashApproval(trimmed, ["shell_complexity"])
+  }
   const words = shellWords(trimmed)
   if (!words || words.length === 0) return exactBashApproval(trimmed)
   const [program = "", ...args] = words
@@ -126,6 +129,10 @@ function reviewBashApproval(command: string, riskTags: string[]): BashApproval {
     label: `command-review ${riskScope}`,
     repeatSafe: false,
   }
+}
+
+function isComplexShellCommand(command: string) {
+  return /[;&|><`$]/.test(command)
 }
 
 function exactBashApproval(command: string): BashApproval {

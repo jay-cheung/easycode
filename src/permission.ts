@@ -11,7 +11,19 @@ export type PermissionRule = {
 export type SubagentPermissionRole = "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher"
 
 export type PermissionReply = "once" | "always" | "reject"
-export type PermissionAutoReviewer = (request: PermissionRequest) => PermissionReply | undefined | Promise<PermissionReply | undefined>
+export type PermissionAutoReviewResult = {
+  reply: PermissionReply
+  source: string
+  reason?: string
+}
+export type PermissionAutoReviewer = (request: PermissionRequest) => PermissionReply | PermissionAutoReviewResult | undefined | Promise<PermissionReply | PermissionAutoReviewResult | undefined>
+export type PermissionAuthorization = {
+  source: "preapproved" | "auto_review" | "manual" | "external_reply"
+  reply?: PermissionReply
+  autoReviewSource?: string
+  reason?: string
+  rememberedPatterns?: string[]
+}
 
 export type PermissionRequest = {
   id: string
@@ -123,7 +135,7 @@ export function evaluatePermission(permission: string, pattern: string, rules: P
 
 type PendingPermission = {
   request: PermissionRequest
-  resolve: () => void
+  resolve: (authorization: PermissionAuthorization) => void
   reject: (error: Error) => void
 }
 
@@ -180,22 +192,24 @@ export class PermissionService {
         [...this.rules, ...this.approved].filter((rule) => rule.action === "deny" && matchPattern(rule.permission, input.permission)),
       )
     }
-    if (decisions.every((decision) => decision.action === "allow")) return
+    if (decisions.every((decision) => decision.action === "allow")) return { source: "preapproved" } satisfies PermissionAuthorization
 
     const request: PermissionRequest = { id: nextPermissionID(), ...input }
     if (this.autoReviewer) {
-      const reviewed = await this.autoReviewer(request)
+      const reviewed = normalizeAutoReviewResult(await this.autoReviewer(request))
       if (reviewed) {
-        this.applyReply(request, reviewed)
-        return
+        return this.applyReply(request, reviewed.reply, {
+          source: "auto_review",
+          autoReviewSource: reviewed.source,
+          reason: reviewed.reason,
+        })
       }
     }
     if (this.askHandler) {
-      this.applyReply(request, await this.askHandler(request))
-      return
+      return this.applyReply(request, await this.askHandler(request), { source: "manual" })
     }
 
-    await new Promise<void>((resolve, reject) => {
+    return await new Promise<PermissionAuthorization>((resolve, reject) => {
       this.pending.set(request.id, request)
       this.waiters.set(request.id, { request, resolve, reject })
     })
@@ -208,7 +222,7 @@ export class PermissionService {
     return true
   }
 
-  private applyReply(request: PermissionRequest, reply: PermissionReply) {
+  private applyReply(request: PermissionRequest, reply: PermissionReply, base: Pick<PermissionAuthorization, "source" | "autoReviewSource" | "reason"> = { source: "external_reply" }) {
     const pending = this.waiters.get(request.id)
     this.pending.delete(request.id)
     this.waiters.delete(request.id)
@@ -220,10 +234,14 @@ export class PermissionService {
     if (reply === "always") {
       this.remember(request.permission, request.always)
     }
+    let rememberedPatterns: string[] | undefined
     if (reply === "once" && request.metadata.rememberOnApprove === true) {
-      this.remember(request.permission, metadataStringList(request.metadata.rememberPatterns) ?? request.patterns)
+      rememberedPatterns = metadataStringList(request.metadata.rememberPatterns) ?? request.patterns
+      this.remember(request.permission, rememberedPatterns)
     }
-    pending?.resolve()
+    const authorization = { ...base, reply, rememberedPatterns } satisfies PermissionAuthorization
+    pending?.resolve(authorization)
+    return authorization
   }
 
   private remember(permission: string, patterns: string[]) {
@@ -234,22 +252,28 @@ export class PermissionService {
   }
 }
 
+function normalizeAutoReviewResult(result: PermissionReply | PermissionAutoReviewResult | undefined): PermissionAutoReviewResult | undefined {
+  if (!result) return undefined
+  if (typeof result === "string") return { reply: result, source: "auto_reviewer" }
+  return result
+}
+
 function metadataStringList(value: unknown) {
   if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return undefined
   return value
 }
 
-export function defaultPermissionAutoReviewer(request: PermissionRequest): PermissionReply | undefined {
-  if (request.permission === "skill" && request.patterns.every(isSafeSkillName)) return "once"
+export function defaultPermissionAutoReviewer(request: PermissionRequest): PermissionAutoReviewResult | undefined {
+  if (request.permission === "skill" && request.patterns.every(isSafeSkillName)) return { reply: "once", source: "default_auto_reviewer", reason: "safe skill name" }
   if (request.permission !== "bash") return undefined
   if (request.metadata.rememberOnApprove !== true) return undefined
   const command = typeof request.metadata.command === "string" ? request.metadata.command : undefined
   if (command && containsSensitivePath(command)) return undefined
   const tool = typeof request.metadata.tool === "string" ? request.metadata.tool : "bash"
-  if (tool === "bash" && command && isAutoApprovedVerificationBashCommand(command)) return "once"
+  if (tool === "bash" && command && isAutoApprovedVerificationBashCommand(command)) return { reply: "once", source: "default_auto_reviewer", reason: "bounded verification command" }
   const matcher = tool === "bash" ? isAutoApprovedReadonlyFallbackBashPattern : isAutoApprovedReadonlyInternalToolPattern
   if (!request.patterns.every(matcher)) return undefined
-  return "once"
+  return { reply: "once", source: "default_auto_reviewer", reason: "repeat-safe readonly scope" }
 }
 
 function isSafeSkillName(value: string) {

@@ -1,6 +1,7 @@
-import type { PermissionAutoReviewer, PermissionRequest, PermissionReply } from "../../permission"
+import type { PermissionAutoReviewResult, PermissionAutoReviewer, PermissionRequest } from "../../permission"
 import type { Provider } from "../../provider"
 import { emitLog, type Logger } from "../../logger"
+import { withSubagentLogContext } from "./helpers"
 
 type CommandReviewDecision = {
   decision: "allow_once" | "reject" | "ask_user"
@@ -8,13 +9,34 @@ type CommandReviewDecision = {
 }
 
 export function createCommandReviewAutoReviewer(provider: Provider, logger?: Logger): PermissionAutoReviewer {
+  let nextReviewRequestID = 1
   return async (request) => {
-    const review = await runPermissionReviewSubagent(provider, request, logger)
+    const requestId = nextReviewRequestID++
+    const command = typeof request.metadata.command === "string" ? request.metadata.command : request.patterns.join(", ")
+    const task = `Review permission for ${request.permission}: ${command}`
+    const contextualProvider = withSubagentLogContext(provider, logger, { requestId, role: "permission_reviewer", task })
+    emitLog(logger, { type: "state", name: "subagent.request", detail: { requestId, role: "permission_reviewer", task, permission: request.permission, patterns: request.patterns } })
+    emitLog(logger, { type: "state", name: "subagent.start", detail: { requestId, role: "permission_reviewer" } })
+    const review = await runPermissionReviewSubagent(contextualProvider, request, logger)
+    emitLog(logger, {
+      type: "state",
+      name: "subagent.result",
+      detail: {
+        requestId,
+        role: "permission_reviewer",
+        status: review ? review.decision : "failed",
+        reason: review?.reason,
+      },
+    })
     if (!review) return undefined
-    if (review.decision === "allow_once") return "once"
-    if (review.decision === "reject") return "reject"
+    if (review.decision === "allow_once") return commandReviewResult("once", review.reason)
+    if (review.decision === "reject") return commandReviewResult("reject", review.reason)
     return undefined
   }
+}
+
+function commandReviewResult(reply: "once" | "reject", reason?: string): PermissionAutoReviewResult {
+  return { reply, source: "command_review", reason }
 }
 
 async function runPermissionReviewSubagent(provider: Provider, request: PermissionRequest, logger?: Logger): Promise<CommandReviewDecision | undefined> {
