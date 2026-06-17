@@ -2,7 +2,7 @@ import { McpSourceService, WebFetchService, WebSearchService, formatMcpResource,
 import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, WebFetchInput, PlanStepCompleteInput, PlanStepFailInput, GoalCompleteInput, GoalBlockedInput, GoalSetAcceptanceInput, DelegateSubagentInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
-import { intermediatePlanStepReportMaxChars, intermediatePlanStepReportMaxLines, isIntermediatePlanStepReportTooLong, loadStructuredPlanState, nextIncompletePlanStep, planStepReportLineCount } from "../../plans"
+import { loadStructuredPlanState, nextIncompletePlanStep, truncateIntermediatePlanStepReport } from "../../plans"
 import { PlanTracker } from "../../agent/planner"
 import { GoalStateError, assertGoalPhase, goalStateFromContext, writeGoalState } from "../../goal"
 import type { Message } from "../../message"
@@ -236,21 +236,9 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const { plan, checkpoint } = state
       const stepStatuses = { ...checkpoint.stepStatuses, [currentStepId]: "completed" as const }
       const nextStep = nextIncompletePlanStep(plan, stepStatuses)
-      const report = params.report.trim()
-      if (nextStep && isIntermediatePlanStepReportTooLong(report)) {
-        return {
-          title: "Plan Step Completed",
-          output: `Intermediate plan steps require a concise progress report. Keep report within ${intermediatePlanStepReportMaxChars} characters and ${intermediatePlanStepReportMaxLines} lines; reserve longer reports for the final step.`,
-          metadata: {
-            status: "failed",
-            error: "plan_step_report_too_long_before_final_step",
-            maxChars: intermediatePlanStepReportMaxChars,
-            maxLines: intermediatePlanStepReportMaxLines,
-            reportChars: report.length,
-            reportLines: planStepReportLineCount(report),
-          },
-        }
-      }
+      const rawReport = params.report.trim()
+      const truncatedReport = nextStep ? truncateIntermediatePlanStepReport(rawReport) : undefined
+      const report = truncatedReport?.report ?? rawReport
       
       if (nextStep) {
         await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {
@@ -263,10 +251,19 @@ export function registerRetrievalTools(registry: ToolRegistry) {
           output: [
             `Step ${currentStepId} completed successfully.`,
             params.message?.trim() ? `Completion summary: ${params.message.trim()}` : "",
+            truncatedReport?.truncated ? `Report was truncated for this intermediate step (${truncatedReport.originalChars} chars, ${truncatedReport.originalLines} lines).` : "",
             `Report:\n${report}`,
             `Proceeding to Step ${nextStep.id}: ${nextStep.goal}. Continue immediately with that step and do not ask the user whether to continue.`,
           ].filter(Boolean).join("\n"),
-          metadata: { status: "succeeded", nextStepId: nextStep.id, report, message: params.message?.trim() }
+          metadata: {
+            status: "succeeded",
+            nextStepId: nextStep.id,
+            report,
+            message: params.message?.trim(),
+            reportTruncated: truncatedReport?.truncated ?? false,
+            originalReportChars: truncatedReport?.originalChars,
+            originalReportLines: truncatedReport?.originalLines,
+          }
         }
       } else {
         await PlanTracker.activatePlan(ctx.context, ctx.sandbox.root, sessionId, plan, {

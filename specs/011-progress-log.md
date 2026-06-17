@@ -2,6 +2,19 @@
 
 Status: Draft
 
+## Step 65: Truncate Intermediate plan_step_complete Reports
+
+- Scope: soften the Step 64 intermediate-report cap so goal-backed plans are not interrupted by validation retries when an intermediate `plan_step_complete.report` is too long.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so oversized non-final `plan_step_complete.report` values no longer trigger the validation retry loop.
+  - Added `truncateIntermediatePlanStepReport` in `src/plans.ts` and applied it in `src/tool/builtins/retrieval-tools.ts` before advancing from an intermediate plan step.
+  - Preserved the required-report validation gate for missing/empty reports, and kept the active-step prompt guidance that intermediate reports should stay concise.
+  - Updated `test/integration/agent.test.ts` so oversized intermediate reports are truncated and the plan continues to the final step.
+- Verification:
+  - `bun test test/integration/agent.test.ts --test-name-pattern "plan_step_complete without a report is rejected by the validation gate|non-final plan_step_complete report is truncated instead of blocking the plan"`
+  - `bun run gate` failed after typecheck/build/eval/cache checks passed: the full test suite still has an unrelated `web_fetch returns bounded structured HTTP evidence` failure from `Bun.serve({ port: 0 })`, and provider gate failed because DeepSeek was unreachable.
+- Notes: Step 64 is superseded for overlong intermediate reports; final-step report behavior is unchanged.
+
 ## Step 64: Cap Intermediate plan_step_complete Reports
 
 - Scope: keep `plan_step_complete.report` strict enough for final deliverables while preventing intermediate plan steps from smuggling full final writeups through oversized progress reports.

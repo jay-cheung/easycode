@@ -12,7 +12,7 @@ import { FakeProvider } from "../../src/provider"
 import { ProviderError, type Provider, type ProviderEvent } from "../../src/provider"
 import { createLogger, type LogEvent } from "../../src/logger"
 import { ProjectMemoryStore } from "../../src/memory"
-import { loadStructuredPlanState } from "../../src/plans"
+import { intermediatePlanStepReportMaxChars, intermediatePlanStepReportMaxLines, loadStructuredPlanState } from "../../src/plans"
 import { SessionStore } from "../../src/session"
 import { defaultSessionSettings } from "../../src/settings"
 import { Sandbox, SandboxPathEscapeError } from "../../src/sandbox"
@@ -1143,7 +1143,7 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
-  test("non-final plan_step_complete report must stay concise", async () => {
+  test("non-final plan_step_complete report is truncated instead of blocking the plan", async () => {
     const root = await fixture()
     const context = new ContextManager()
     const overlongIntermediateReport = [
@@ -1170,8 +1170,25 @@ describe("agent integration", () => {
     let turnCount = 0
     const provider: Provider = {
       name: "test-provider",
-      async *stream(): AsyncIterable<ProviderEvent> {
+      async *stream(input): AsyncIterable<ProviderEvent> {
         turnCount += 1
+        const completeCount = toolResults(input.messages)
+          .filter((part) => part.toolName === "plan_step_complete" && part.status === "succeeded")
+          .length
+        if (completeCount === 1) {
+          yield {
+            type: "tool_call",
+            call: {
+              id: "call_complete_final",
+              name: "plan_step_complete",
+              input: {
+                message: "verification done",
+                report: "Final verification report.",
+              },
+            },
+          }
+          return
+        }
         yield {
           type: "tool_call",
           call: {
@@ -1189,8 +1206,16 @@ describe("agent integration", () => {
     const result = await new AgentRunner({ root, provider, context }).run("Execute the approved plan", "build")
 
     expect(result.status).toBe("completed")
+    const completeResults = toolResults(result.messages).filter((part) => part.toolName === "plan_step_complete")
+    expect(completeResults).toHaveLength(2)
+    expect(completeResults[0]?.status).toBe("succeeded")
+    expect(completeResults[0]?.metadata.reportTruncated).toBe(true)
+    expect(String(completeResults[0]?.metadata.report).length).toBeLessThanOrEqual(intermediatePlanStepReportMaxChars)
+    expect(String(completeResults[0]?.metadata.report).split(/\r?\n/).length).toBeLessThanOrEqual(intermediatePlanStepReportMaxLines)
+    expect(completeResults[0]?.output).toContain("Report was truncated for this intermediate step")
+    expect(result.text).toBe("Final verification report.")
     expect(turnCount).toBe(2)
-    expect(result.text).toContain("Validation gate failed repeatedly")
+    expect(result.usedTools).toEqual(["plan_step_complete", "plan_step_complete"])
     await rm(root, { recursive: true, force: true })
   })
 

@@ -275,6 +275,22 @@ export function isIntermediatePlanStepReportTooLong(report: string) {
   return report.trim().length > intermediatePlanStepReportMaxChars || planStepReportLineCount(report) > intermediatePlanStepReportMaxLines
 }
 
+export function truncateIntermediatePlanStepReport(report: string) {
+  const trimmed = report.trim()
+  const lines = trimmed.split(/\r?\n/)
+  const limitedLines = lines.slice(0, intermediatePlanStepReportMaxLines)
+  let truncated = limitedLines.join("\n")
+  if (truncated.length > intermediatePlanStepReportMaxChars) {
+    truncated = truncated.slice(0, intermediatePlanStepReportMaxChars).trimEnd()
+  }
+  return {
+    report: truncated,
+    truncated: truncated.length < trimmed.length || lines.length > intermediatePlanStepReportMaxLines,
+    originalChars: trimmed.length,
+    originalLines: lines.length,
+  }
+}
+
 export function createPlanCheckpoint(plan: ExecutionPlan, input: Partial<PlanCheckpoint> = {}): PlanCheckpoint {
   const stepStatuses: Record<string, PlanStepStatus> = {}
   for (const step of plan.steps) {
