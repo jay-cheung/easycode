@@ -120,7 +120,45 @@ describe("Planning Layer & Executable Plans", () => {
       ],
     }))
 
-    expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
+    expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer", delegationPolicy: "required" })
+  })
+
+  test("normalizeExecutionPlan infers preferred delegation when fallback allows coordinator recovery", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_preferred_delegate",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Delegate explorer to inspect src/add.ts and capture the current behavior",
+          kind: "inspect",
+          doneWhen: "The explorer has identified the exported function and incorrect operator.",
+          fallback: "If explorer fails, manually inspect the source file and continue with available information.",
+        },
+      ],
+    }))
+
+    expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer", delegationPolicy: "preferred" })
+  })
+
+  test("normalizeExecutionPlan drops subagent role metadata when executorHint is explicitly main", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_main_review",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Review subagent outputs and write the final synthesis",
+          kind: "inspect",
+          executorHint: "main",
+          subagentRole: "reviewer",
+          delegationPolicy: "preferred",
+          doneWhen: "The coordinator has produced the final synthesis.",
+        },
+      ],
+    }))
+
+    expect(plan.steps[0].executorHint).toBe("main")
+    expect(plan.steps[0].subagentRole).toBeUndefined()
+    expect(plan.steps[0].delegationPolicy).toBeUndefined()
   })
 
   test("normalizeExecutionPlan routes skill script inspection to explorer even without explicit delegation text", () => {
@@ -193,6 +231,7 @@ describe("Planning Layer & Executable Plans", () => {
           kind: "inspect",
           executorHint: "subagent",
           subagentRole: "explorer",
+          delegationPolicy: "preferred",
         },
       ],
     })
@@ -201,6 +240,7 @@ describe("Planning Layer & Executable Plans", () => {
     expect(markdown).toContain('"lowRisk": true')
     expect(markdown).not.toContain("executorHint")
     expect(markdown).not.toContain("subagentRole")
+    expect(markdown).not.toContain("delegationPolicy")
   })
 
   test("Replanner rewrites remaining steps of plan", async () => {

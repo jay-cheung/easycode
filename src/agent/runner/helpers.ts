@@ -68,7 +68,7 @@ function roleContract(role: SubagentTaskPacket["role"]) {
     case "summary":
       return "Role Contract:\nCompress context aggressively. Preserve only decisions, constraints, current state, files, commands, and unresolved blockers."
     case "explorer":
-      return "Role Contract:\nCollect repo-local facts only: files, symbols, configs, diffs, and logs. Use read/search/navigation tools, return exact files/symbols/evidence snippets, and do not use bash for public HTTP/API/data retrieval."
+      return "Role Contract:\nCollect repo-local facts only: files, symbols, configs, diffs, and logs. Use read/search/navigation tools, return exact files/symbols/evidence snippets, and do not use bash for public HTTP/API/data retrieval. For directories or broad audits, inspect with list/rg_search/repo_map first, then use read_lines in chunks of at most 100 lines per call. Avoid full-file read on large or unknown-size files."
     case "reviewer":
       return "Role Contract:\nReview for concrete bugs, regressions, missing tests, and risk. Lead with findings and file references."
     case "debugger":

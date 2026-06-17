@@ -72,6 +72,7 @@ The JSON format MUST be exactly:
       "kind": "inspect" | "edit" | "verify" | "document" | "gate",
       "executorHint": "main" | "subagent",
       "subagentRole": "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher",
+      "delegationPolicy": "required" | "preferred",
       "targetFiles": ["file1.ts", "file2.ts"],
       "dependsOn": [],
       "doneWhen": "Conditions under which this step is considered done",
@@ -82,6 +83,9 @@ The JSON format MUST be exactly:
 
 Use executorHint/subagentRole only for hidden internal execution metadata. The user-visible markdown plan must not mention them directly.
 If a step is a Delegation Phase step, or the markdown explicitly says to delegate or use a subagent role, you MUST set executorHint to "subagent" and set the matching subagentRole.
+For subagent steps, set delegationPolicy:
+- "required" when the step must be completed by that subagent and coordinator fallback is unsafe.
+- "preferred" when the plan fallback says the coordinator may manually inspect, continue with available information, or produce findings from existing research if the subagent fails or hands off.
 Use the named roles consistently:
 - explorer: bounded repository inspection or fact-finding
 - reviewer: bounded code review or regression review
@@ -137,7 +141,8 @@ The JSON format must strictly match:
   ]
 }
 
-You may keep or revise hidden internal executor metadata (\`executorHint\`, \`subagentRole\`) when it helps execution, but user-visible markdown will not show those fields.
+You may keep or revise hidden internal executor metadata (\`executorHint\`, \`subagentRole\`, \`delegationPolicy\`) when it helps execution, but user-visible markdown will not show those fields.
+For subagent steps, use \`delegationPolicy: "required"\` only when coordinator fallback is unsafe; use \`"preferred"\` when the fallback allows manual inspection or continuing with available information after subagent failure/handoff.
 For project-local script/path inspection use \`executorHint: "subagent"\` with \`subagentRole: "explorer"\`; for bounded script failure diagnosis use \`subagentRole: "debugger"\`.
 Always include lowRisk as a boolean. Use false unless the revised remaining work is short, read-only/review/documentation-only, and does not require debugger/tester, risky commands, edits, deploys, credentials, auth, payment, or database work.
 

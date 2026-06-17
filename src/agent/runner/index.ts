@@ -42,6 +42,22 @@ import type { AgentRunState, SubagentRole } from "../types"
 
 const coordinatorDelegationGateBypassProviders = new Set(["fake", "test-provider", "simulated"])
 const subagentRoles: SubagentRole[] = ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"]
+const readOnlyDelegationFallbackToolNames = new Set([
+  "read",
+  "read_lines",
+  "rg_search",
+  "grep",
+  "repo_map",
+  "find_definition",
+  "find_references",
+  "call_graph",
+  "list",
+  "git_diff",
+  "git_status",
+  "git_log",
+  "ledger",
+  "memory_query",
+])
 
 type SubagentRoleUsage = {
   started: number
@@ -617,13 +633,16 @@ Target Files: ${s.targetFiles?.join(", ") || "none"}
 Done When: ${s.doneWhen || "not specified"}
 Fallback: ${s.fallback || "none"}
 Executor Hint: ${s.executorHint ?? "main"}${s.subagentRole ? ` (${s.subagentRole})` : ""}
+Delegation Policy: ${s.delegationPolicy ?? "required"}
 
 Focus ONLY on achieving the goal of this step. Do not deviate.
 When the conditions in 'Done When' are fully met, you MUST call the tool 'plan_step_complete' with a non-empty 'report' string that explains what was completed.
 If this is not the final step, keep that 'report' concise: no more than ${intermediatePlanStepReportMaxChars} characters or ${intermediatePlanStepReportMaxLines} lines.
 If this is the final step, that 'report' must be the final user-facing deliverable, not a promise to write it later.
 After a step is completed, continue immediately with the next plan step in the same run. Do not ask the user whether to continue between steps.
-${s.executorHint === "subagent" && s.subagentRole ? `This step is assigned to a subagent. Before any non-coordinator tool use, you MUST call 'delegate_subagent' with role='${s.subagentRole}'. Do not execute this step directly from the coordinator.` : ""}
+${s.executorHint === "subagent" && s.subagentRole && (s.delegationPolicy ?? "required") === "preferred" ? `This step prefers subagent execution. First call 'delegate_subagent' with role='${s.subagentRole}'. If that subagent returns failed/handoff and the fallback allows recovery, use bounded read-only coordinator tools instead of repeating the same blocked delegation path.` : ""}
+${s.executorHint === "subagent" && s.subagentRole && (s.delegationPolicy ?? "required") !== "preferred" ? `This step is assigned to a subagent. Before any non-coordinator tool use, you MUST call 'delegate_subagent' with role='${s.subagentRole}'. Do not execute this step directly from the coordinator.` : ""}
+When checking current goal or plan state, prefer the current ledger/context or built-in read_lines. Do not use shell fallback forms like cat ... 2>/dev/null || echo ...
 If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear explanation.`
             }
           ]
@@ -721,7 +740,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     }
 
     if (turn.failureText) {
-      const output = appendOutput(turn.text, turn.failureText)
+      const recoverableController = turn.failureCategory === "network" && this.hasActiveRecoverableController()
+      const recoveryText = recoverableController
+        ? "Network/provider failure persisted after one retry. The active goal/plan checkpoint was preserved; continue to retry from the current step."
+        : ""
+      if (recoverableController) {
+        emitLog(this.logger, {
+          type: "state",
+          name: "goal.retryable_pause",
+          detail: { category: turn.failureCategory, hasActivePlan: this.hasActivePlan(), hasActiveGoal: Boolean(goalStateFromContext(this.context)) },
+        })
+      }
+      const output = appendOutput(appendOutput(turn.text, turn.failureText), recoveryText)
       this.context.add(assistantMessage(nextReasoningTranscript, output))
       currentState = this.aspect.runFailed("provider_error", usedTools)
       this.emitRunDone("failed", providerMetrics)
@@ -784,6 +814,24 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
   private async runProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
     const provider = input.provider ?? this.provider
+    const turn = await runProviderTurnStream(
+      {
+        provider,
+        providerProgressIntervalMs: this.providerProgressIntervalMs,
+        onEvent: this.onEvent,
+        onTextDelta: this.onTextDelta,
+        onUsage: (event) => this.context.observeUsage(event),
+      },
+      input,
+      (text) => runFailureText(text, "provider_error"),
+    )
+    if (turn.failureCategory !== "network" || !this.hasActiveRecoverableController()) return turn
+    emitLog(this.logger, {
+      type: "provider",
+      name: "provider.retry",
+      detail: { provider: provider.name, model: provider.model, category: turn.failureCategory, reason: "active_goal_or_plan_network_failure", attempt: 1, maxAttempts: 1 },
+    })
+    await sleep(150)
     return runProviderTurnStream(
       {
         provider,
@@ -844,7 +892,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
               failureText: "Reviewer delegation gate failed: broad review output requires a bounded reviewer subagent result before final synthesis.",
             }
           }
-          const requiredDelegationRole = activePlanStep?.executorHint === "subagent" ? activePlanStep.subagentRole : undefined
+          const assignedSubagentStep = activePlanStep?.executorHint === "subagent" ? activePlanStep : undefined
+          const requiredDelegationRole = assignedSubagentStep?.subagentRole
           const directCoordinatorTools = turn.toolCalls.filter((call) => !isCoordinatorOnlyTool(call.name))
           if (
             requiredDelegationRole &&
@@ -852,15 +901,32 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
             !turn.toolCalls.some((call) => call.name === "delegate_subagent") &&
             this.isSubagentDelegationAvailable(requiredDelegationRole)
           ) {
+            if (this.canFallbackFromAssignedSubagentStep(assignedSubagentStep, directCoordinatorTools)) {
+              emitLog(this.logger, {
+                type: "state",
+                name: "plan.subagent_fallback_activated",
+                detail: {
+                  stepId: assignedSubagentStep.id,
+                  role: requiredDelegationRole,
+                  delegationPolicy: assignedSubagentStep.delegationPolicy ?? "required",
+                  toolNames: [...new Set(directCoordinatorTools.map((call) => call.name))],
+                },
+              })
+              return undefined
+            }
             const toolNames = [...new Set(directCoordinatorTools.map((call) => call.name))].join(", ")
+            const preferredHint = (assignedSubagentStep.delegationPolicy ?? "required") === "preferred"
+              ? "- This step may fall back to bounded read-only coordinator tools only after the assigned subagent returns failed/handoff and the step fallback allows recovery."
+              : ""
             return {
               correction: [
                 "Plan step delegation gate:",
                 `- The active plan step is assigned to subagent role='${requiredDelegationRole}'.`,
                 `- Do not execute coordinator tools directly for this step (${toolNames}).`,
                 `- Call delegate_subagent with role='${requiredDelegationRole}' and a narrow task first.`,
+                preferredHint,
                 "- Include explicit success_criteria so the coordinator can review the bounded result.",
-              ].join("\n"),
+              ].filter(Boolean).join("\n"),
               failureText: `Plan step delegation gate failed: step '${activePlanStep?.id ?? "unknown"}' must delegate to role='${requiredDelegationRole}' before direct coordinator execution.`,
             }
           }
@@ -1112,13 +1178,14 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       })
     let taskState: SubagentTaskState | undefined
     try {
+      const assignedStep = await this.currentAssignedSubagentStep()
       taskState = createSubagentTaskState({
         requestId,
         role: request.role,
         task: request.task,
         successCriteria: request.successCriteria,
         maxProviderCalls,
-        assignedStep: await this.currentAssignedSubagentStep(),
+        assignedStep,
       })
       const result = await this.runGenericSubagent(requestId, taskState, provider, providerMetrics, signal)
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
@@ -1151,6 +1218,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           retryable: result.retryable,
           recommendedNextRole: result.recommendedNextRole,
           recommendedNextTool: result.recommendedNextTool,
+          assignedPlanId: assignedStep?.planId,
+          assignedStepId: assignedStep?.stepId,
         },
       })
       return {
@@ -1172,6 +1241,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           retryable: result.retryable,
           recommendedNextRole: result.recommendedNextRole,
           recommendedNextTool: result.recommendedNextTool,
+          assignedPlanId: assignedStep?.planId,
+          assignedStepId: assignedStep?.stepId,
         },
       }
     } catch (error) {
@@ -1213,6 +1284,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     const tools = filterToolsForAgent(this.subagentRegistry.list("build"), { role: packet.role, depth: agent.depth ?? 1 })
     const reasoningChunks: string[] = []
 
+    let networkFailureRetried = false
     for (let callIndex = 0; callIndex < packet.maxProviderCalls; callIndex += 1) {
       const providerMessages = context.compose({ agent, instructions: [], skills: [], selectedSkills: [], pendingSkillLoads: [], tools })
       const turn = await runProviderTurnStream(
@@ -1237,6 +1309,26 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       )
 
       if (turn.failureText) {
+        if (turn.failureCategory === "network" && !networkFailureRetried) {
+          networkFailureRetried = true
+          emitLog(this.subagentLogger, {
+            type: "provider",
+            name: "provider.retry",
+            detail: { requestId, role: packet.role, category: turn.failureCategory, reason: "subagent_network_failure", attempt: 1, maxAttempts: 1 },
+          })
+          await sleep(150)
+          continue
+        }
+        if (turn.failureCategory === "network") {
+          return {
+            role: packet.role,
+            status: "handoff",
+            summary: appendOutput(turn.failureText, "Subagent provider failure remained after one retry; coordinator may retry later or use the plan fallback."),
+            blockerClass: "network_or_provider",
+            retryable: true,
+            nextAction: "Retry this delegation later, or use the active plan fallback if it allows bounded coordinator recovery.",
+          }
+        }
         return { role: packet.role, status: "failed", summary: turn.failureText }
       }
       if (turn.cancelledOutput) {
@@ -1620,6 +1712,28 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     recordHypothesisViolationState(this.context, this.activeHypothesis, violation)
   }
 
+  private hasActivePlan() {
+    return Boolean(this.context.state.ledger?.current.some((record) => record.subject === "current_plan_id" && record.status === "current"))
+  }
+
+  private hasActiveRecoverableController() {
+    return this.hasActivePlan() || Boolean(goalStateFromContext(this.context))
+  }
+
+  private canFallbackFromAssignedSubagentStep(activePlanStep: PlanStep | undefined, directCoordinatorTools: ToolCall[]) {
+    if (!activePlanStep || activePlanStep.executorHint !== "subagent" || !activePlanStep.subagentRole) return false
+    if ((activePlanStep.delegationPolicy ?? "required") !== "preferred") return false
+    if (directCoordinatorTools.length === 0) return false
+    if (directCoordinatorTools.some((call) => !readOnlyDelegationFallbackToolNames.has(call.name))) return false
+    const latest = latestAssignedSubagentResult(this.context.state.messages, activePlanStep)
+    if (!latest) return false
+    if (latest.subagentStatus !== "failed" && latest.subagentStatus !== "handoff") return false
+    if (latest.retryable === true) {
+      return latest.blockerClass === "insufficient_evidence" && !this.isSubagentDelegationAvailable(activePlanStep.subagentRole)
+    }
+    return true
+  }
+
   private async currentAssignedSubagentStep(): Promise<SubagentAssignedStep | undefined> {
     const activePlanIdRec = this.context.state.ledger?.current.find((record) => record.subject === "current_plan_id" && record.status === "current")
     if (!activePlanIdRec) return undefined
@@ -1636,6 +1750,23 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       ...(step.doneWhen ? { doneWhen: step.doneWhen } : {}),
     }
   }
+}
+
+function latestAssignedSubagentResult(messages: Message[], activePlanStep: PlanStep) {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    for (const part of [...msg.parts].reverse()) {
+      if (part.type !== "tool_result" || part.toolName !== "delegate_subagent") continue
+      if (part.metadata?.subagentRole !== activePlanStep.subagentRole) continue
+      const assignedStepId = typeof part.metadata?.assignedStepId === "string" ? part.metadata.assignedStepId : undefined
+      if (assignedStepId && assignedStepId !== activePlanStep.id) continue
+      const subagentStatus = typeof part.metadata?.subagentStatus === "string" ? part.metadata.subagentStatus : undefined
+      const blockerClass = typeof part.metadata?.blockerClass === "string" ? part.metadata.blockerClass : undefined
+      const retryable = part.metadata?.retryable === true
+      return { subagentStatus, blockerClass, retryable }
+    }
+  }
+  return undefined
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string; forcePlanning?: boolean }) {
@@ -1795,6 +1926,10 @@ function fallbackTaskText(prompt: string) {
   const userRequest = prompt.match(/^User request:\s*(.+)$/im)?.[1]?.trim()
   const candidate = goalObjective || userRequest || prompt
   return compactLine(candidate) || "Complete the requested task safely."
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 function firstMissingPlanStepReport(toolCalls: ToolCall[]) {

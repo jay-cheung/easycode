@@ -11,6 +11,7 @@ export type ProviderTurnResult = {
   reasoningText: string
   toolCalls: ToolCall[]
   failureText?: string
+  failureCategory?: "network" | "api" | "validation" | "runtime"
   retryMessage?: string
   validationFailureCount?: number
   lastRejectedTurn?: {
@@ -63,6 +64,7 @@ export async function runProviderTurnStream(
   const emitProgressEvents = input.emitProgressEvents ?? true
   const observeContextUsage = input.observeContextUsage ?? true
   let failureText: string | undefined
+  let failureCategory: ProviderTurnResult["failureCategory"]
   const startedAt = Date.now()
   let currentPhase: "waiting" | "thinking" | "answering" = "waiting"
   const stopProviderProgress = startProviderProgressTimer(deps, input, startedAt, () => currentPhase, emitProgressEvents)
@@ -113,10 +115,12 @@ export async function runProviderTurnStream(
         stopProviderProgress()
         failureText = failureFormatter(event.error.output || event.error.message)
         const classified = classifyProviderFailure(event.error)
+        failureCategory = classified.category
         replayEvents.push({ type: "failure", text: failureText, source: "provider", category: classified.category })
         if (emitDeltas) {
           deps.onEvent?.({ type: "failure", text: failureText, source: "provider", category: classified.category })
         }
+        continue
       }
       if (event.type === "tool_call") {
         stopProviderProgress()
@@ -132,7 +136,7 @@ export async function runProviderTurnStream(
       deps.onTextDelta?.(leftover)
     }
     if (leftover) replayEvents.push({ type: "text_delta", text: leftover })
-    return extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, replayEvents }, emitDeltas, deps)
+    return extractFallbackToolCalls({ text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText, failureCategory, replayEvents }, emitDeltas, deps)
   } catch (error) {
     if (input.signal?.aborted) return { text: currentText(), reasoningText: currentReasoning(), toolCalls, cancelledOutput: appendOutput(currentText(), "Run cancelled by user."), replayEvents }
     const message = error instanceof ProviderError
@@ -144,7 +148,7 @@ export async function runProviderTurnStream(
     const classified = classifyProviderFailure({ message, output: message })
     replayEvents.push({ type: "failure", text: formattedFailure, source: "provider", category: classified.category })
     if (emitDeltas) deps.onEvent?.({ type: "failure", text: formattedFailure, source: "provider", category: classified.category })
-    return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText: formattedFailure, replayEvents }
+    return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText: formattedFailure, failureCategory: classified.category, replayEvents }
   } finally {
     finishProviderMetricCall(input.providerMetrics, metricCall)
     stopProviderProgress()

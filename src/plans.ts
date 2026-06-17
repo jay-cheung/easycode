@@ -64,6 +64,7 @@ export async function savePlan(root: string, sessionId: string, planMarkdown: st
 
 export type PlanStepKind = "inspect" | "edit" | "verify" | "document" | "gate"
 export type PlanStepExecutorHint = "main" | "subagent"
+export type PlanStepDelegationPolicy = "required" | "preferred"
 
 export interface PlanStep {
   id: string
@@ -71,6 +72,7 @@ export interface PlanStep {
   kind: PlanStepKind
   executorHint?: PlanStepExecutorHint
   subagentRole?: "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher"
+  delegationPolicy?: PlanStepDelegationPolicy
   targetFiles?: string[]
   dependsOn?: string[]
   doneWhen?: string
@@ -182,14 +184,22 @@ function normalizePlanStep(input: unknown, index: number): PlanStep {
   const dependsOn = normalizeStringArray(raw.dependsOn)
   const doneWhen = typeof raw.doneWhen === "string" ? raw.doneWhen.trim() : ""
   const fallback = typeof raw.fallback === "string" ? raw.fallback.trim() : ""
-  const subagentRole = normalizeSubagentRole(raw.subagentRole) ?? inferSubagentRole(goal, kind, doneWhen, fallback)
-  const executorHint = normalizeExecutorHint(raw.executorHint) ?? (subagentRole ? "subagent" : inferExecutorHint(goal, kind, doneWhen, fallback))
+  const explicitExecutorHint = normalizeExecutorHint(raw.executorHint)
+  const inferredSubagentRole = explicitExecutorHint === "main"
+    ? undefined
+    : normalizeSubagentRole(raw.subagentRole) ?? inferSubagentRole(goal, kind, doneWhen, fallback)
+  const executorHint = explicitExecutorHint ?? (inferredSubagentRole ? "subagent" : inferExecutorHint(goal, kind, doneWhen, fallback))
+  const subagentRole = executorHint === "subagent" ? inferredSubagentRole : undefined
+  const delegationPolicy = executorHint === "subagent"
+    ? normalizeDelegationPolicy(raw.delegationPolicy) ?? inferDelegationPolicy(fallback)
+    : undefined
   return {
     id,
     goal,
     kind,
     ...(executorHint ? { executorHint } : {}),
     ...(subagentRole ? { subagentRole } : {}),
+    ...(delegationPolicy ? { delegationPolicy } : {}),
     ...(targetFiles.length > 0 ? { targetFiles } : {}),
     ...(dependsOn.length > 0 ? { dependsOn } : {}),
     ...(doneWhen ? { doneWhen } : {}),
@@ -211,6 +221,18 @@ function normalizeSubagentRole(value: unknown): PlanStep["subagentRole"] | undef
   return value === "summary" || value === "explorer" || value === "reviewer" || value === "debugger" || value === "tester" || value === "docs_researcher"
     ? value
     : undefined
+}
+
+function normalizeDelegationPolicy(value: unknown): PlanStepDelegationPolicy | undefined {
+  return value === "required" || value === "preferred" ? value : undefined
+}
+
+function inferDelegationPolicy(fallback: string): PlanStepDelegationPolicy {
+  return fallbackAllowsCoordinatorRecovery(fallback) ? "preferred" : "required"
+}
+
+function fallbackAllowsCoordinatorRecovery(fallback: string) {
+  return /\b(manually inspect|manual inspect|inspect manually|continue with available information|available information|use available information|produce findings from research notes)\b|手动检查|手动查看|可用信息继续|基于已有信息|已有信息|继续完成/i.test(fallback)
 }
 
 function inferSubagentRole(goal: string, kind: PlanStepKind, doneWhen: string, fallback: string): PlanStep["subagentRole"] | undefined {
@@ -448,6 +470,6 @@ export function renderPlanToMarkdown(plan: ExecutionPlan): string {
 export function sanitizePlanForDisplay(plan: ExecutionPlan): ExecutionPlan {
   return {
     ...plan,
-    steps: plan.steps.map(({ executorHint: _executorHint, subagentRole: _subagentRole, ...step }) => step),
+    steps: plan.steps.map(({ executorHint: _executorHint, subagentRole: _subagentRole, delegationPolicy: _delegationPolicy, ...step }) => step),
   }
 }

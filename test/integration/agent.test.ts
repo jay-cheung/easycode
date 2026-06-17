@@ -397,6 +397,48 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("active plans retry network provider failures once and preserve a recoverable pause", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    const logs: LogEvent[] = []
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_provider_retry",
+      title: "Retry provider network failure",
+      lowRisk: true,
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect src/add.ts",
+          kind: "inspect",
+          doneWhen: "The file has been inspected.",
+        },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        throw new Error("The socket connection was closed unexpectedly.")
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context, logger: (event) => logs.push(event) }).run("Continue active plan after network issue", "build")
+
+    expect(result.status).toBe("failed")
+    expect(calls).toBe(2)
+    expect(result.text).toContain("Network/provider failure persisted after one retry.")
+    expect(result.text).toContain("checkpoint was preserved")
+    expect(logs).toContainEqual(expect.objectContaining({ type: "provider", name: "provider.retry", detail: expect.objectContaining({ category: "network", attempt: 1, maxAttempts: 1 }) }))
+    expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "goal.retryable_pause", detail: expect.objectContaining({ category: "network", hasActivePlan: true }) }))
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("logs streamed provider failures as errors and output", async () => {
     const root = await fixture()
     const events: LogEvent[] = []
@@ -2383,6 +2425,71 @@ describe("agent integration", () => {
     expect(delegateTool?.output).toContain('"status": "handoff"')
     expect(delegateTool?.output).toContain('"nextAction"')
     expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "subagent.result", detail: expect.objectContaining({ role: "explorer", status: "handoff" }) }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("preferred assigned subagent steps can fall back to bounded coordinator reads after handoff", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    const logs: LogEvent[] = []
+    await Bun.write(path.join(root, "src", "large.ts"), Array.from({ length: 120 }, (_, index) => `export const value${index} = ${index}`).join("\n"))
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_preferred_explorer_fallback",
+      title: "Inspect with preferred explorer fallback",
+      lowRisk: true,
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect src/add.ts with an explorer subagent",
+          kind: "inspect",
+          executorHint: "subagent",
+          subagentRole: "explorer",
+          delegationPolicy: "preferred",
+          doneWhen: "The current implementation is identified.",
+          fallback: "If explorer fails, manually inspect the source file and continue with available information.",
+        },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, output: part.output }))
+        if (input.prompt === "Inspect with preferred explorer fallback") {
+          if (!results.some((result) => result.tool === "delegate_subagent")) {
+            yield { type: "tool_call", call: { id: "call_delegate", name: "delegate_subagent", input: { role: "explorer", task: "Inspect src/add.ts broadly", success_criteria: "Identify the current implementation." } } }
+            return
+          }
+          if (!results.some((result) => result.tool === "read_lines")) {
+            yield { type: "tool_call", call: { id: "call_read_lines", name: "read_lines", input: { filePath: "src/add.ts", startLine: 1, endLine: 3 } } }
+            return
+          }
+          if (!results.some((result) => result.tool === "plan_step_complete")) {
+            yield { type: "tool_call", call: { id: "call_step_complete", name: "plan_step_complete", input: { message: "Coordinator fallback completed.", report: "Coordinator fallback completed with read_lines evidence." } } }
+          }
+          return
+        }
+        if (input.prompt === "Inspect src/add.ts broadly") {
+          yield { type: "tool_call", call: { id: `call_read_${results.length}`, name: "read", input: { filePath: "src/large.ts" } } }
+          return
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context, logger: (event) => logs.push(event) }).run("Inspect with preferred explorer fallback", "build")
+    const delegateTool = toolResults(result.messages).find((part) => part.toolName === "delegate_subagent")
+
+    expect(result.status).toBe("completed")
+    expect(result.usedTools).toEqual(["delegate_subagent", "read_lines", "plan_step_complete"])
+    expect(delegateTool?.metadata?.subagentStatus).toBe("handoff")
+    expect(delegateTool?.metadata?.blockerClass).toBe("large_output_or_read_blocked")
+    expect(delegateTool?.metadata?.assignedStepId).toBe("step_1")
+    expect(result.text).toContain("Coordinator fallback completed with read_lines evidence.")
+    expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "plan.subagent_fallback_activated", detail: expect.objectContaining({ stepId: "step_1", role: "explorer", delegationPolicy: "preferred" }) }))
     await rm(root, { recursive: true, force: true })
   })
 
