@@ -182,12 +182,18 @@ describe("tool", () => {
     })
 
     const result = await registry.run("goal_set_acceptance", {
+      complexity: "complex",
+      firstSlice: "Inspect the smallest goal review loop surface before broader work.",
       acceptanceCriteria: ["All named acceptance criteria are satisfied"],
       completionChecks: ["Run focused verification", "Review for remaining defects"],
     }, { ...toolContext(root), context })
 
     expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.complexity).toBe("complex")
+    expect(result.metadata.firstSlice).toBe("Inspect the smallest goal review loop surface before broader work.")
     expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "planning" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_complexity", value: "complex" }))
+    expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_first_slice", value: "Inspect the smallest goal review loop surface before broader work." }))
     expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_acceptance_criteria", value: expect.stringContaining("All named acceptance criteria are satisfied") }))
     expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_completion_checks", value: expect.stringContaining("Review for remaining defects") }))
   })

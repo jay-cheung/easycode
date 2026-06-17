@@ -65,6 +65,8 @@ export const GoalBlockedInput = z.object({
 })
 
 export const GoalSetAcceptanceInput = z.object({
+  complexity: z.enum(["simple", "moderate", "complex"]).nullish().transform((value) => value ?? "moderate"),
+  firstSlice: z.string().trim().min(1).nullish().transform((value) => value ?? "Plan the smallest safe first slice."),
   acceptanceCriteria: z.array(z.string()).min(1),
   completionChecks: z.array(z.string()).min(1),
 })

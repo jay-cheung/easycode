@@ -2,12 +2,15 @@ import { ledgerRecord } from "./agent/ledger"
 import type { ContextLedger, ContextManagerLike, StructuredContextLedger } from "./context"
 
 export type GoalStatus = "defining" | "planning" | "executing" | "reviewing" | "paused" | "blocked" | "completed"
+export type GoalComplexity = "simple" | "moderate" | "complex"
 
 export type GoalState = {
   id: string
   objective: string
   status: GoalStatus
   iteration: number
+  complexity?: GoalComplexity
+  firstSlice?: string
   acceptanceCriteria: string[]
   completionChecks: string[]
   blocker?: string
@@ -31,6 +34,8 @@ export const goalLedgerSubjects = [
   "current_goal_objective",
   "current_goal_status",
   "current_goal_iteration",
+  "current_goal_complexity",
+  "current_goal_first_slice",
   "current_goal_acceptance_criteria",
   "current_goal_completion_checks",
   "current_goal_blocker",
@@ -57,6 +62,8 @@ export function goalStateFromContext(context: ContextManagerLike, previous?: Goa
   const status = currentValue(current, "current_goal_status")
   if (!goalID || !objective || !status || !goalStatuses.has(status as GoalStatus)) return undefined
   const iteration = Number.parseInt(currentValue(current, "current_goal_iteration") ?? "", 10)
+  const complexity = currentValue(current, "current_goal_complexity")
+  const firstSlice = currentValue(current, "current_goal_first_slice")
   const acceptanceCriteria = parseListValue(currentValue(current, "current_goal_acceptance_criteria"))
   const completionChecks = parseListValue(currentValue(current, "current_goal_completion_checks"))
   const blocker = currentValue(current, "current_goal_blocker")
@@ -66,6 +73,8 @@ export function goalStateFromContext(context: ContextManagerLike, previous?: Goa
     objective,
     status: status as GoalStatus,
     iteration: Number.isFinite(iteration) && iteration > 0 ? iteration : previous?.iteration ?? 1,
+    complexity: isGoalComplexity(complexity) ? complexity : previous?.complexity,
+    firstSlice: firstSlice && firstSlice !== "none" ? firstSlice : previous?.firstSlice,
     acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : previous?.acceptanceCriteria ?? [],
     completionChecks: completionChecks.length > 0 ? completionChecks : previous?.completionChecks ?? [],
     blocker: blocker && blocker !== "none" ? blocker : undefined,
@@ -84,6 +93,8 @@ export function writeGoalState(context: ContextManagerLike, goal: GoalState) {
       ledgerRecord("checkpoint", "current_goal_objective", goal.objective, "current", turn),
       ledgerRecord("checkpoint", "current_goal_status", goal.status, "current", turn),
       ledgerRecord("checkpoint", "current_goal_iteration", String(goal.iteration), "current", turn),
+      ledgerRecord("checkpoint", "current_goal_complexity", goal.complexity ?? "unknown", "current", turn),
+      ledgerRecord("checkpoint", "current_goal_first_slice", goal.firstSlice ?? "none", "current", turn),
       ledgerRecord("checkpoint", "current_goal_acceptance_criteria", formatListValue(goal.acceptanceCriteria), "current", turn),
       ledgerRecord("checkpoint", "current_goal_completion_checks", formatListValue(goal.completionChecks), "current", turn),
       ledgerRecord("checkpoint", "current_goal_blocker", goal.blocker ?? "none", "current", turn),
@@ -115,6 +126,8 @@ export function goalStatusText(goal: GoalState | undefined) {
     `Goal: ${goal.objective}`,
     `Status: ${goal.status}`,
     `Iteration: ${goal.iteration}`,
+    `Complexity: ${goal.complexity ?? "unknown"}`,
+    `First slice: ${goal.firstSlice ?? "none"}`,
     `Active plan: ${goal.activePlanId ?? "none"}`,
     `Acceptance criteria: ${goal.acceptanceCriteria.length > 0 ? goal.acceptanceCriteria.length : "none"}`,
     `Completion checks: ${goal.completionChecks.length > 0 ? goal.completionChecks.length : "none"}`,
@@ -129,12 +142,19 @@ export function buildGoalDefinitionPrompt(goal: GoalState, reason?: string) {
   ]
   if (reason) lines.push(`Definition reason: ${reason}`)
   lines.push(
-    "Before creating any execution plan, define the goal acceptance contract.",
-    "Inspect the repository only as much as needed to establish concrete completion standards.",
+    "Before creating any execution plan, classify the task complexity and define only the next useful goal slice.",
+    "Do not attempt exhaustive repository understanding before the first plan. For broad or complex objectives, use a quick orientation pass only, then pick the first bounded slice.",
+    "Complexity guidance:",
+    "- simple: one obvious file or command path, low uncertainty",
+    "- moderate: a few related files or one workflow, some uncertainty",
+    "- complex: broad repository/module/audit/refactor goals, many unknowns, or work that would require scanning large parts of the tree",
     "Then call goal_set_acceptance with:",
+    "- complexity: simple, moderate, or complex",
+    "- firstSlice: the smallest initial slice that can produce useful evidence or progress without mapping the whole goal",
     "- acceptanceCriteria: the explicit conditions that must be true before this goal can be marked complete",
     "- completionChecks: the concrete review/verification checks that must run after each plan slice before deciding whether the goal is done or needs another plan",
-    "Keep both lists concise, concrete, and testable.",
+    "For complex goals, acceptanceCriteria may describe progressive coverage across slices; firstSlice must stay narrow enough to plan immediately.",
+    "Keep all fields concise, concrete, and testable.",
     "If the goal cannot be defined safely, call goal_blocked."
   )
   return lines.join("\n")
@@ -144,13 +164,17 @@ export function buildGoalPlanningPrompt(goal: GoalState, reason?: string) {
   const lines = [
     `Goal objective: ${goal.objective}`,
     `Goal iteration: ${goal.iteration}`,
+    `Goal complexity: ${goal.complexity ?? "unknown"}`,
+    `First slice focus: ${goal.firstSlice ?? "none recorded"}`,
     `Current blocker: ${goal.blocker ?? "none"}`,
     `Goal acceptance criteria:\n${formatBullets(goal.acceptanceCriteria)}`,
     `Goal completion checks:\n${formatBullets(goal.completionChecks)}`,
   ]
   if (reason) lines.push(`Planning reason: ${reason}`)
   lines.push(
-    "Inspect the current repository state only as needed, then decide the next bounded slice for this goal.",
+    "Inspect the current repository state only as needed for the next bounded slice.",
+    "For complex goals, do not try to produce a complete end-to-end master plan. Plan only the current slice; later slices must be selected after review evidence.",
+    "On the first planning iteration, anchor the plan to First slice focus unless new evidence proves it is unsafe.",
     "The proposed plan must move the goal measurably toward the listed acceptance criteria.",
     "You must do exactly one of the following:",
     "1. Call plan_exit with a small executable plan for the next slice.",
@@ -159,7 +183,7 @@ export function buildGoalPlanningPrompt(goal: GoalState, reason?: string) {
     "If the slice will use subagents, include explicit Research, Delegation, and Review phases and name the intended subagent roles.",
     "Anti-pattern warning: before outputting a review/repair/optimization plan, check whether reviewer can be delegated. If the review can be split into bounded scopes such as Code Complete dimensions, file groups, type safety, error handling, or test coverage, delegate reviewer first and synthesize only its conclusion.",
     "The structured plan JSON must include a top-level lowRisk boolean. Use true only for conservative read-only low-risk slices; otherwise false.",
-    "Keep the plan narrow, verifiable, and continuation-friendly."
+    "Keep the plan narrow, verifiable, and continuation-friendly; prefer an orientation or module-by-module slice over whole-repository scanning."
   )
   return lines.join("\n")
 }
@@ -168,6 +192,8 @@ export function buildGoalAssessmentPrompt(goal: GoalState, reason?: string) {
   const lines = [
     `Goal objective: ${goal.objective}`,
     `Goal iteration: ${goal.iteration}`,
+    `Goal complexity: ${goal.complexity ?? "unknown"}`,
+    `Previous first slice focus: ${goal.firstSlice ?? "none recorded"}`,
     `Goal acceptance criteria:\n${formatBullets(goal.acceptanceCriteria)}`,
     `Goal completion checks:\n${formatBullets(goal.completionChecks)}`,
   ]
@@ -176,6 +202,7 @@ export function buildGoalAssessmentPrompt(goal: GoalState, reason?: string) {
     "The latest plan slice has finished. Do not immediately start another plan or mark the goal complete.",
     "First review the current repository state and run whatever bounded verification or review work is needed to judge the goal against the acceptance criteria.",
     "Use the listed completion checks as the minimum review/verification bar.",
+    "For complex goals, choose completion only when every slice implied by the acceptance criteria has been covered; otherwise propose exactly one next bounded slice.",
     "After that, you must do exactly one of the following:",
     "1. Call goal_complete only if every acceptance criterion is satisfied and review/verification found no remaining defect that blocks completion. Do not print the completion checklist before the tool call; keep detailed check evidence internal and put only the concise user-facing result summary in goal_complete.summary.",
     "2. Call plan_exit with the next bounded plan if the goal is not yet complete or if review found defects/gaps to fix.",
@@ -215,6 +242,10 @@ export function goalAcceptanceText(goal: GoalState | undefined) {
 
 function currentValue(records: NonNullable<ContextManagerLike["state"]["ledger"]>["current"], subject: string) {
   return records.find((record) => record.subject === subject && record.status === "current")?.value
+}
+
+function isGoalComplexity(value: string | undefined): value is GoalComplexity {
+  return value === "simple" || value === "moderate" || value === "complex"
 }
 
 function parseListValue(value: string | undefined) {

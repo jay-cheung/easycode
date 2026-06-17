@@ -2,6 +2,19 @@
 
 Status: Draft
 
+## Step 66: Soften Coordinator Delegation Retry For Main Plan Steps
+
+- Scope: keep explicit subagent-assigned plan steps strict while preventing inferred coordinator-delegation suggestions from stopping active main-executor plan steps after validation retries.
+- Implementation:
+  - Updated `src/agent/runner/index.ts` so repeated `Coordinator delegation gate` validation failures on an active non-subagent plan step arm a one-turn bypass instead of ending with the validation fallback message.
+  - Kept `Plan step delegation gate` unchanged for steps with `executorHint: "subagent"`, so explicitly delegated steps still must call `delegate_subagent` while that role is available.
+  - Added integration coverage for a main plan step whose provider repeatedly ignores the delegation correction and then successfully executes `read_lines` directly before `plan_step_complete`.
+- Verification:
+  - `bun test test/integration/agent.test.ts --test-name-pattern "active main plan steps can fall back|plan-step delegation gate does not block direct coordinator tools when the assigned subagent role is exhausted|build mode does not fail closed on coordinator delegation suggestions without an active plan step"`
+  - `bun run typecheck`
+  - `bun run gate` failed after typecheck/build/eval/cache checks passed: the full test suite still has the unrelated `web_fetch returns bounded structured HTTP evidence` failure from `Bun.serve({ port: 0 })`, and provider gate failed because DeepSeek was unreachable.
+- Notes: this intentionally does not bypass planning gates, plan-step report gates, reviewer-delegation gates, or explicit subagent executor hints.
+
 ## Step 65: Truncate Intermediate plan_step_complete Reports
 
 - Scope: soften the Step 64 intermediate-report cap so goal-backed plans are not interrupted by validation retries when an intermediate `plan_step_complete.report` is too long.

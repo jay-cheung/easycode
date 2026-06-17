@@ -315,6 +315,8 @@ export function registerRetrievalTools(registry: ToolRegistry) {
     description: "Record the goal acceptance criteria and completion checks that must be satisfied before the goal can be completed.",
     inputSchema: GoalSetAcceptanceInput,
     jsonSchema: objectSchema({
+      complexity: { type: "string", enum: ["simple", "moderate", "complex"], description: "Task complexity after the initial orientation pass." },
+      firstSlice: { type: "string", description: "The smallest initial goal slice to plan and execute next." },
       acceptanceCriteria: { type: "array", items: { type: "string" } },
       completionChecks: { type: "array", items: { type: "string" } },
     }, ["acceptanceCriteria", "completionChecks"]),
@@ -344,6 +346,8 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       writeGoalState(ctx.context, {
         ...goal,
         status: "planning",
+        complexity: params.complexity,
+        firstSlice: params.firstSlice,
         acceptanceCriteria: params.acceptanceCriteria.map((item) => item.trim()).filter(Boolean),
         completionChecks: params.completionChecks.map((item) => item.trim()).filter(Boolean),
         blocker: undefined,
@@ -352,6 +356,8 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       return {
         title: "Goal Acceptance Recorded",
         output: [
+          `Complexity: ${params.complexity}`,
+          `First slice: ${params.firstSlice}`,
           "Acceptance criteria:",
           ...params.acceptanceCriteria.map((item) => `- ${item}`),
           "Completion checks:",
@@ -359,6 +365,8 @@ export function registerRetrievalTools(registry: ToolRegistry) {
         ].join("\n"),
         metadata: {
           status: "succeeded",
+          complexity: params.complexity,
+          firstSlice: params.firstSlice,
           acceptanceCriteria: params.acceptanceCriteria,
           completionChecks: params.completionChecks,
         },

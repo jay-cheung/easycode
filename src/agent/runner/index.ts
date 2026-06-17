@@ -121,6 +121,7 @@ export class AgentRunner {
   private subagentUsage = createSubagentRunUsage()
   private pendingValidationCorrection: string | undefined
   private validationBypass: ValidationBypass | undefined
+  private bypassNextCoordinatorDelegationGate = false
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -168,6 +169,7 @@ export class AgentRunner {
     this.subagentUsage = createSubagentRunUsage()
     this.pendingValidationCorrection = undefined
     this.validationBypass = undefined
+    this.bypassNextCoordinatorDelegationGate = false
     const prep = await this.prepareRun(prompt, mode, input)
     if (prep.aborted) {
       return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
@@ -674,6 +676,16 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       const failureFingerprint = validationFingerprint(turn, requiresProposedPlan)
       const repeatedCount = this.bumpValidationBypassCounter(failureFingerprint)
       if (validationFailureCount >= 2 || repeatedCount >= 2) {
+        if (canBypassCoordinatorDelegationGate(turn, activePlanStep)) {
+          this.bypassNextCoordinatorDelegationGate = true
+          this.pendingValidationCorrection = turn.retryMessage
+          return {
+            action: "continue",
+            reasoningTranscript: nextReasoningTranscript,
+            latestAssistantText,
+            state: this.aspect.transition("streaming", { step: step + 1 })
+          }
+        }
         if (requiresProposedPlan) {
           const fallbackPlan = fallbackStructuredPlan(prompt)
           const sessionId = this.sessionId || "default"
@@ -853,6 +865,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
             }
           }
           if (requiresProposedPlan || !activePlanStep) return undefined
+          const bypassCoordinatorDelegationGate = this.bypassNextCoordinatorDelegationGate
+          this.bypassNextCoordinatorDelegationGate = false
           if (!shouldEnforceCoordinatorDelegation(input.provider ?? this.provider)) return undefined
           if (lastSubagentDelegationFailedOrHandoff(this.context.state.messages)) return undefined
           const suggestedRole = suggestedCoordinatorSubagentRole(turn.toolCalls, {
@@ -861,6 +875,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           if (!suggestedRole) return undefined
           if (!this.isSubagentDelegationAvailable(suggestedRole)) return undefined
           const toolNames = [...new Set(turn.toolCalls.map((call) => call.name))].join(", ")
+          if (bypassCoordinatorDelegationGate) return undefined
           return {
             correction: [
               "Coordinator delegation gate:",
@@ -1711,6 +1726,11 @@ function buildValidationGateFallbackMessage(turn: ProviderTurnResult) {
     correction ? `Last required correction: ${compactLine(correction)}` : "",
     `Last invalid output: ${evidence}`,
   ].filter(Boolean).join("\n")
+}
+
+function canBypassCoordinatorDelegationGate(turn: ProviderTurnResult, activePlanStep?: PlanStep) {
+  if (!activePlanStep || activePlanStep.executorHint === "subagent") return false
+  return turn.retryMessage?.trim().startsWith("Coordinator delegation gate:") === true
 }
 
 function validationFingerprint(turn: ProviderTurnResult, requiresProposedPlan: boolean) {

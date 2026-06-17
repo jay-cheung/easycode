@@ -923,6 +923,8 @@ describe("cli integration", () => {
     expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "completed" }))
     expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_objective", value: "goal-multi-slice-e2e" }))
     expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_iteration", value: "2" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_complexity", value: "complex" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_first_slice", value: expect.stringContaining("Inspect src/add.ts first") }))
 
     const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
     expect(logText).toContain("\"name\":\"goal.reviewing\"")
@@ -940,6 +942,56 @@ describe("cli integration", () => {
     expect(subagentLogText).toContain("Inspect src/sub.ts for goal-multi-slice-e2e slice 2")
     expect(subagentLogText).toContain("Review goal-multi-slice-e2e slice 1 completion state")
     expect(subagentLogText).toContain("Review goal-multi-slice-e2e slice 2 completion state")
+
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 20_000 })
+
+  test("goal mode turns broad audits into an immediate first bounded slice", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "add.ts"), "export function add(a: number, b: number) {\n  return a + b\n}\n")
+    await Bun.write(path.join(root, "src", "sub.ts"), "export function sub(a: number, b: number) {\n  return a - b\n}\n")
+    const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "--provider", "fake", "--logger", "--no-tui", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    let stdout = ""
+    const stdoutDone = readPipe(child.stdout, (text) => {
+      stdout = text
+    })
+    const stderrDone = readPipe(child.stderr)
+    child.stdin.write("/goal goal-incremental-audit-e2e\n")
+    await waitForOutput(() => stdout, "Goal completed.", 8_000)
+    child.stdin.write(":exit\n")
+    child.stdin.end()
+
+    const [status, finalStdout, stderr] = await Promise.all([child.exited, stdoutDone, stderrDone])
+    stdout = finalStdout
+    expect(status).toBe(0)
+    expect(stdout).toContain("Complexity: complex")
+    expect(stdout).toContain("First slice: Inventory only the top-level source modules")
+    expect(stdout).toContain("Goal incremental audit e2e plan 1")
+    expect(stdout).toContain("Audit slice 1: top-level inventory")
+    expect(stdout).toContain("Reviewer check: incremental audit slice 1 is complete")
+    expect(stdout).toContain("goal-incremental-audit-e2e completed after one bounded inventory slice.")
+    expect(stdout).not.toContain("Goal incremental audit e2e plan 2")
+    expect(stderr).toBe("")
+
+    const planState = JSON.parse(await Bun.file(path.join(root, ".easycode", "plans", "default", "plan_goal_incremental_audit_e2e_1.json")).text())
+    expect(planState.plan.lowRisk).toBe(true)
+    expect(planState.plan.steps).toHaveLength(1)
+    expect(planState.plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer" })
+
+    const session = JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "default.json")).text())
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "completed" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_complexity", value: "complex" }))
+    expect(session.ledger.current).toContainEqual(expect.objectContaining({ subject: "current_goal_first_slice", value: "Inventory only the top-level source modules before any deeper module analysis." }))
+
+    const logText = await Bun.file(path.join(root, ".easycode", "logs", "sessions", "default.jsonl")).text()
+    expect(logText.match(/"name":"goal\.planning"/g)?.length ?? 0).toBe(1)
+    expect(logText).toContain("plan_goal_incremental_audit_e2e_1")
 
     await rm(root, { recursive: true, force: true })
   }, { timeout: 20_000 })

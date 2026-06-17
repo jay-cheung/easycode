@@ -6,32 +6,43 @@ describe("goal prompt", () => {
     const goal = createGoalState("Implement delegated goal slices")
     const prompt = buildGoalDefinitionPrompt(goal, "Goal started by user.")
 
-    expect(prompt).toContain("Before creating any execution plan, define the goal acceptance contract.")
+    expect(prompt).toContain("Before creating any execution plan, classify the task complexity and define only the next useful goal slice.")
+    expect(prompt).toContain("Do not attempt exhaustive repository understanding before the first plan.")
+    expect(prompt).toContain("complexity: simple, moderate, or complex")
+    expect(prompt).toContain("firstSlice")
     expect(prompt).toContain("call goal_set_acceptance")
     expect(prompt).toContain("completionChecks")
   })
 
   test("goal planning prompt keeps the run in proposal-plan mode", () => {
     const goal = createGoalState("Implement delegated goal slices")
+    goal.complexity = "complex"
+    goal.firstSlice = "Inspect the smallest runner module first"
     goal.acceptanceCriteria = ["The delegated slice completes safely"]
     goal.completionChecks = ["Run review and focused verification after each plan slice"]
     const prompt = buildGoalPlanningPrompt(goal, "Goal started by user.")
 
+    expect(prompt).toContain("Goal complexity: complex")
+    expect(prompt).toContain("First slice focus: Inspect the smallest runner module first")
     expect(prompt).toContain("Goal acceptance criteria:")
     expect(prompt).toContain("Goal completion checks:")
-    expect(prompt).toContain("Inspect the current repository state only as needed")
+    expect(prompt).toContain("Inspect the current repository state only as needed for the next bounded slice.")
+    expect(prompt).toContain("do not try to produce a complete end-to-end master plan")
     expect(prompt).toContain("Call plan_exit with a small executable plan")
     expect(prompt).toContain("include explicit Research, Delegation, and Review phases")
   })
 
   test("goal assessment prompt requires review before completion or replanning", () => {
     const goal = createGoalState("Implement delegated goal slices")
+    goal.complexity = "complex"
+    goal.firstSlice = "Inspect the smallest runner module first"
     goal.acceptanceCriteria = ["The delegated slice completes safely"]
     goal.completionChecks = ["Run review and focused verification after each plan slice"]
     const prompt = buildGoalAssessmentPrompt(goal, "The plan slice completed.")
 
     expect(prompt).toContain("The latest plan slice has finished.")
     expect(prompt).toContain("Use the listed completion checks as the minimum review/verification bar.")
+    expect(prompt).toContain("otherwise propose exactly one next bounded slice")
     expect(prompt).toContain("Call goal_complete only if every acceptance criterion is satisfied")
     expect(prompt).toContain("Call plan_exit with the next bounded plan")
   })

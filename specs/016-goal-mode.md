@@ -41,6 +41,8 @@ type GoalState = {
   objective: string
   status: GoalStatus
   iteration: number
+  complexity?: "simple" | "moderate" | "complex"
+  firstSlice?: string
   acceptanceCriteria: string[]
   completionChecks: string[]
   activePlanId?: string
@@ -62,6 +64,8 @@ Recommended ledger subjects:
 - `current_goal_objective`
 - `current_goal_status`
 - `current_goal_iteration`
+- `current_goal_complexity`
+- `current_goal_first_slice`
 - `current_goal_acceptance_criteria`
 - `current_goal_completion_checks`
 - `current_goal_blocker`
@@ -80,7 +84,7 @@ Controller loop:
 
 1. The user starts `/goal <objective>`.
 2. The controller enters `defining` and asks `AgentRunner` to establish the goal contract first.
-3. The runner must call `goal_set_acceptance` with explicit acceptance criteria and completion checks before any execution plan is created.
+3. The runner must call `goal_set_acceptance` with a task complexity classification, first bounded slice, explicit acceptance criteria, and completion checks before any execution plan is created.
 4. The controller enters `planning` and asks `AgentRunner` for the next bounded plan for the active objective.
 5. If the runner returns `<proposed_plan>`, goal mode auto-activates the plan instead of waiting for manual approval.
 6. The runner executes that plan through the existing `plan_step_complete` / `plan_step_fail` machinery.
@@ -113,7 +117,7 @@ Behavior requirements:
 
 Add explicit internal tools so goal completion is not inferred from free-form assistant text alone:
 
-- `goal_set_acceptance { acceptanceCriteria: string[]; completionChecks: string[] }`
+- `goal_set_acceptance { complexity: "simple" | "moderate" | "complex"; firstSlice: string; acceptanceCriteria: string[]; completionChecks: string[] }`
 - `goal_complete { summary: string }`
 - `goal_blocked { reason: string }`
 
@@ -135,6 +139,8 @@ That goal block should contain:
 
 - the current objective
 - the current goal iteration
+- the classified goal complexity
+- the first slice focus recorded during goal definition
 - the current acceptance criteria and completion checks
 - the active plan / step summary
 - the current blocker, if any
@@ -145,7 +151,9 @@ That goal block should contain:
 
 Model constraints:
 
+- Definition inside goal mode must not become a full repository discovery pass. The model should classify complexity with a quick orientation pass, then record the smallest first slice that can produce useful evidence or progress.
 - Plans inside goal mode should stay small, verifiable, and continuation-friendly rather than becoming one giant end-to-end plan.
+- For complex objectives such as whole-project analysis, audits, broad refactors, or module-by-module reporting, the first plan should cover only the first useful slice. Later slices must be selected after the review stage has evidence from the previous slice.
 - During active plan execution, the model must still stay focused on the current plan step.
 - Pure exploration, testing, debugging, and docs lookup should prefer `delegate_subagent` over coordinator-led manual multi-turn searching.
 
@@ -305,7 +313,8 @@ v1 does not need a separate goal transcript file. The existing main session tran
 ### 14. Integration Tests
 
 - `/goal` starts and auto-generates a plan without opening the approval prompt
-- `/goal` first records acceptance criteria and completion checks before the first plan
+- `/goal` first records complexity, first slice, acceptance criteria, and completion checks before the first plan
+- broad project analysis or audit goals produce an immediate first bounded slice instead of trying to inspect the whole repository before planning
 - completed plans automatically trigger the review stage before either replanning or completion
 - `goal_complete` closes the goal cleanly
 - high-risk shell requests pause the goal
@@ -315,7 +324,8 @@ v1 does not need a separate goal transcript file. The existing main session tran
 
 ### 15. Acceptance Criteria
 
-- Goal mode records explicit acceptance criteria and completion checks before the first executable slice.
+- Goal mode records explicit complexity, first slice, acceptance criteria, and completion checks before the first executable slice.
+- Complex goals advance through bounded slices selected after each review, rather than trying to complete a whole-project plan in the first planning round.
 - Goal mode does not require per-round manual plan approval.
 - Low-risk actions continue automatically while high-risk actions are still gated.
 - One goal can span multiple `define -> plan -> execute -> review -> replan` rounds.

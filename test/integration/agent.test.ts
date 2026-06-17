@@ -2023,6 +2023,53 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("active main plan steps can fall back to direct coordinator tools after repeated delegation gate rejection", async () => {
+    const root = await fixture()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_main_step_delegation_bypass",
+      title: "Inspect with main after delegation retry",
+      lowRisk: true,
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect src/add.ts from the coordinator",
+          kind: "inspect",
+          doneWhen: "The current implementation is identified.",
+        },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" },
+      status: "running",
+    })
+
+    let providerTurns = 0
+    const provider: Provider = {
+      name: "gated-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        providerTurns += 1
+        const results = toolResults(input.messages).map((part) => part.toolName)
+        if (!results.includes("read_lines")) {
+          yield { type: "tool_call", call: { id: `call_read_lines_${providerTurns}`, name: "read_lines", input: { filePath: "src/add.ts", startLine: 1, endLine: 3 } } }
+          return
+        }
+        if (!results.includes("plan_step_complete")) {
+          yield { type: "tool_call", call: { id: "call_step_complete", name: "plan_step_complete", input: { message: "Coordinator inspected src/add.ts directly.", report: "Coordinator inspected src/add.ts directly after delegation retry." } } }
+        }
+      },
+    }
+
+    const result = await new AgentRunner({ root, provider, context }).run("Inspect main plan step after delegation retry", "build")
+
+    expect(result.status).toBe("completed")
+    expect(providerTurns).toBe(4)
+    expect(result.usedTools).toEqual(["read_lines", "plan_step_complete"])
+    expect(result.text).toContain("Coordinator inspected src/add.ts directly after delegation retry.")
+    expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent")).toBe(false)
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("plan-step delegation gate does not block direct coordinator tools when the assigned subagent role is exhausted", async () => {
     const root = await fixture()
     const context = new ContextManager()

@@ -96,11 +96,25 @@ export class FakeProvider implements Provider {
       return
     }
 
+    if (input.prompt === "Inventory top-level modules for goal-incremental-audit-e2e slice 1") {
+      yield { type: "text_delta", text: "Audit slice 1: top-level inventory found src/add.ts and src/sub.ts as bounded source modules." }
+      yield { type: "done" }
+      return
+    }
+
+    if (input.prompt === "Review goal-incremental-audit-e2e slice 1 completion state") {
+      yield { type: "text_delta", text: "Reviewer check: incremental audit slice 1 is complete and did not require whole-repository scanning." }
+      yield { type: "done" }
+      return
+    }
+
     if (prompt.includes("goal-delegated-e2e") && currentPrompt.includes("before creating any execution plan, define the goal acceptance contract.")) {
       if (!hasToolResult(input.messages, "goal_set_acceptance")) {
         yield {
           type: "tool_call",
           call: call("goal_set_acceptance", {
+            complexity: "moderate",
+            firstSlice: "Delegate an explorer to inspect src/add.ts only.",
             acceptanceCriteria: [
               "The delegated inspection slice completes safely and captures the current behavior of src/add.ts.",
             ],
@@ -122,6 +136,8 @@ export class FakeProvider implements Provider {
         yield {
           type: "tool_call",
           call: call("goal_set_acceptance", {
+            complexity: "complex",
+            firstSlice: "Inspect src/add.ts first; defer src/sub.ts until post-slice review.",
             acceptanceCriteria: [
               "The goal captures the current behavior of both src/add.ts and src/sub.ts through bounded delegated inspection slices.",
             ],
@@ -134,6 +150,29 @@ export class FakeProvider implements Provider {
         return
       }
       yield { type: "text_delta", text: "Goal acceptance contract recorded for the multi-slice goal." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-incremental-audit-e2e") && currentPrompt.includes("classify the task complexity")) {
+      if (!hasToolResult(input.messages, "goal_set_acceptance")) {
+        yield {
+          type: "tool_call",
+          call: call("goal_set_acceptance", {
+            complexity: "complex",
+            firstSlice: "Inventory only the top-level source modules before any deeper module analysis.",
+            acceptanceCriteria: [
+              "The audit starts with a bounded top-level module inventory and defers deeper per-module analysis to later slices.",
+            ],
+            completionChecks: [
+              "Review the slice evidence and decide the next bounded module slice instead of scanning the whole repository upfront.",
+            ],
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal acceptance contract recorded for incremental audit." }
       yield { type: "done" }
       return
     }
@@ -237,6 +276,31 @@ export class FakeProvider implements Provider {
       return
     }
 
+    if (prompt.includes("goal-incremental-audit-e2e") && currentPrompt.includes("the latest plan slice has finished.")) {
+      const results = toolResults(input.messages)
+      if (results.some((part) => part.toolName === "goal_complete" && part.status === "succeeded")) {
+        yield { type: "text_delta", text: "Goal incremental audit e2e review finished." }
+        yield { type: "done" }
+        return
+      }
+      const reviewerCount = results.filter((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "reviewer").length
+      if (reviewerCount === 0) {
+        yield {
+          type: "tool_call",
+          call: call("delegate_subagent", {
+            role: "reviewer",
+            task: "Review goal-incremental-audit-e2e slice 1 completion state",
+            success_criteria: "Confirm that the first audit slice stayed bounded and whether this synthetic goal can complete.",
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "tool_call", call: call("goal_complete", { summary: "goal-incremental-audit-e2e completed after one bounded inventory slice." }) }
+      yield { type: "done" }
+      return
+    }
+
     if (prompt.includes("goal-delegated-e2e") && input.prompt.includes("call goal_set_acceptance")) {
       if (hasToolResult(input.messages, "goal_set_acceptance")) {
         yield { type: "text_delta", text: "Goal acceptance recorded for goal-delegated-e2e." }
@@ -246,7 +310,9 @@ export class FakeProvider implements Provider {
       yield {
         type: "tool_call",
         call: call("goal_set_acceptance", {
-          acceptanceCriteria: ["The delegated inspect slice completes safely and captures the current behavior of src/add.ts."],
+          complexity: "moderate",
+          firstSlice: "Delegate an explorer to inspect src/add.ts only.",
+          acceptanceCriteria: ["The delegated inspection slice completes safely and captures the current behavior of src/add.ts."],
           completionChecks: ["Verify the delegated result before planning the next slice or completing the goal."],
         }),
       }
@@ -263,7 +329,9 @@ export class FakeProvider implements Provider {
       yield {
         type: "tool_call",
         call: call("goal_set_acceptance", {
-          acceptanceCriteria: ["The delegated inspect slices capture the current behavior of src/add.ts and src/sub.ts."],
+          complexity: "complex",
+          firstSlice: "Inspect src/add.ts first; defer src/sub.ts until post-slice review.",
+          acceptanceCriteria: ["The delegated inspection slices capture the current behavior of src/add.ts and src/sub.ts."],
           completionChecks: ["Review each completed slice before replanning or completing the goal."],
         }),
       }
@@ -354,6 +422,32 @@ export class FakeProvider implements Provider {
                 goal: "Delegate explorer to inspect src/add.ts for goal-multi-slice-e2e",
                 kind: "inspect",
                 doneWhen: "The explorer has reported the exported function and current operator in src/add.ts.",
+              },
+            ],
+          }, null, 2),
+          "```",
+        ].join("\n")
+        yield { type: "tool_call", call: call("plan_exit", { markdown: planMarkdown }) }
+        yield { type: "done" }
+        return
+      }
+      if (prompt.includes("goal-incremental-audit-e2e") && !hasToolResult(input.messages, "plan_exit")) {
+        const planMarkdown = [
+          "# Goal incremental audit e2e plan 1",
+          "- Research Phase: delegate explorer to inventory top-level source modules only.",
+          "- Delegation Phase: collect the bounded module inventory.",
+          "- Review Phase: verify the audit stayed incremental before any next slice.",
+          "```json",
+          JSON.stringify({
+            id: "plan_goal_incremental_audit_e2e_1",
+            title: "Goal incremental audit e2e plan 1",
+            lowRisk: true,
+            steps: [
+              {
+                id: "step_1",
+                goal: "Delegate explorer to inventory top-level source modules for goal-incremental-audit-e2e",
+                kind: "inspect",
+                doneWhen: "The explorer has reported a top-level source module inventory only.",
               },
             ],
           }, null, 2),
@@ -502,6 +596,38 @@ export class FakeProvider implements Provider {
         return
       }
       yield { type: "text_delta", text: "Goal multi-slice e2e finished." }
+      yield { type: "done" }
+      return
+    }
+
+    if (prompt.includes("goal-incremental-audit-e2e")) {
+      const results = toolResults(input.messages)
+      const delegateDone = results.some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.metadata?.subagentRole === "explorer")
+      const stepDone = results.some((part) => part.toolName === "plan_step_complete" && part.status === "succeeded")
+      const goalDone = results.some((part) => part.toolName === "goal_complete" && part.status === "succeeded")
+      if (!delegateDone) {
+        yield {
+          type: "tool_call",
+          call: call("delegate_subagent", {
+            role: "explorer",
+            task: "Inventory top-level modules for goal-incremental-audit-e2e slice 1",
+            success_criteria: "Report only the top-level module inventory for the first audit slice.",
+          }),
+        }
+        yield { type: "done" }
+        return
+      }
+      if (!stepDone) {
+        yield { type: "tool_call", call: call("plan_step_complete", { message: "goal-incremental-audit-e2e slice 1 complete", report: "Incremental audit slice 1 inventory is complete." }) }
+        yield { type: "done" }
+        return
+      }
+      if (!goalDone) {
+        yield { type: "text_delta", text: "Goal incremental audit e2e execution slice finished." }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Goal incremental audit e2e finished." }
       yield { type: "done" }
       return
     }
