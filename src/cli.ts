@@ -101,6 +101,28 @@ function numericFlag(argv: string[], index: number, name: string) {
   return Math.round(value)
 }
 
+function addSubagentMetricsToUsage(usage: SessionTokenUsage, metrics: ProviderRunMetrics): SessionTokenUsage {
+  return {
+    ...usage,
+    subagentInputTokens: usage.subagentInputTokens + metrics.inputTokens,
+    subagentOutputTokens: usage.subagentOutputTokens + metrics.outputTokens,
+    subagentCalls: usage.subagentCalls + metrics.calls,
+    subagentCacheHitTokens: usage.subagentCacheHitTokens + metrics.cacheHitTokens,
+    subagentCacheMissTokens: usage.subagentCacheMissTokens + metrics.cacheMissTokens,
+  }
+}
+
+function addSubagentUsageToUsage(usage: SessionTokenUsage, subagentUsage: SessionTokenUsage): SessionTokenUsage {
+  return {
+    ...usage,
+    subagentInputTokens: usage.subagentInputTokens + subagentUsage.subagentInputTokens,
+    subagentOutputTokens: usage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
+    subagentCalls: usage.subagentCalls + subagentUsage.subagentCalls,
+    subagentCacheHitTokens: usage.subagentCacheHitTokens + subagentUsage.subagentCacheHitTokens,
+    subagentCacheMissTokens: usage.subagentCacheMissTokens + subagentUsage.subagentCacheMissTokens,
+  }
+}
+
 async function main() {
   let args = parseArgs(process.argv.slice(2))
   const loadedEnvVars = await loadEnvFile(args.root)
@@ -233,18 +255,18 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     } = {
       subagent: normalizeSessionTokenUsage(undefined),
     }
+    let activeRunInProgress = false
     const onEvent = (event: RunUiEvent) => {
       if (event.type === "provider_metrics" && event.metrics.source !== "subagent") {
         runMetrics.current = event.metrics
       }
       if (event.type === "subagent" && event.status === "completed" && event.metrics) {
-        runMetrics.subagent = {
-          ...runMetrics.subagent,
-          subagentInputTokens: runMetrics.subagent.subagentInputTokens + event.metrics.inputTokens,
-          subagentOutputTokens: runMetrics.subagent.subagentOutputTokens + event.metrics.outputTokens,
-          subagentCalls: runMetrics.subagent.subagentCalls + event.metrics.calls,
-          subagentCacheHitTokens: runMetrics.subagent.subagentCacheHitTokens + event.metrics.cacheHitTokens,
-          subagentCacheMissTokens: runMetrics.subagent.subagentCacheMissTokens + event.metrics.cacheMissTokens,
+        if (activeRunInProgress) {
+          runMetrics.subagent = addSubagentMetricsToUsage(runMetrics.subagent, event.metrics)
+        } else {
+          sessionTokenUsage = addSubagentMetricsToUsage(sessionTokenUsage, event.metrics)
+          tui?.setSessionTokenUsage(sessionTokenUsage)
+          void saveSession(runner?.context ?? context)
         }
       }
       timeline.event(event)
@@ -498,6 +520,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       const messageCountBeforeRun = activeRunner.context.state.messages.length
       activeAbort = new AbortController()
       const runInput = collectRunInput(reader, activeAbort, { push: (text) => enqueuePrompt(text) }, tui)
+      activeRunInProgress = true
       const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
       runInput.stop()
       activeAbort = undefined
@@ -509,24 +532,19 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           inputTokens: sessionTokenUsage.inputTokens + metrics.inputTokens,
           outputTokens: sessionTokenUsage.outputTokens + metrics.outputTokens,
           calls: sessionTokenUsage.calls + metrics.calls,
-          subagentInputTokens: sessionTokenUsage.subagentInputTokens + subagentUsage.subagentInputTokens,
-          subagentOutputTokens: sessionTokenUsage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
-          subagentCalls: sessionTokenUsage.subagentCalls + subagentUsage.subagentCalls,
-          subagentCacheHitTokens: sessionTokenUsage.subagentCacheHitTokens + subagentUsage.subagentCacheHitTokens,
-          subagentCacheMissTokens: sessionTokenUsage.subagentCacheMissTokens + subagentUsage.subagentCacheMissTokens,
+          subagentInputTokens: sessionTokenUsage.subagentInputTokens,
+          subagentOutputTokens: sessionTokenUsage.subagentOutputTokens,
+          subagentCalls: sessionTokenUsage.subagentCalls,
+          subagentCacheHitTokens: sessionTokenUsage.subagentCacheHitTokens,
+          subagentCacheMissTokens: sessionTokenUsage.subagentCacheMissTokens,
         }
+        sessionTokenUsage = addSubagentUsageToUsage(sessionTokenUsage, subagentUsage)
         tui?.setSessionTokenUsage(sessionTokenUsage)
       } else if (subagentUsage.subagentCalls > 0) {
-        sessionTokenUsage = {
-          ...sessionTokenUsage,
-          subagentInputTokens: sessionTokenUsage.subagentInputTokens + subagentUsage.subagentInputTokens,
-          subagentOutputTokens: sessionTokenUsage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
-          subagentCalls: sessionTokenUsage.subagentCalls + subagentUsage.subagentCalls,
-          subagentCacheHitTokens: sessionTokenUsage.subagentCacheHitTokens + subagentUsage.subagentCacheHitTokens,
-          subagentCacheMissTokens: sessionTokenUsage.subagentCacheMissTokens + subagentUsage.subagentCacheMissTokens,
-        }
+        sessionTokenUsage = addSubagentUsageToUsage(sessionTokenUsage, subagentUsage)
         tui?.setSessionTokenUsage(sessionTokenUsage)
       }
+      activeRunInProgress = false
       runMetrics.current = undefined
       runMetrics.subagent = normalizeSessionTokenUsage(undefined)
       await saveSession(activeRunner.context)

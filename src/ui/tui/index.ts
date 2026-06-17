@@ -3,7 +3,7 @@ import { normalizeSessionTokenUsage, type SessionTokenUsage } from "../../sessio
 import { uiText, type UiLanguage } from "../../i18n"
 import { TimelineRenderer, type RunUiEvent } from "../timeline"
 import { ensureTrailingNewline, formatDuration } from "./tui-ansi"
-import { buildConfiguredCard, buildFailureSummaryCard, buildPanelCard, buildSessionStartedCard, buildSuccessSummaryCard, buildWelcomeDashboardCard } from "./tui-cards"
+import { buildConfiguredCard, buildFailureSummaryCard, buildPanelCard, buildSessionStartedCard, buildSubagentUsageCard, buildSuccessSummaryCard, buildWelcomeDashboardCard } from "./tui-cards"
 import { TuiState } from "./tui-state"
 import { spinnerFrames } from "./tui-status-panel"
 import { drawStatusPanel, eraseStatusPanel, renderFailureSummary, renderSuccessSummary, renderWelcomeDashboard, writeTextWithPanel, writeTimelineText } from "./tui-render-loop"
@@ -113,6 +113,7 @@ export class TuiRenderer {
 
   event(event: RunUiEvent) {
     const copy = uiText(this.getLanguage())
+    let renderedLateSubagentSummary = false
     if (event.type === "run_start") {
       this.state.beginRun(copy.statusInitializing)
       this.context = { ...this.context, mode: event.mode, provider: event.provider, model: event.model }
@@ -190,6 +191,10 @@ export class TuiRenderer {
         cacheHitTokens: this.state.subagentUsage.cacheHitTokens + event.metrics.cacheHitTokens,
         cacheMissTokens: this.state.subagentUsage.cacheMissTokens + event.metrics.cacheMissTokens,
       }
+      if (event.status === "completed" && !this.state.running) {
+        this.renderLateSubagentSummary(event.info.role, event.metrics)
+        renderedLateSubagentSummary = true
+      }
     } else if (event.type === "run_done") {
       this.state.finishRun()
       this.stopSpinnerTimer()
@@ -215,7 +220,8 @@ export class TuiRenderer {
       event.type !== "provider_progress" &&
       event.type !== "tool_progress" &&
       event.type !== "provider_metrics" &&
-      event.type !== "run_done"
+      event.type !== "run_done" &&
+      !renderedLateSubagentSummary
     ) {
       this.timeline.event(event)
     }
@@ -378,5 +384,9 @@ export class TuiRenderer {
 
   private renderFailureSummary(reason: string) {
     renderFailureSummary(this.output, this.getLanguage(), this.state.runElapsedMs, this.state.metrics, this.state.subagentUsage, this.sessionTokenUsage, reason, this.getColumns())
+  }
+
+  private renderLateSubagentSummary(role: string, metrics: NonNullable<Extract<RunUiEvent, { type: "subagent" }>["metrics"]>) {
+    this.output.write(`\n${buildSubagentUsageCard(this.getLanguage(), role, metrics, this.getColumns())}\n`)
   }
 }

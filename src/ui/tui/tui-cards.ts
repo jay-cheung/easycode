@@ -67,6 +67,24 @@ export function buildWelcomeDashboardCard(context: TuiContext, status: string, c
   })
 }
 
+export function buildSubagentUsageCard(
+  language: UiLanguage,
+  role: string,
+  metrics: ProviderRunMetrics,
+  columns: number,
+) {
+  const copy = uiText(language)
+  const total = metrics.inputTokens + metrics.outputTokens
+  const hitRate = formatCacheHitRate(metrics.cacheHitTokens, metrics.cacheMissTokens)
+  return drawCard("🤖 Subagent", [
+    copy.roundSubagentDetailLine(`${role} x1`),
+    copy.roundSubagentTokensLine(formatTokenTotal(total, hitRate)),
+  ], columns, {
+    color: "\x1b[36m",
+    borderStyle: "round",
+  })
+}
+
 export function buildSuccessSummaryCard(
   language: UiLanguage,
   elapsedMs: number,

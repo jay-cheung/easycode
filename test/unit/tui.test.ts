@@ -133,6 +133,64 @@ describe("tui renderer", () => {
     expect(output).toContain("Context compacted")
   })
 
+  test("renders late background subagent usage after the run summary", () => {
+    let output = ""
+    const renderer = new TuiRenderer({ write: (text) => { output += text }, isTTY: false, columns: 88 }, {
+      root: "/tmp/project",
+      mode: "build",
+      provider: "fake",
+      session: "demo",
+    })
+
+    renderer.event({ type: "run_start", mode: "build", provider: "fake" })
+    renderer.event({ type: "run_done", status: "completed" })
+    renderer.pauseForInputPrompt()
+    renderer.event({
+      type: "subagent",
+      status: "completed",
+      info: {
+        id: 1,
+        role: "summary",
+        provider: "fake",
+        model: "fake-main",
+        thinking: true,
+        effort: "low",
+        maxProviderCalls: 1,
+        maxOutputTokens: 900,
+      },
+      elapsedMs: 900,
+      metrics: {
+        provider: "fake",
+        model: "fake-main",
+        source: "subagent",
+        subagentRole: "summary",
+        thinking: true,
+        effort: "low",
+        maxOutputTokens: 900,
+        maxProviderCalls: 1,
+        calls: 1,
+        inputTokens: 120,
+        outputTokens: 40,
+        cacheHitTokens: 0,
+        cacheMissTokens: 120,
+        totalTokens: 160,
+        reasoningTokens: 10,
+        hitRate: 0,
+        providerElapsedMs: 900,
+        firstResponseMs: 200,
+        outputTokensPerSecond: 44.4,
+        effectiveCost: 0,
+        rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 },
+      },
+    })
+
+    expect(output).toContain("Execution Completed")
+    expect(output).toContain("Subagent")
+    expect(output).toContain("Round Subagent Detail: summary x1")
+    expect(output).toContain("Round Subagent Tokens: 160 (hit 0.0%)")
+    expect(output).not.toContain("Subagent #1 summary completed")
+  })
+
   test("formats permission and plan approval prompts without bypassing caller input handling", () => {
     let output = ""
     const renderer = new TuiRenderer({ write: (text) => { output += text }, isTTY: false }, {
