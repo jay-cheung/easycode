@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { createLogger, formatLogEvent, sanitizeLogEvent, type LogEvent } from "../../src/logger"
@@ -98,6 +98,20 @@ describe("logger", () => {
     expect(transcript).toContain("Turn 2")
     expect(transcript).toContain("common prefix with previous turn: chars=89, estimated_tokens=27")
     await rm(root, { recursive: true, force: true })
+  })
+
+  test("ignores session log write failures so diagnostics do not fail the run", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-logger-permission-"))
+    const logsDir = path.join(root, ".easycode", "logs", "sessions")
+    await mkdir(logsDir, { recursive: true })
+    const filePath = path.join(logsDir, "readonly.jsonl")
+    await mkdir(filePath)
+    try {
+      const logger = createLogger({ root, session: "readonly" })
+      expect(() => logger(event("data"))).not.toThrow()
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("highlights state events", () => {

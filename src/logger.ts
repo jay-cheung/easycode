@@ -34,20 +34,29 @@ export function createLogger(options: LoggerOptions = {}): Logger {
   let previousTranscriptInput = ""
   const logger = ((event: LogEvent) => {
     const safeEvent = sanitizeLogEvent(event)
-    appendFileSync(filePath, `${JSON.stringify(safeEvent)}\n`)
+    safeAppendFile(filePath, `${JSON.stringify(safeEvent)}\n`)
     if (safeEvent.type === "provider" && safeEvent.name === "provider.transcript") {
       transcriptTurn += 1
-      appendFileSync(transcriptFilePath, formatTranscriptTurn(transcriptTurn, safeEvent, previousTranscriptInput))
+      safeAppendFile(transcriptFilePath, formatTranscriptTurn(transcriptTurn, safeEvent, previousTranscriptInput))
       previousTranscriptInput = stringDetail(safeEvent.detail?.input)
       return
     }
     if (safeEvent.type === "provider" && safeEvent.name === "provider.validation_rejected") {
-      appendFileSync(transcriptFilePath, formatTranscriptValidation(safeEvent))
+      safeAppendFile(transcriptFilePath, formatTranscriptValidation(safeEvent))
     }
   }) as Logger
   logger.filePath = filePath
   logger.transcriptFilePath = transcriptFilePath
   return logger
+}
+
+function safeAppendFile(filePath: string, content: string) {
+  try {
+    appendFileSync(filePath, content)
+  } catch {
+    // Logging is diagnostic-only; filesystem policy or stale file permissions
+    // should not abort the user-visible run.
+  }
 }
 
 export function formatLogEvent(event: LogEvent) {
