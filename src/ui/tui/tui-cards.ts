@@ -99,7 +99,6 @@ export function buildSuccessSummaryCard(
     const roundSubagentTotal = subagentUsage.inputTokens + subagentUsage.outputTokens
     const cumSubagentInput = sessionTokenUsage.subagentInputTokens + subagentUsage.inputTokens
     const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
-    const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
     const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
     const roundSubagentHitRate = formatCacheHitRate(subagentUsage.cacheHitTokens, subagentUsage.cacheMissTokens)
     const cumSubagentHitRate = formatCacheHitRate(
@@ -108,11 +107,8 @@ export function buildSuccessSummaryCard(
     )
     const roundBreakdown = formatSubagentBreakdown(subagentUsage.roleCounts)
     lines.push(
-      copy.roundSubagentInvocationsLine(String(subagentUsage.invocations)),
       ...(roundBreakdown ? [copy.roundSubagentDetailLine(roundBreakdown)] : []),
-      copy.roundSubagentCallsLine(String(subagentUsage.calls)),
       copy.roundSubagentTokensLine(formatTokenTotal(roundSubagentTotal, roundSubagentHitRate)),
-      copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
       copy.sessionSubagentTokensLine(
         formatTokenTotal(cumSubagentTotal, cumSubagentHitRate),
         cumSubagentInput.toLocaleString(),
@@ -166,7 +162,6 @@ export function buildFailureSummaryCard(
     const roundSubagentTotal = subagentUsage.inputTokens + subagentUsage.outputTokens
     const cumSubagentInput = sessionTokenUsage.subagentInputTokens + subagentUsage.inputTokens
     const cumSubagentOutput = sessionTokenUsage.subagentOutputTokens + subagentUsage.outputTokens
-    const cumSubagentCalls = sessionTokenUsage.subagentCalls + subagentUsage.calls
     const cumSubagentTotal = cumSubagentInput + cumSubagentOutput
     const roundSubagentHitRate = formatCacheHitRate(subagentUsage.cacheHitTokens, subagentUsage.cacheMissTokens)
     const cumSubagentHitRate = formatCacheHitRate(
@@ -175,11 +170,8 @@ export function buildFailureSummaryCard(
     )
     const roundBreakdown = formatSubagentBreakdown(subagentUsage.roleCounts)
     lines.push(
-      copy.roundSubagentInvocationsLine(String(subagentUsage.invocations)),
       ...(roundBreakdown ? [copy.roundSubagentDetailLine(roundBreakdown)] : []),
-      copy.roundSubagentCallsLine(String(subagentUsage.calls)),
       copy.roundSubagentTokensLine(formatTokenTotal(roundSubagentTotal, roundSubagentHitRate)),
-      copy.sessionSubagentCallsLine(String(cumSubagentCalls)),
       copy.sessionSubagentTokensLine(
         formatTokenTotal(cumSubagentTotal, cumSubagentHitRate),
         cumSubagentInput.toLocaleString(),

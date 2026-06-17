@@ -82,6 +82,10 @@ function displayRunMode(mode: string) {
   return mode === "build" || mode === "plan" ? "run" : mode
 }
 
+function formatSubagentCompletionMetrics(metrics: ProviderRunMetrics) {
+  return `\n    calls=${metrics.calls}, input_tokens=${metrics.inputTokens}, output_tokens=${metrics.outputTokens}, cache_hit=${(metrics.hitRate * 100).toFixed(1)}%`
+}
+
 export class TimelineRenderer {
   private phase: "idle" | "thought" | "answer" = "idle"
   private thoughtStartedAt = 0
@@ -137,9 +141,7 @@ export class TimelineRenderer {
         this.output.write(`\n${this.title("tool", copy.timelineSubagentScheduled(summary))}\n`)
       } else if (event.status === "completed") {
         const elapsed = event.elapsedMs === undefined ? "" : ` (${formatDuration(event.elapsedMs)})`
-        const metrics = event.metrics
-          ? `, calls=${event.metrics.calls}, input_tokens=${event.metrics.inputTokens}, output_tokens=${event.metrics.outputTokens}, cache_hit=${(event.metrics.hitRate * 100).toFixed(1)}%`
-          : ""
+        const metrics = event.metrics ? formatSubagentCompletionMetrics(event.metrics) : ""
         this.output.write(copy.timelineSubagentCompleted(`#${event.info.id} ${event.info.role}`, elapsed, metrics))
       } else {
         const elapsed = event.elapsedMs === undefined ? "" : ` after ${formatDuration(event.elapsedMs)}`

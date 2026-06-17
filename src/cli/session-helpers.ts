@@ -261,7 +261,12 @@ export function collectRunInput(reader: LineReader, activeAbort: AbortController
 }
 
 export async function question(reader: LineReader, tui?: TuiRenderer) {
-  return reader.question(tui?.inputPrompt() ?? uiText(tui?.getLanguage() ?? "en").inputPrompt)
+  tui?.pauseForInputPrompt()
+  try {
+    return await reader.question(tui?.inputPrompt() ?? uiText(tui?.getLanguage() ?? "en").inputPrompt)
+  } finally {
+    tui?.resumeAfterPrompt()
+  }
 }
 
 export function permissionService(mode: AgentMode, reader: LineReader, cancelRun?: () => void, tui?: TuiRenderer) {

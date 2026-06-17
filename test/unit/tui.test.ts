@@ -103,12 +103,34 @@ describe("tui renderer", () => {
     expect(output).toContain("Subagent scheduled id=1, role=summary")
     expect(output).toContain("Subagent #1 summary completed")
     expect(output).toContain("cache_hit=0.0%")
-    expect(output).toContain("Round Subagent Invocations: 1")
     expect(output).toContain("Round Subagent Detail: summary x1")
-    expect(output).toContain("Round Subagent Turns: 1")
     expect(output).toContain("Round Subagent Tokens: 160 (hit 0.0%)")
+    expect(output).toContain("Session Subagent Tokens: 160 (hit 0.0%) (in: 120, out: 40)")
+    expect(output).not.toContain("Round Subagent Invocations")
+    expect(output).not.toContain("Round Subagent Turns")
+    expect(output).not.toContain("Session Subagent Turns")
     expect(output).toContain("Execution Completed")
     expect(output).not.toContain("[status] completed")
+  })
+
+  test("suppresses background timeline output while waiting at the input prompt", () => {
+    let output = ""
+    const renderer = new TuiRenderer({ write: (text) => { output += text }, isTTY: false, columns: 88 }, {
+      root: "/tmp/project",
+      mode: "build",
+      provider: "fake",
+      session: "demo",
+    })
+
+    renderer.pauseForInputPrompt()
+    renderer.event({ type: "context_compaction", status: "completed", elapsedMs: 10_000, summaryChars: 1526, summaryTokens: 613 })
+
+    expect(output).not.toContain("Context compacted")
+
+    renderer.resumeAfterPrompt()
+    renderer.event({ type: "context_compaction", status: "completed", elapsedMs: 10_000, summaryChars: 1526, summaryTokens: 613 })
+
+    expect(output).toContain("Context compacted")
   })
 
   test("formats permission and plan approval prompts without bypassing caller input handling", () => {

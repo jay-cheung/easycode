@@ -50,6 +50,12 @@ export class TuiRenderer {
     }
   }
 
+  pauseForInputPrompt() {
+    this.state.pauseForPrompt()
+    this.stopSpinnerTimer()
+    this.eraseStatusPanel()
+  }
+
   setSessionTokenUsage(usage: SessionTokenUsage) {
     this.sessionTokenUsage = normalizeSessionTokenUsage(usage)
   }
