@@ -98,4 +98,50 @@ describe("quality gate integration", () => {
       await rm(reportDir, { recursive: true, force: true })
     }
   }, { timeout: 20_000 })
+
+  test("quality-gate CLI provider_gate can include the deterministic APIx subset", async () => {
+    const reportDir = await tmpdir("easycode-quality-gate-apix-e2e-")
+    try {
+      const result = await runQualityCli("dev/quality/quality-gate.ts", [
+        "--checks",
+        "provider_gate",
+        "--provider",
+        "fake",
+        "--smoke-ids",
+        "EC-001",
+        "--apix-limit",
+        "1",
+        "--no-cache",
+        "--report-dir",
+        reportDir,
+        "--json",
+      ])
+
+      expect(result.status).toBe(0)
+      const parsed = JSON.parse(result.stdout) as {
+        report: {
+          status: string
+          checks: Array<{
+            name: string
+            status: string
+            details?: { providers?: Array<{ checks: Array<{ name: string; status: string; summary: string; details?: { ids?: string[] } }> }> }
+          }>
+        }
+      }
+      const providerGate = parsed.report.checks.find((check) => check.name === "provider_gate")
+      const providerChecks = providerGate?.details?.providers?.[0]?.checks ?? []
+      const apix = providerChecks.find((check) => check.name === "apix_subset")
+
+      expect(parsed.report.status).toBe("passed")
+      expect(providerGate).toMatchObject({ status: "passed" })
+      expect(apix).toMatchObject({
+        status: "passed",
+        summary: "1/1 hard-gate APIx cases passed",
+      })
+      expect(apix?.details?.ids).toEqual(["APIX-001"])
+    } finally {
+      await rm(reportDir, { recursive: true, force: true })
+    }
+  }, { timeout: 20_000 })
+
 })

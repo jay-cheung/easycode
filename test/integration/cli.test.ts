@@ -531,6 +531,89 @@ describe("cli integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("session persists file edits and restores prior assistant context across CLI processes", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "add.ts"), "export function add(a: number, b: number) {\n  return a - b\n}\n")
+
+    const first = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--session", "persist-e2e", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    first.stdin.write("persist first marker\n:exit\n")
+    first.stdin.end()
+    const [firstStdout, firstStderr, firstStatus] = await Promise.all([new Response(first.stdout).text(), new Response(first.stderr).text(), first.exited])
+
+    expect(firstStatus).toBe(0)
+    expect(firstStdout).toContain("FIRST_SESSION_MARKER saved and file fixed.")
+    expect(firstStderr).toBe("")
+    expect(await Bun.file(path.join(root, "src", "add.ts")).text()).toContain("return a + b")
+    const savedAfterFirst = JSON.parse(await Bun.file(path.join(root, ".easycode", "sessions", "persist-e2e.json")).text()) as { messages: Array<{ role: string }> }
+    expect(savedAfterFirst.messages.map((message) => message.role)).toEqual(expect.arrayContaining(["user", "assistant", "tool"]))
+
+    const second = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--session", "persist-e2e", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    second.stdin.write("session restore check\n:exit\n")
+    second.stdin.end()
+    const [secondStdout, secondStderr, secondStatus] = await Promise.all([new Response(second.stdout).text(), new Response(second.stderr).text(), second.exited])
+
+    expect(secondStatus).toBe(0)
+    expect(secondStdout).toContain("Session restore saw FIRST_SESSION_MARKER.")
+    expect(secondStderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 12_000 })
+
+  test("session truncates large tool output before restoring it in a later CLI process", async () => {
+    const root = await tmpdir()
+    await mkdir(path.join(root, "src"), { recursive: true })
+    await Bun.write(path.join(root, "src", "add.ts"), "export const value = 1\n")
+    await Bun.write(path.join(root, "large-output.txt"), `${"x".repeat(80_000)}\n`)
+
+    const first = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--session", "large-output-e2e", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    first.stdin.write("large output e2e\n:exit\n")
+    first.stdin.end()
+    const [firstStdout, firstStderr, firstStatus] = await Promise.all([new Response(first.stdout).text(), new Response(first.stderr).text(), first.exited])
+
+    expect(firstStatus).toBe(0)
+    expect(firstStdout).toContain("Large output read completed.")
+    expect(firstStderr).toBe("")
+    const saved = await Bun.file(path.join(root, ".easycode", "sessions", "large-output-e2e.json")).text()
+    const savedSession = JSON.parse(saved) as { messages: Array<{ parts: Array<{ type: string; output?: string; metadata?: Record<string, unknown> }> }> }
+    const readResult = savedSession.messages.flatMap((message) => message.parts).find((part) => part.type === "tool_result" && part.metadata?.filePath === "large-output.txt")
+    expect(readResult?.output).toContain("[history compacted: omitted")
+    expect(readResult?.metadata).toMatchObject({
+      historyCompacted: true,
+      rawOutputLength: 80001,
+    })
+    expect(saved).not.toContain("x".repeat(70_000))
+
+    const second = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--session", "large-output-e2e", "--root", root], {
+      cwd: path.resolve(import.meta.dir, "../.."),
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    second.stdin.write(":exit\n")
+    second.stdin.end()
+    const [secondStdout, secondStderr, secondStatus] = await Promise.all([new Response(second.stdout).text(), new Response(second.stderr).text(), second.exited])
+
+    expect(secondStatus).toBe(0)
+    expect(secondStdout).toContain("large-output-e2e")
+    expect(secondStderr).toBe("")
+    await rm(root, { recursive: true, force: true })
+  }, { timeout: 12_000 })
+
   test("session queues input typed during an active run", async () => {
     const root = await tmpdir()
     const child = Bun.spawn([process.execPath, "run", "src/cli.ts", "build", "--provider", "fake", "--root", root], {

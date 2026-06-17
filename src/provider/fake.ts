@@ -60,6 +60,44 @@ export class FakeProvider implements Provider {
     const currentPrompt = input.prompt.toLowerCase()
     const prompt = `${userPrompts}\n${currentPrompt}`.toLowerCase()
 
+    if (currentPrompt.includes("persist first marker")) {
+      const fileAlreadyRead = hasToolResult(input.messages, "read")
+      if (!fileAlreadyRead) {
+        yield { type: "tool_call", call: call("read", { filePath: "src/add.ts" }) }
+        yield { type: "done" }
+        return
+      }
+      const fileAlreadyEdited = hasToolResult(input.messages, "edit")
+      if (!fileAlreadyEdited) {
+        yield { type: "tool_call", call: call("edit", { filePath: "src/add.ts", oldString: "return a - b", newString: "return a + b" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "FIRST_SESSION_MARKER saved and file fixed." }
+      yield { type: "usage", inputTokens: 80, outputTokens: 12 }
+      yield { type: "done" }
+      return
+    }
+
+    if (currentPrompt.includes("session restore check")) {
+      const providerText = input.providerMessages.map((message) => message.content).join("\n")
+      yield { type: "text_delta", text: providerText.includes("FIRST_SESSION_MARKER") ? "Session restore saw FIRST_SESSION_MARKER." : "Session restore missing FIRST_SESSION_MARKER." }
+      yield { type: "done" }
+      return
+    }
+
+    if (currentPrompt.includes("large output e2e")) {
+      const largeFileAlreadyRead = hasToolResult(input.messages, "read")
+      if (!largeFileAlreadyRead) {
+        yield { type: "tool_call", call: call("read", { filePath: "large-output.txt" }) }
+        yield { type: "done" }
+        return
+      }
+      yield { type: "text_delta", text: "Large output read completed." }
+      yield { type: "done" }
+      return
+    }
+
     if (input.prompt === "Inspect src/add.ts for goal-delegated-e2e") {
       yield { type: "text_delta", text: "Found export function add in src/add.ts; it currently returns a - b." }
       yield { type: "done" }
