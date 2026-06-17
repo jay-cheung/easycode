@@ -111,8 +111,15 @@ export function isNetworkCommand(command: string) {
 }
 
 function shellPathReferences(command: string) {
-  const matches = command.matchAll(/(^|[\s"'=<>])((?:\.\.?[/\\]|\/)[^\s"'<>;|&]*)/g)
+  const matches = command.matchAll(/(^|[\s"'=<>])((?:~(?:[/\\]|$)|\.\.?[/\\]|\/)[^\s"'<>;|&]*)/g)
   return [...matches].map((match) => match[2] ?? "")
+}
+
+function resolveShellPathReference(cwd: string, reference: string) {
+  const expanded = reference === "~" || reference.startsWith("~/") || reference.startsWith("~\\")
+    ? path.join(os.homedir(), reference.slice(1))
+    : reference
+  return path.resolve(cwd, expanded)
 }
 
 function escapeSandboxString(input: string) {
@@ -269,7 +276,7 @@ export class Sandbox {
     const cwd = this.resolve(input.cwd ?? ".")
     if (!options.bypassPathBoundary) {
       for (const reference of shellPathReferences(input.command)) {
-        const resolved = path.resolve(cwd, reference)
+        const resolved = resolveShellPathReference(cwd, reference)
         if (!this.contains(resolved) && !isAllowedExternalCommandPath(resolved)) throw new SandboxPathEscapeError(reference, resolved, this.root)
       }
     }

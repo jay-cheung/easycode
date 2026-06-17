@@ -5,17 +5,18 @@ user input
  -> slash command parse or prompt dispatch
  -> optional image attachment merge
  -> message append
- -> context compose (static agent/skill/tool descriptions on first provider turn only)
+ -> context compose (agent protocol, active skills, pending skill loads, tools, ledger, summary, and bounded message suffix)
  -> provider stream
  -> UI event stream (non-logger timeline)
  -> model text/tool_call
  -> tool schema validate
+ -> duplicate inspection check against completed prior tool results
  -> permission evaluate
  -> sandbox execute
  -> tool result message
  -> ledger refresh for current user trace and active capability state
  -> context length check
- -> compact if needed
+ -> compact if needed (provider summary first; local fallback summary if provider compaction fails)
  -> final answer
 ```
 
@@ -29,12 +30,30 @@ sequenceDiagram
   M->>A: tool_call(name, input)
   A->>T: run(name, input)
   T->>T: validate Zod schema
+  T->>T: block completed duplicate inspection when no new evidence invalidated it
   T->>P: authorize(permission, patterns)
   P-->>T: allow / ask / deny
   T->>S: execute side effect if allowed
   S-->>T: ToolResult
   T-->>A: ToolResult
   A->>M: tool_result message
+```
+
+```mermaid
+sequenceDiagram
+  participant A as AgentRunner
+  participant C as ContextManager
+  participant P as Provider
+  A->>C: needsCompaction?
+  C-->>A: snapshot(messages, summary)
+  A->>P: summary subagent request
+  alt provider summary succeeds
+    P-->>A: summary text
+    A->>C: compactSnapshot(summary)
+  else provider summary fails
+    P-->>A: provider failure
+    A->>C: compactSnapshot(local fallback summary)
+  end
 ```
 
 ```mermaid

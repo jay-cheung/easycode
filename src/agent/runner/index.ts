@@ -11,7 +11,7 @@ import { createRunAspect, type RunAspect } from "../../instrumentation"
 import { createLogger, emitLog, type Logger } from "../../logger"
 import { ProjectMemoryStore, renderProjectMemoryRecall, shouldAutoRecallProjectMemory, type ProjectMemoryRecord } from "../../memory"
 import * as protocol from "../protocol"
-import { defaultSessionSettings, type SessionSettings } from "../../settings"
+import { defaultProviderName, defaultSessionSettings, type SessionSettings } from "../../settings"
 import { goalStateFromContext } from "../../goal"
 import type { RunUiEvent } from "../../ui/timeline"
 import { createAgent } from "../protocol"
@@ -1135,6 +1135,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     const requestId = this.nextSubagentRequestID++
     this.activeForegroundSubagentRequestID = requestId
     const maxProviderCalls = reservation.reservedTurns
+    const assignedStep = await this.currentAssignedSubagentStep()
+    const timeoutMs = request.timeoutMs ?? assignedStep?.timeoutMs
     const provider = createDerivedSubagentProvider(
       this.provider,
       route,
@@ -1149,6 +1151,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       effort: route.effort,
       maxProviderCalls,
       maxOutputTokens: route.maxOutputTokens,
+      ...(timeoutMs ? { timeoutMs } : {}),
     } as const
     this.onEvent?.({ type: "subagent", status: "scheduled", info })
     emitLog(this.subagentLogger, { type: "state", name: "subagent.request", detail: { requestId, role: request.role, task: request.task, successCriteria: request.successCriteria, route, budget: reservation.snapshot } })
@@ -1165,6 +1168,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         effort: route.effort,
         maxProviderCalls,
         maxOutputTokens: route.maxOutputTokens,
+        timeoutMs,
       },
     })
 
@@ -1177,17 +1181,18 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         maxProviderCalls,
       })
     let taskState: SubagentTaskState | undefined
+    const timeout = signalWithTimeout(signal, timeoutMs)
     try {
-      const assignedStep = await this.currentAssignedSubagentStep()
       taskState = createSubagentTaskState({
         requestId,
         role: request.role,
         task: request.task,
         successCriteria: request.successCriteria,
         maxProviderCalls,
+        timeoutMs,
         assignedStep,
       })
-      const result = await this.runGenericSubagent(requestId, taskState, provider, providerMetrics, signal)
+      const result = await this.runGenericSubagent(requestId, taskState, provider, providerMetrics, timeout.signal, timeout)
       this.finishReservedSubagentTurns(reservation.reservedTurns, providerMetrics.calls)
       const metrics = providerMetrics.calls > 0 ? finalizeProviderMetrics(providerMetrics) : undefined
       this.recordSubagentInvocationSummary({
@@ -1220,6 +1225,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           recommendedNextTool: result.recommendedNextTool,
           assignedPlanId: assignedStep?.planId,
           assignedStepId: assignedStep?.stepId,
+          timeoutMs,
         },
       })
       return {
@@ -1243,6 +1249,8 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
           recommendedNextTool: result.recommendedNextTool,
           assignedPlanId: assignedStep?.planId,
           assignedStepId: assignedStep?.stepId,
+          ...(subagentResultError(result) ? { error: subagentResultError(result) } : {}),
+          timeoutMs,
         },
       }
     } catch (error) {
@@ -1263,9 +1271,10 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       return {
         title: `subagent ${request.role}`,
         output: formatSubagentResult({ role: request.role, status: "failed", summary: detail }),
-        metadata: { status: "failed", error: "subagent_execution_failed", subagentRole: request.role, subagentRequestId: requestId },
+        metadata: { status: "failed", error: timeout.timedOut() ? "subagent_timeout" : "subagent_execution_failed", subagentRole: request.role, subagentRequestId: requestId, timeoutMs },
       }
     } finally {
+      timeout.cleanup()
       this.activeForegroundSubagentRequestID = undefined
     }
   }
@@ -1276,6 +1285,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     provider: Provider,
     providerMetrics: ProviderMetricsAccumulator,
     signal: AbortSignal | undefined,
+    timeout: TimeoutControl,
   ): Promise<SubagentExecutionResult> {
     const { packet } = taskState
     const agent = createAgent(packet.role)
@@ -1286,6 +1296,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
     let networkFailureRetried = false
     for (let callIndex = 0; callIndex < packet.maxProviderCalls; callIndex += 1) {
+      if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
       const providerMessages = context.compose({ agent, instructions: [], skills: [], selectedSkills: [], pendingSkillLoads: [], tools })
       const turn = await runProviderTurnStream(
         {
@@ -1307,6 +1318,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         },
         (text) => runFailureText(text, "provider_error"),
       )
+      if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
 
       if (turn.failureText) {
         if (turn.failureCategory === "network" && !networkFailureRetried) {
@@ -1332,6 +1344,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         return { role: packet.role, status: "failed", summary: turn.failureText }
       }
       if (turn.cancelledOutput) {
+        if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
         return { role: packet.role, status: "failed", summary: "Subagent cancelled." }
       }
       if (turn.reasoningText) reasoningChunks.push(turn.reasoningText)
@@ -1363,6 +1376,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       context.add(toolCallMessage(turn.toolCalls, turn.reasoningText, turn.text))
       for (const call of turn.toolCalls) {
         const result = await this.executeSubagentInnerToolCall(requestId, taskState, context, call, signal)
+        if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
         noteSubagentToolResult(taskState, {
           toolName: call.name,
           title: result.title,
@@ -1747,9 +1761,57 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       planId: currentPlanState.plan.id,
       stepId: step.id,
       goal: step.goal,
+      ...(step.timeoutMs ? { timeoutMs: step.timeoutMs } : {}),
       ...(step.doneWhen ? { doneWhen: step.doneWhen } : {}),
     }
   }
+}
+
+type TimeoutControl = {
+  signal: AbortSignal | undefined
+  timeoutMs?: number
+  timedOut(): boolean
+  cleanup(): void
+}
+
+function signalWithTimeout(parent: AbortSignal | undefined, timeoutMs: number | undefined): TimeoutControl {
+  if (!timeoutMs || timeoutMs <= 0) {
+    return { signal: parent, timeoutMs, timedOut: () => false, cleanup: () => {} }
+  }
+  const controller = new AbortController()
+  let timedOut = false
+  const onParentAbort = () => controller.abort()
+  if (parent?.aborted) controller.abort()
+  else parent?.addEventListener("abort", onParentAbort, { once: true })
+  const timer = setTimeout(() => {
+    timedOut = true
+    controller.abort()
+  }, timeoutMs)
+  return {
+    signal: controller.signal,
+    timeoutMs,
+    timedOut: () => timedOut,
+    cleanup: () => {
+      clearTimeout(timer)
+      parent?.removeEventListener("abort", onParentAbort)
+    },
+  }
+}
+
+function subagentTimeoutResult(role: SubagentRequest["role"], timeoutMs: number | undefined): SubagentExecutionResult {
+  const timeoutText = timeoutMs ? ` after ${timeoutMs}ms` : ""
+  return {
+    role,
+    status: "failed",
+    summary: `Subagent timed out${timeoutText}.`,
+    blockerClass: "network_or_provider",
+    retryable: true,
+    nextAction: "Retry with a larger timeout or reduce the delegated scope.",
+  }
+}
+
+function subagentResultError(result: SubagentExecutionResult) {
+  return result.status === "failed" && result.summary.startsWith("Subagent timed out") ? "subagent_timeout" : undefined
 }
 
 function latestAssignedSubagentResult(messages: Message[], activePlanStep: PlanStep) {
@@ -1770,8 +1832,8 @@ function latestAssignedSubagentResult(messages: Message[], activePlanStep: PlanS
 }
 
 export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string; forcePlanning?: boolean }) {
-  const settings = input.settings ?? defaultSessionSettings(input.provider ?? "fake")
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider ?? "fake", { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId, forcePlanning: input.forcePlanning })
+  const settings = input.settings ?? defaultSessionSettings(input.provider ?? defaultProviderName)
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider, { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId, forcePlanning: input.forcePlanning })
 }
 
 function lastSubagentDelegationFailedOrHandoff(messages: Message[]): boolean {

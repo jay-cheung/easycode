@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { GoalStateError, activateGoalPlan, assertGoalPhase, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, createGoalState } from "../../src/goal"
+import { GoalStateError, activateGoalPlan, assertGoalPhase, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, createGoalState, transitionGoalState } from "../../src/goal"
 
 describe("goal prompt", () => {
   test("goal definition prompt requires acceptance criteria before planning", () => {
@@ -70,5 +70,18 @@ describe("goal prompt", () => {
 
     expect(assertGoalPhase(goal, "goal_set_acceptance", ["defining"])).toBe(goal)
     expect(() => assertGoalPhase({ ...goal, status: "reviewing" }, "goal_set_acceptance", ["defining"])).toThrow(GoalStateError)
+  })
+
+  test("goal transitions fail closed on invalid lifecycle jumps", () => {
+    const goal = createGoalState("Implement delegated goal slices")
+
+    const planning = transitionGoalState(goal, "planning", {
+      acceptanceCriteria: ["The slice is complete"],
+      completionChecks: ["Focused verification passed"],
+    })
+
+    expect(planning.status).toBe("planning")
+    expect(() => activateGoalPlan(goal, "plan_unsafe")).toThrow(GoalStateError)
+    expect(() => transitionGoalState({ ...goal, status: "completed" }, "executing")).toThrow(GoalStateError)
   })
 })

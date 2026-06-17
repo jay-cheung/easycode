@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { parseSlashCommand } from "../../src/slash"
-import { defaultSessionSettings, normalizeSessionSettings } from "../../src/settings"
+import { defaultSessionSettings, maxResponseReserveTokens, maxSessionSteps, maxSessionTokens, normalizeSessionSettings } from "../../src/settings"
 
 describe("slash commands", () => {
   test("parses prompt escape and common commands", () => {
@@ -40,6 +40,7 @@ describe("slash commands", () => {
   })
 
   test("normalizes session settings", () => {
+    expect(defaultSessionSettings()).toMatchObject({ provider: "openai" })
     expect(defaultSessionSettings("openai")).toMatchObject({ provider: "openai", language: expect.any(String), thinking: true, effort: "high", maxTokens: 64_000, maxSteps: 66 })
     expect(normalizeSessionSettings({ provider: "deepseek", effort: "max", selectedSkills: ["demo", "demo", ""], pendingSkillLoads: ["demo", "demo", ""] }, "fake")).toMatchObject({
       provider: "deepseek",
@@ -47,6 +48,12 @@ describe("slash commands", () => {
       selectedSkills: ["demo"],
       pendingSkillLoads: ["demo"],
     })
+    expect(normalizeSessionSettings(undefined)).toMatchObject({ provider: "openai" })
     expect(normalizeSessionSettings({ selectedSkills: ["demo"] }, "fake")).toMatchObject({ selectedSkills: ["demo"], pendingSkillLoads: ["demo"] })
+    expect(normalizeSessionSettings({ provider: "openai", maxTokens: 1_000_000, maxSteps: 10_000, responseReserveTokens: 1_000_000 })).toMatchObject({
+      maxTokens: maxSessionTokens,
+      maxSteps: maxSessionSteps,
+      responseReserveTokens: maxResponseReserveTokens,
+    })
   })
 })

@@ -44,6 +44,12 @@ describe("skill", () => {
     const loaded = await service.load(available[0].id)
     expect(loaded?.description).toBe(available[0].description)
     expect(loaded?.location).toBe(available[0].location)
+    const diagnostics = await service.diagnostics()
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "duplicate_name",
+      name: "dup",
+      ids: expect.arrayContaining([available[0].id, available[1].id]),
+    }))
     await rm(root, { recursive: true, force: true })
   })
 
@@ -57,6 +63,11 @@ describe("skill", () => {
     const available = await service.available()
     expect(available).toHaveLength(1)
     expect(available[0].name).toBe("valid")
+    expect(await service.diagnostics()).toContainEqual(expect.objectContaining({
+      code: "missing_required_frontmatter",
+      location: path.join(root, ".easycode", "skills", "incomplete", "skill.md"),
+      message: expect.stringContaining("description"),
+    }))
     await rm(root, { recursive: true, force: true })
   })
 
@@ -69,6 +80,21 @@ describe("skill", () => {
     const loaded = await service.load("legacy-skill")
     expect(loaded).toBeDefined()
     expect(loaded?.content).toBe("Legacy content")
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("returns undefined when a cached skill file disappears before load", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "easycode-skill-"))
+    const dir = path.join(root, ".easycode", "skills", "volatile")
+    await mkdir(dir, { recursive: true })
+    const skillFile = path.join(dir, "skill.md")
+    await Bun.write(skillFile, "---\nname: volatile\ndescription: Temporary\n---\nTemporary content")
+    const service = new SkillService(root)
+
+    expect(await service.available()).toHaveLength(1)
+    await rm(skillFile, { force: true })
+
+    expect(await service.load("volatile")).toBeUndefined()
     await rm(root, { recursive: true, force: true })
   })
 

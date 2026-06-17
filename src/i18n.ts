@@ -169,6 +169,9 @@ type UiCopy = {
   metricsLabel: string
   goalPanelSummary: (status: string, iteration: number, activePlanId?: string) => string
   goalPanelDetail: (objective: string, blocker?: string) => string
+  goalModeTitle: string
+  goalStepStats: (step: number, total: number) => string
+  goalFilesChanged: (files: number) => string
   typeCancelHint: string
   welcomeTitle: string
   welcomeOverview: (mode: string, provider: string, model: string) => string
@@ -393,6 +396,9 @@ function buildEnglishCopy(): UiCopy {
     metricsLabel: "Metrics",
     goalPanelSummary: (status, iteration, activePlanId) => `Goal: ${goalStatusName(status)}  ·  iter: ${iteration}  ·  plan: ${activePlanId ?? "none"}`,
     goalPanelDetail: (objective, blocker) => blocker ? `Objective: ${objective}  ·  blocker: ${blocker}` : `Objective: ${objective}`,
+    goalModeTitle: "EasyCode Goal Mode",
+    goalStepStats: (step, total) => `Step ${step} / ${total}`,
+    goalFilesChanged: (files) => `${files} ${files === 1 ? "file" : "files"} changed`,
     typeCancelHint: "Type /cancel to stop execution",
     welcomeTitle: "EasyCode TUI",
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,
@@ -596,6 +602,9 @@ const copies: Record<UiLanguage, UiCopy> = {
     metricsLabel: "指标",
     goalPanelSummary: (status, iteration, activePlanId) => `Goal：${({ defining: "定义中", planning: "规划中", executing: "执行中", reviewing: "复核中", paused: "已暂停", blocked: "已阻塞", completed: "已完成" }[status] ?? status)}  ·  轮次：${iteration}  ·  计划：${activePlanId ?? "none"}`,
     goalPanelDetail: (objective, blocker) => blocker ? `目标：${objective}  ·  阻塞：${blocker}` : `目标：${objective}`,
+    goalModeTitle: "EasyCode 目标模式",
+    goalStepStats: (step, total) => `第 ${step} / ${total} 步`,
+    goalFilesChanged: (files) => `${files} 个文件已更改`,
     typeCancelHint: "输入 /cancel 可停止执行",
     welcomeTitle: "EasyCode TUI",
     welcomeOverview: (mode, provider, model) => `EasyCode TUI | mode=${mode} provider=${provider} model=${model}`,

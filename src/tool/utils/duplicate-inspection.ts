@@ -44,7 +44,9 @@ export function collectDuplicateInspections(messages: Message[]): DuplicateInspe
   const duplicates: DuplicateInspection[] = []
   const seen = new Set<string>()
   const emitted = new Set<string>()
+  const activeBatchCallIDs = activeToolBatchCallIDs(messages)
   for (const invocation of recentInvocations(messages)) {
+    if (activeBatchCallIDs.has(invocation.callID)) continue
     if (isInvalidatingInvocation(invocation)) {
       seen.clear()
       continue
@@ -70,7 +72,9 @@ export function collectDuplicateInspections(messages: Message[]): DuplicateInspe
 
 function seenInspectionKeys(messages: Message[]) {
   const seen = new Set<string>()
+  const activeBatchCallIDs = activeToolBatchCallIDs(messages)
   for (const invocation of recentInvocations(messages)) {
+    if (activeBatchCallIDs.has(invocation.callID)) continue
     if (isInvalidatingInvocation(invocation)) {
       seen.clear()
       continue
@@ -81,6 +85,21 @@ function seenInspectionKeys(messages: Message[]) {
     seen.add(duplicateInspectionKey(invocation.toolName, fingerprint))
   }
   return seen
+}
+
+function activeToolBatchCallIDs(messages: Message[]) {
+  const latestToolCallMessage = [...messages].reverse().find((message) =>
+    message.role === "assistant" && message.parts.some((part) => part.type === "tool_call")
+  )
+  if (!latestToolCallMessage) return new Set<string>()
+  const callIDs = new Set(
+    latestToolCallMessage.parts
+      .filter((part) => part.type === "tool_call")
+      .map((part) => part.call.id)
+  )
+  if (callIDs.size === 0) return callIDs
+  const hasPendingCall = toolInvocations(messages).some((invocation) => callIDs.has(invocation.callID) && invocation.status === "pending")
+  return hasPendingCall ? callIDs : new Set<string>()
 }
 
 function recentInvocations(messages: Message[]) {

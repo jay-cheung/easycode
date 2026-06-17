@@ -16,12 +16,16 @@ export type SessionSettings = {
 }
 
 export const reasoningEfforts: ReasoningEffort[] = ["low", "medium", "high", "max"]
+export const defaultProviderName = "openai"
+export const maxSessionTokens = 256_000
+export const maxSessionSteps = 200
+export const maxResponseReserveTokens = 64_000
 
-export function defaultSessionSettings(provider = "fake"): SessionSettings {
+export function defaultSessionSettings(provider = defaultProviderName): SessionSettings {
   return { provider, language: detectUiLanguage(), thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 64_000, maxSteps: 66 }
 }
 
-export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = "fake"): SessionSettings {
+export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = defaultProviderName): SessionSettings {
   const fallback = defaultSessionSettings(fallbackProvider)
   const effort = input?.effort && isReasoningEffort(input.effort) ? input.effort : fallback.effort
   const selectedSkills = uniqueStringList(input?.selectedSkills)
@@ -31,9 +35,9 @@ export function normalizeSessionSettings(input: Partial<SessionSettings> | undef
     language: normalizeUiLanguage(input?.language, fallback.language),
     thinking: typeof input?.thinking === "boolean" ? input.thinking : fallback.thinking,
     effort,
-    maxTokens: positiveInteger(input?.maxTokens) ?? fallback.maxTokens,
-    maxSteps: positiveInteger(input?.maxSteps) ?? fallback.maxSteps,
-    responseReserveTokens: positiveInteger(input?.responseReserveTokens),
+    maxTokens: boundedPositiveInteger(input?.maxTokens, maxSessionTokens) ?? fallback.maxTokens,
+    maxSteps: boundedPositiveInteger(input?.maxSteps, maxSessionSteps) ?? fallback.maxSteps,
+    responseReserveTokens: boundedPositiveInteger(input?.responseReserveTokens, maxResponseReserveTokens),
     selectedSkills,
     pendingSkillLoads: Array.isArray(input?.pendingSkillLoads) ? uniqueStringList(input.pendingSkillLoads) : selectedSkills,
   }
@@ -43,9 +47,9 @@ export function isReasoningEffort(value: string): value is ReasoningEffort {
   return (reasoningEfforts as string[]).includes(value)
 }
 
-function positiveInteger(value: unknown) {
+function boundedPositiveInteger(value: unknown, max: number) {
   if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined
-  return Math.round(value)
+  return Math.min(max, Math.round(value))
 }
 
 function uniqueStringList(value: unknown) {

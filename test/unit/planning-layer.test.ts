@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { ContextManager } from "../../src/context"
-import { InvalidExecutionPlanError, loadStructuredPlan, loadStructuredPlanState, isComplexPlan, renderPlanToMarkdown } from "../../src/plans"
+import { InvalidExecutionPlanError, PlanStateError, assertPlanStepCanComplete, cleanupOldPlans, loadStructuredPlan, loadStructuredPlanState, isComplexPlan, maxPlanStepTimeoutMs, renderPlanToMarkdown } from "../../src/plans"
 import { parseExecutionPlanFromResponse, Planner, Replanner, PlanTracker } from "../../src/agent/planner"
 import type { Provider, ProviderEvent } from "../../src/provider/types"
 
@@ -243,6 +243,25 @@ describe("Planning Layer & Executable Plans", () => {
     expect(markdown).not.toContain("delegationPolicy")
   })
 
+  test("normalizeExecutionPlan preserves bounded step timeout metadata", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_timeout",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Inspect with a bounded wall clock budget",
+          kind: "inspect",
+          timeoutMs: maxPlanStepTimeoutMs + 1_000,
+        },
+      ],
+    }))
+
+    expect(plan.steps[0].timeoutMs).toBe(maxPlanStepTimeoutMs)
+    const markdown = renderPlanToMarkdown(plan)
+    expect(markdown).toContain(`- **Timeout**: ${maxPlanStepTimeoutMs}ms`)
+    expect(markdown).toContain(`"timeoutMs": ${maxPlanStepTimeoutMs}`)
+  })
+
   test("Replanner rewrites remaining steps of plan", async () => {
     const currentPlan = {
       id: "plan_12345",
@@ -316,6 +335,48 @@ describe("Planning Layer & Executable Plans", () => {
       expect(state?.checkpoint.currentStepId).toBe("step_1")
       expect(state?.checkpoint.stepStatuses.step_1).toBe("running")
       expect(state?.checkpoint.status).toBe("running")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("plan state guard rejects step completion when checkpoint state has drifted", () => {
+    const plan = {
+      id: "plan_guard_test",
+      title: "Guard Test",
+      lowRisk: true,
+      steps: [
+        { id: "step_1", goal: "Goal 1", kind: "inspect" as const },
+        { id: "step_2", goal: "Goal 2", kind: "verify" as const, dependsOn: ["step_1"] },
+      ],
+    }
+    const checkpoint = {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running" as const, step_2: "pending" as const },
+      status: "running" as const,
+    }
+
+    expect(assertPlanStepCanComplete(plan, checkpoint, "step_1").id).toBe("step_1")
+    expect(() => assertPlanStepCanComplete(plan, checkpoint, "step_2")).toThrow(PlanStateError)
+    expect(() => assertPlanStepCanComplete(plan, { ...checkpoint, status: "draft" }, "step_1")).toThrow(PlanStateError)
+    expect(() => assertPlanStepCanComplete(plan, {
+      ...checkpoint,
+      stepStatuses: { step_1: "pending", step_2: "pending" },
+    }, "step_1")).toThrow(PlanStateError)
+  })
+
+  test("plan cleanup reports filesystem issues without throwing", async () => {
+    const root = await tmpdir()
+    try {
+      const notDirectory = path.join(root, "not-a-directory")
+      await Bun.write(notDirectory, "not a directory")
+      const issues: Array<{ operation: string; dir: string; error: string }> = []
+
+      expect(() => cleanupOldPlans(notDirectory, (issue) => issues.push(issue))).not.toThrow()
+
+      expect(issues).toHaveLength(1)
+      expect(issues[0]).toMatchObject({ operation: "readdir", dir: notDirectory })
+      expect(issues[0].error.length).toBeGreaterThan(0)
     } finally {
       await rm(root, { recursive: true, force: true })
     }

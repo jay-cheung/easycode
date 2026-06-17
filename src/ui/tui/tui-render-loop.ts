@@ -35,6 +35,8 @@ export function drawStatusPanel(input: RenderLoopDeps) {
     statusText: input.state.statusText,
     queuedPrompt: input.state.queuedPrompt,
     metrics: input.state.metrics,
+    activePlan: input.state.activePlan,
+    gitDiffStats: input.state.gitDiffStats,
   })
   const snapshot = lines.join("\n")
   if (snapshot === input.lastPanelSnapshot && input.state.panelDrawnLines > 0) return input.lastPanelSnapshot

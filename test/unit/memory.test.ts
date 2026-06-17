@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
 import { ProjectMemoryStore, renderProjectMemoryRecall, shouldAutoRecallProjectMemory } from "../../src/memory"
+import { backupPath } from "../../src/storage"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-memory-"))
@@ -50,6 +51,40 @@ describe("project memory", () => {
     expect(filtered).toEqual([
       expect.objectContaining({ kind: "preference", text: "Use Chinese for user-facing updates in this repo." }),
     ])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("recovers from a backup when memory json is corrupted", async () => {
+    const root = await tmpdir()
+    const store = new ProjectMemoryStore(root)
+    const first = await store.add({
+      kind: "repo_fact",
+      text: "The stable memory snapshot survives corruption.",
+      tags: ["recovery"],
+    })
+    await store.add({
+      kind: "repo_fact",
+      text: "The latest primary record can be rebuilt after recovery.",
+      tags: ["recovery"],
+    })
+    await Bun.write(store.filePath, "{")
+
+    const recovered = await new ProjectMemoryStore(root).list()
+
+    expect(recovered).toEqual([
+      expect.objectContaining({ id: first.id, text: "The stable memory snapshot survives corruption." }),
+    ])
+    expect(await Bun.file(backupPath(store.filePath)).exists()).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("does not silently reset corrupted memory without a backup", async () => {
+    const root = await tmpdir()
+    const store = new ProjectMemoryStore(root)
+    await mkdir(path.dirname(store.filePath), { recursive: true })
+    await Bun.write(store.filePath, "{")
+
+    await expect(store.list()).rejects.toThrow("Project memory is not valid JSON")
     await rm(root, { recursive: true, force: true })
   })
 

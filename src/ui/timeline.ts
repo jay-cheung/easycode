@@ -41,6 +41,7 @@ export type SubagentUiInfo = {
   effort?: ReasoningEffort
   maxProviderCalls: number
   maxOutputTokens?: number
+  timeoutMs?: number
 }
 
 export type RunUiEvent =

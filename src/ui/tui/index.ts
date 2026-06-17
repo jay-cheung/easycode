@@ -8,6 +8,7 @@ import { TuiState } from "./tui-state"
 import { spinnerFrames } from "./tui-status-panel"
 import { drawStatusPanel, eraseStatusPanel, renderFailureSummary, renderSuccessSummary, renderWelcomeDashboard, writeTextWithPanel, writeTimelineText } from "./tui-render-loop"
 import type { TuiContext, TuiGoalContext, Writable } from "./tui-types"
+import { loadStructuredPlanState } from "../../plans"
 
 class TuiWritable implements Writable {
   constructor(private readonly renderer: TuiRenderer) {}
@@ -38,6 +39,8 @@ export class TuiRenderer {
   private pendingFailureText: string | undefined = undefined
   private providerCallCount = 0
   private currentProviderPhaseKey = ""
+  private isRefreshingStats = false
+  private lastGitRefreshedTime = 0
 
   getPausedForPrompt() {
     return this.state.pausedForPrompt
@@ -89,6 +92,7 @@ export class TuiRenderer {
 
   setGoal(goal: TuiGoalContext | undefined) {
     this.context = { ...this.context, goal }
+    this.refreshActivePlanAndGitStats()
     if (this.state.shouldRenderPanel()) {
       this.lastPanelSnapshot = ""
       this.drawStatusPanel()
@@ -163,6 +167,7 @@ export class TuiRenderer {
       this.state.setStatus(copy.statusRunningTool(event.toolName, formatDuration(event.elapsedMs)), `tool:${event.callID}:progress`)
     } else if (event.type === "tool_result") {
       this.state.setStatus(copy.statusToolCompleted(event.toolName), `tool:${event.callID}:result`)
+      this.refreshActivePlanAndGitStats()
     } else if (event.type === "repo_map") {
       this.state.setStatus(copy.statusRepoMap(event.status), `repo_map:${event.status}`)
     } else if (event.type === "provider_metrics") {
@@ -343,6 +348,7 @@ export class TuiRenderer {
     this.stopSpinnerTimer()
     this.spinnerTimer = setInterval(() => {
       this.state.tickSpinner(spinnerFrames().length)
+      this.refreshActivePlanAndGitStats()
       if (this.state.shouldRenderPanel()) {
         this.drawStatusPanel()
         this.state.panelDirty = false
@@ -389,4 +395,78 @@ export class TuiRenderer {
   private renderLateSubagentSummary(role: string, metrics: NonNullable<Extract<RunUiEvent, { type: "subagent" }>["metrics"]>) {
     this.output.write(`\n${buildSubagentUsageCard(this.getLanguage(), role, metrics, this.getColumns())}\n`)
   }
+
+  private async refreshActivePlanAndGitStats() {
+    if (this.isRefreshingStats) return
+    this.isRefreshingStats = true
+
+    try {
+      const now = Date.now()
+
+      // 1. Refresh plan state
+      const goal = this.context.goal
+      if (goal && goal.activePlanId) {
+        const planId = goal.activePlanId
+        const sessionId = this.context.session ?? "once"
+        const stored = await loadStructuredPlanState(this.context.root, sessionId, planId)
+        if (stored && this.context.goal?.activePlanId === planId) {
+          this.state.activePlan = stored
+        }
+      } else {
+        this.state.activePlan = undefined
+      }
+
+      // 2. Refresh git stats (at most once every 2s)
+      if (now - this.lastGitRefreshedTime > 2000) {
+        this.lastGitRefreshedTime = now
+        const stats = await getGitDiffStats(this.context.root)
+        if (this.context.goal) {
+          this.state.gitDiffStats = stats
+        }
+      }
+
+      // Redraw if the panel is currently shown
+      if (this.state.shouldRenderPanel()) {
+        this.drawStatusPanel()
+      }
+    } catch {
+      // ignore
+    } finally {
+      this.isRefreshingStats = false
+    }
+  }
 }
+
+async function getGitDiffStats(cwd: string): Promise<{ filesChanged: number; insertions: number; deletions: number } | undefined> {
+  try {
+    let proc = Bun.spawn(["git", "diff", "HEAD", "--numstat"], { cwd, stdout: "pipe", stderr: "pipe" })
+    let stdout = await new Response(proc.stdout).text()
+    let exitCode = await proc.exited
+
+    if (exitCode !== 0) {
+      // Fallback if HEAD does not exist (e.g. new repo)
+      proc = Bun.spawn(["git", "diff", "--numstat"], { cwd, stdout: "pipe", stderr: "pipe" })
+      stdout = await new Response(proc.stdout).text()
+      await proc.exited
+    }
+
+    const lines = stdout.split(/\r?\n/)
+    let filesChanged = 0
+    let insertions = 0
+    let deletions = 0
+    for (const line of lines) {
+      const parts = line.trim().split(/\s+/)
+      if (parts.length >= 3) {
+        filesChanged++
+        const ins = parseInt(parts[0], 10)
+        const del = parseInt(parts[1], 10)
+        if (!isNaN(ins)) insertions += ins
+        if (!isNaN(del)) deletions += del
+      }
+    }
+    return { filesChanged, insertions, deletions }
+  } catch {
+    return undefined
+  }
+}
+

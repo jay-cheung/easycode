@@ -6,7 +6,8 @@ import { ContextManager, estimateMessages, type LedgerRecord } from "../../src/c
 import { ProjectMemoryStore } from "../../src/memory"
 import { textMessage, toolCallMessage, toolResultMessage } from "../../src/message"
 import { planStoreDir } from "../../src/plans"
-import { safeSessionID, SessionStore } from "../../src/session"
+import { safeSessionID, sessionDataVersion, SessionStore } from "../../src/session"
+import { backupPath } from "../../src/storage"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-session-"))
@@ -21,6 +22,8 @@ describe("session store", () => {
     context.add(textMessage("assistant", "hi"))
     await store.save("demo", context)
 
+    const raw = JSON.parse(await Bun.file(path.join(store.dir, "demo.json")).text())
+    expect(raw.version).toBe(sessionDataVersion)
     const restored = await store.context("demo")
     expect(restored.state.messages.map((message) => message.role)).toEqual(["user", "assistant"])
     expect(restored.state.messages[0].parts[0]).toMatchObject({ type: "text", text: "hello" })
@@ -39,6 +42,72 @@ describe("session store", () => {
       { id: "new", file: "new.json", messageCount: 2, updatedAt: 200 },
       { id: "old", file: "old.json", messageCount: 1, updatedAt: 100 },
     ])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("loads legacy unversioned sessions through the v1 migration boundary", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    await mkdir(store.dir, { recursive: true })
+    await Bun.write(path.join(store.dir, "legacy.json"), JSON.stringify({
+      id: "legacy",
+      messages: [textMessage("user", "legacy hello")],
+      updatedAt: 123,
+    }, null, 2))
+
+    const loaded = await store.load("legacy")
+
+    expect(loaded?.version).toBe(sessionDataVersion)
+    expect(loaded?.messages[0].parts[0]).toMatchObject({ type: "text", text: "legacy hello" })
+    expect(await store.list()).toMatchObject([{ id: "legacy", messageCount: 1, updatedAt: 123 }])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("rejects unsupported future session versions", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    await mkdir(store.dir, { recursive: true })
+    await Bun.write(path.join(store.dir, "future.json"), JSON.stringify({
+      version: sessionDataVersion + 1,
+      id: "future",
+      messages: [textMessage("user", "future hello")],
+      updatedAt: 999,
+    }, null, 2))
+
+    expect(await store.load("future")).toBeUndefined()
+    expect(await store.list()).toEqual([])
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("recovers a session from backup when the primary json is corrupted", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    const firstContext = new ContextManager()
+    firstContext.add(textMessage("user", "stable message"))
+    await store.save("demo", firstContext)
+
+    const secondContext = new ContextManager()
+    secondContext.add(textMessage("user", "latest message"))
+    await store.save("demo", secondContext)
+
+    const sessionFile = path.join(store.dir, "demo.json")
+    await Bun.write(sessionFile, "{")
+
+    const restored = await new SessionStore(root).load("demo")
+
+    expect(restored?.messages[0].parts[0]).toMatchObject({ type: "text", text: "stable message" })
+    expect(await Bun.file(backupPath(sessionFile)).exists()).toBe(true)
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("returns undefined for corrupted sessions without a backup", async () => {
+    const root = await tmpdir()
+    const store = new SessionStore(root)
+    await mkdir(store.dir, { recursive: true })
+    await Bun.write(path.join(store.dir, "demo.json"), "{")
+
+    expect(await store.load("demo")).toBeUndefined()
+    expect((await store.list()).map((session) => session.id)).not.toContain("demo")
     await rm(root, { recursive: true, force: true })
   })
 

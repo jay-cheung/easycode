@@ -75,4 +75,5 @@ export const DelegateSubagentInput = z.object({
   role: z.enum(["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"]),
   task: z.string(),
   success_criteria: z.string().optional(),
+  timeoutMs: z.number().optional(),
 })

@@ -1,6 +1,6 @@
 import path from "node:path"
-import { mkdir } from "node:fs/promises"
 import { easycodeDir } from "./easycode-path"
+import { loadJsonWithBackup, writeJsonAtomically } from "./storage"
 
 export type ProjectMemoryKind = "note" | "session_archive" | "preference" | "repo_fact" | "failure_pattern" | "successful_workflow" | "task_state"
 export type ProjectMemoryPromotableKind = Exclude<ProjectMemoryKind, "note" | "session_archive" | "task_state">
@@ -119,15 +119,15 @@ export class ProjectMemoryStore {
   }
 
   private async load(): Promise<ProjectMemoryData> {
-    const file = Bun.file(this.filePath)
-    if (!(await file.exists())) return { version: 1, records: [] }
-    const parsed = JSON.parse(await file.text()) as Partial<ProjectMemoryData>
+    const loaded = await loadJsonWithBackup<Partial<ProjectMemoryData>>(this.filePath)
+    if (loaded.source === "missing") return { version: 1, records: [] }
+    if (!loaded.data) throw new Error(`Project memory is not valid JSON: ${this.filePath}`)
+    const parsed = loaded.data
     return { version: 1, records: Array.isArray(parsed.records) ? parsed.records.flatMap(parseMemoryRecord) : [] }
   }
 
   private async save(data: ProjectMemoryData) {
-    await mkdir(path.dirname(this.filePath), { recursive: true })
-    await Bun.write(this.filePath, `${JSON.stringify(data, null, 2)}\n`)
+    await writeJsonAtomically(this.filePath, data)
   }
 }
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, FakeProvider, hasProvider, listProviders, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, StreamXmlFilter, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
+import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, diagnoseProviderReadiness, FakeProvider, hasProvider, listProviders, missingProviderEnv, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, StreamXmlFilter, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, requiredProviderEnv, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
 import { createMessage, imagePart, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
 import type { Provider, ProviderEvent } from "../../src/provider"
@@ -79,6 +79,30 @@ describe("provider", () => {
     expect(createProvider("fake")).toBeInstanceOf(FakeProvider)
     expect(() => registerProvider("fake", () => new FakeProvider())).toThrow("Provider already registered")
     expect(() => createProvider("missing")).toThrow("Unknown provider")
+  })
+
+  test("provider readiness reports registration and environment diagnostics without streaming", () => {
+    expect(requiredProviderEnv("openai-compatible")).toEqual(["OPENAI_COMPAT_API_KEY", "OPENAI_COMPAT_API_URL"])
+    expect(missingProviderEnv("openai", {})).toEqual(["OPENAI_API_KEY"])
+
+    expect(diagnoseProviderReadiness("fake", {})).toMatchObject({
+      provider: "fake",
+      status: "ready",
+      registered: true,
+      missingEnv: [],
+      capabilities: { apiStyle: "local" },
+    })
+    expect(diagnoseProviderReadiness("openai", {})).toMatchObject({
+      provider: "openai",
+      status: "missing_env",
+      registered: true,
+      missingEnv: ["OPENAI_API_KEY"],
+    })
+    expect(diagnoseProviderReadiness("missing", {})).toMatchObject({
+      provider: "missing",
+      status: "unknown_provider",
+      registered: false,
+    })
   })
 
   test("maps assistant history to Responses output content", () => {

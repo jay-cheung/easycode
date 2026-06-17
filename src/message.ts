@@ -51,29 +51,124 @@ export type ToolInvocation = {
 }
 
 let idCounter = 0
+const messageRoles = new Set<MessageRole>(["system", "user", "assistant", "tool"])
+const toolCallStatuses = new Set<ToolCallStatus>(["pending", "running", "succeeded", "failed", "denied"])
+const toolResultStatuses = new Set<ToolResultPart["status"]>(["succeeded", "failed", "denied"])
 
 export function createID(prefix: string) {
   idCounter += 1
   return `${prefix}_${Date.now().toString(36)}_${idCounter.toString(36)}`
 }
 
+function requireString(value: unknown, label: string) {
+  if (typeof value !== "string") throw new Error(`${label} must be a string`)
+  return value
+}
+
+function normalizeMessages(messages: Message[]) {
+  if (!Array.isArray(messages)) return []
+  return messages.flatMap((message) => {
+    const normalized = normalizeMessage(message)
+    return normalized ? [normalized] : []
+  })
+}
+
+function normalizeMessage(message: unknown): Message | undefined {
+  if (!isRecord(message)) return undefined
+  if (!messageRoles.has(message.role as MessageRole)) return undefined
+  const originalParts = message.parts
+  const normalizedParts = normalizeMessageParts(originalParts)
+  if (typeof message.id === "string" &&
+    message.id &&
+    typeof message.createdAt === "number" &&
+    Number.isFinite(message.createdAt) &&
+    Array.isArray(originalParts) &&
+    normalizedParts.length === originalParts.length &&
+    normalizedParts.every((part, index) => part === originalParts[index])) {
+    return message as Message
+  }
+  return {
+    id: typeof message.id === "string" && message.id ? message.id : createID("msg"),
+    role: message.role as MessageRole,
+    parts: normalizedParts,
+    createdAt: typeof message.createdAt === "number" && Number.isFinite(message.createdAt) ? message.createdAt : Date.now(),
+  }
+}
+
+function normalizeMessageParts(parts: unknown): MessagePart[] {
+  if (!Array.isArray(parts)) return []
+  return parts.flatMap(normalizeMessagePart)
+}
+
+function normalizeMessagePart(part: unknown): MessagePart[] {
+  if (!isRecord(part)) return []
+  if (part.type === "text" && typeof part.text === "string") return [part as TextPart]
+  if (part.type === "reasoning" && typeof part.text === "string") return [part as ReasoningPart]
+  if (part.type === "summary" && typeof part.text === "string") return [part as SummaryPart]
+  if (part.type === "image" && isImageSource(part.source)) return [part as ImagePart]
+  if (part.type === "tool_call" && isToolCall(part.call)) {
+    const status = toolCallStatuses.has(part.status as ToolCallStatus) ? part.status as ToolCallStatus : "pending"
+    if (status === part.status) return [part as ToolCallPart]
+    return [{ type: "tool_call", call: part.call, status }]
+  }
+  if (part.type === "tool_result" &&
+    typeof part.callID === "string" &&
+    typeof part.toolName === "string" &&
+    typeof part.output === "string" &&
+    toolResultStatuses.has(part.status as ToolResultPart["status"])) {
+    if (isRecord(part.metadata)) return [part as ToolResultPart]
+    return [{
+      type: "tool_result",
+      callID: part.callID,
+      toolName: part.toolName,
+      status: part.status as ToolResultPart["status"],
+      output: part.output,
+      metadata: isRecord(part.metadata) ? part.metadata : {},
+    }]
+  }
+  return []
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object")
+}
+
+function isToolCall(value: unknown): value is ToolCall {
+  if (!isRecord(value)) return false
+  if (typeof value.id !== "string" || !value.id) return false
+  if (typeof value.name !== "string" || !value.name) return false
+  if (value.rawArguments !== undefined && typeof value.rawArguments !== "string") return false
+  if (value.reasoningContent !== undefined && typeof value.reasoningContent !== "string") return false
+  return true
+}
+
+function isImageSource(value: unknown): value is ImageSource {
+  if (!isRecord(value)) return false
+  if (value.type === "path") return typeof value.path === "string" && typeof value.mimeType === "string"
+  if (value.type === "url") return typeof value.url === "string" && (value.mimeType === undefined || typeof value.mimeType === "string")
+  return false
+}
+
 export function textPart(text: string): TextPart {
-  return { type: "text", text }
+  return { type: "text", text: requireString(text, "text part") }
 }
 
 export function reasoningPart(text: string): ReasoningPart {
-  return { type: "reasoning", text }
+  return { type: "reasoning", text: requireString(text, "reasoning part") }
 }
 
 export function imagePart(source: ImageSource): ImagePart {
+  if (!isImageSource(source)) throw new Error("image part requires a valid image source")
   return { type: "image", source }
 }
 
 export function summaryPart(text: string): SummaryPart {
-  return { type: "summary", text }
+  return { type: "summary", text: requireString(text, "summary part") }
 }
 
 export function toolCallPart(call: ToolCall, status: ToolCallStatus = "pending"): ToolCallPart {
+  if (!isToolCall(call)) throw new Error("tool call part requires a valid tool call")
+  if (!toolCallStatuses.has(status)) throw new Error(`tool call part has invalid status: ${String(status)}`)
   return { type: "tool_call", call, status }
 }
 
@@ -84,18 +179,26 @@ export function toolResultPart(input: {
   output: string
   metadata?: Record<string, unknown>
 }): ToolResultPart {
+  const callID = requireString(input.callID, "tool result callID")
+  const toolName = requireString(input.toolName, "tool result toolName")
+  const output = requireString(input.output, "tool result output")
+  if (!toolResultStatuses.has(input.status)) throw new Error(`tool result has invalid status: ${String(input.status)}`)
   return {
     type: "tool_result",
-    callID: input.callID,
-    toolName: input.toolName,
+    callID,
+    toolName,
     status: input.status,
-    output: input.output,
-    metadata: input.metadata ?? {},
+    output,
+    metadata: isRecord(input.metadata) ? input.metadata : {},
   }
 }
 
 export function createMessage(role: MessageRole, parts: MessagePart[], id = createID("msg")): Message {
-  return { id, role, parts, createdAt: Date.now() }
+  if (!messageRoles.has(role)) throw new Error(`message role is invalid: ${String(role)}`)
+  if (!Array.isArray(parts)) throw new Error("message parts must be an array")
+  const normalizedParts = normalizeMessageParts(parts)
+  if (normalizedParts.length !== parts.length) throw new Error("message parts contain invalid entries")
+  return { id: requireString(id, "message id"), role, parts: normalizedParts, createdAt: Date.now() }
 }
 
 export function textMessage(role: MessageRole, text: string, id?: string): Message {
@@ -103,6 +206,8 @@ export function textMessage(role: MessageRole, text: string, id?: string): Messa
 }
 
 export function userMessage(text: string, images: ImagePart[] = [], id?: string): Message {
+  requireString(text, "user message text")
+  if (!Array.isArray(images)) throw new Error("user message images must be an array")
   const parts: MessagePart[] = []
   if (text) parts.push(textPart(text))
   parts.push(...images)
@@ -153,16 +258,18 @@ function protectedReadPath(input: unknown) {
 }
 
 export function redactProtectedMessages(messages: Message[]): Message[] {
+  const normalized = normalizeMessages(messages)
   const protectedCallIDs = new Set<string>()
-  for (const message of messages) {
+  for (const message of normalized) {
     for (const part of message.parts) {
       if (part.type === "tool_call" && part.call.name === "read" && protectedReadPath(part.call.input)) protectedCallIDs.add(part.call.id)
     }
   }
-  return messages.map((message) => redactProtectedMessage(message, protectedCallIDs))
+  return normalized.map((message) => redactProtectedMessage(message, protectedCallIDs))
 }
 
 export function validProviderMessageSuffix(messages: Message[]) {
+  messages = normalizeMessages(messages)
   let start = 0
   while (start < messages.length && messages[start].role === "tool") start += 1
   return stripUnpairedToolExchanges(messages.slice(start))
@@ -223,10 +330,11 @@ export function redactProtectedMessage(message: Message, protectedCallIDs = new 
 }
 
 export function canonicalizeHistoryMessages(messages: Message[]) {
-  return messages.map((message) => canonicalizeHistoryMessage(message))
+  return normalizeMessages(messages).map((message) => canonicalizeHistoryMessage(message))
 }
 
 export function canonicalizeHistoryMessage(message: Message): Message {
+  message = normalizeMessage(message) ?? createMessage("assistant", [])
   const parts = message.parts.map((part) => canonicalizeHistoryPart(message.role, part))
   if (parts.every((part, index) => part === message.parts[index])) return message
   return { ...message, parts }
@@ -504,18 +612,22 @@ export function messageToText(message: Message, options: MessageTextOptions = {}
 }
 
 export function messagesToProviderInput(messages: Message[], options: MessageTextOptions = {}): ProviderInputMessage[] {
+  messages = normalizeMessages(messages)
   return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: providerParts(message, options) }))
 }
 
 export function toolResults(messages: Message[]) {
+  messages = normalizeMessages(messages)
   return messages.flatMap((message) => message.parts.filter((part): part is ToolResultPart => part.type === "tool_result"))
 }
 
 export function toolCalls(messages: Message[]) {
+  messages = normalizeMessages(messages)
   return messages.flatMap((message) => message.parts.filter((part): part is ToolCallPart => part.type === "tool_call"))
 }
 
 export function toolInvocations(messages: Message[]): ToolInvocation[] {
+  messages = normalizeMessages(messages)
   const calls = new Map<string, ToolInvocation>()
   const ordered: ToolInvocation[] = []
   for (const message of messages) {

@@ -3,8 +3,16 @@ import { mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs"
 import { easycodeDir } from "./easycode-path"
 
 const MAX_PLANS_PER_SESSION = 20
+export const maxPlanStepTimeoutMs = 30 * 60 * 1000
 export const intermediatePlanStepReportMaxChars = 240
 export const intermediatePlanStepReportMaxLines = 4
+
+export type PlanCleanupIssue = {
+  dir: string
+  operation: "readdir" | "stat" | "unlink"
+  filePath?: string
+  error: string
+}
 
 export function planStoreDir(root: string, sessionId: string): string {
   return path.join(easycodeDir(root), "plans", safePlanSegment(sessionId))
@@ -14,20 +22,37 @@ export function safePlanSegment(input: string): string {
   return input.replace(/[^a-zA-Z0-9._-]/g, "_")
 }
 
-function cleanupOldPlans(dir: string): void {
+export function cleanupOldPlans(dir: string, onIssue?: (issue: PlanCleanupIssue) => void): void {
+  let names: string[]
   try {
-    const files = readdirSync(dir)
-      .filter((f) => f.endsWith(".md"))
-      .map((f) => ({ name: f, mtime: statSync(path.join(dir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime)
-    if (files.length > MAX_PLANS_PER_SESSION) {
-      for (const file of files.slice(MAX_PLANS_PER_SESSION)) {
-        unlinkSync(path.join(dir, file.name))
-      }
-    }
-  } catch {
-    /* cleanup failure should not block the user */
+    names = readdirSync(dir)
+  } catch (error) {
+    onIssue?.({ dir, operation: "readdir", error: errorMessage(error) })
+    return
   }
+  const files: Array<{ name: string; mtime: number }> = []
+  for (const name of names) {
+    if (!name.endsWith(".md")) continue
+    const filePath = path.join(dir, name)
+    try {
+      files.push({ name, mtime: statSync(filePath).mtimeMs })
+    } catch (error) {
+      onIssue?.({ dir, operation: "stat", filePath, error: errorMessage(error) })
+    }
+  }
+  files.sort((a, b) => b.mtime - a.mtime)
+  for (const file of files.slice(MAX_PLANS_PER_SESSION)) {
+    const filePath = path.join(dir, file.name)
+    try {
+      unlinkSync(filePath)
+    } catch (error) {
+      onIssue?.({ dir, operation: "unlink", filePath, error: errorMessage(error) })
+    }
+  }
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error)
 }
 
 export function stripPlanTags(text: string): string {
@@ -70,6 +95,7 @@ export interface PlanStep {
   id: string
   goal: string
   kind: PlanStepKind
+  timeoutMs?: number
   executorHint?: PlanStepExecutorHint
   subagentRole?: "summary" | "explorer" | "reviewer" | "debugger" | "tester" | "docs_researcher"
   delegationPolicy?: PlanStepDelegationPolicy
@@ -111,6 +137,13 @@ export class InvalidExecutionPlanError extends Error {
   constructor(message: string) {
     super(message)
     this.name = "InvalidExecutionPlanError"
+  }
+}
+
+export class PlanStateError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "PlanStateError"
   }
 }
 
@@ -184,6 +217,7 @@ function normalizePlanStep(input: unknown, index: number): PlanStep {
   const dependsOn = normalizeStringArray(raw.dependsOn)
   const doneWhen = typeof raw.doneWhen === "string" ? raw.doneWhen.trim() : ""
   const fallback = typeof raw.fallback === "string" ? raw.fallback.trim() : ""
+  const timeoutMs = normalizePlanStepTimeoutMs(raw.timeoutMs)
   const explicitExecutorHint = normalizeExecutorHint(raw.executorHint)
   const inferredSubagentRole = explicitExecutorHint === "main"
     ? undefined
@@ -197,6 +231,7 @@ function normalizePlanStep(input: unknown, index: number): PlanStep {
     id,
     goal,
     kind,
+    ...(timeoutMs ? { timeoutMs } : {}),
     ...(executorHint ? { executorHint } : {}),
     ...(subagentRole ? { subagentRole } : {}),
     ...(delegationPolicy ? { delegationPolicy } : {}),
@@ -205,6 +240,11 @@ function normalizePlanStep(input: unknown, index: number): PlanStep {
     ...(doneWhen ? { doneWhen } : {}),
     ...(fallback ? { fallback } : {}),
   }
+}
+
+function normalizePlanStepTimeoutMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined
+  return Math.min(Math.round(value), maxPlanStepTimeoutMs)
 }
 
 function normalizePlanStepKind(value: unknown): PlanStepKind {
@@ -287,6 +327,29 @@ export function nextIncompletePlanStep(plan: ExecutionPlan, stepStatuses: Record
     if ((step.dependsOn ?? []).every((dependency) => stepStatuses[dependency] === "completed")) return step
   }
   return undefined
+}
+
+export function assertPlanStepCanComplete(plan: ExecutionPlan, checkpoint: PlanCheckpoint, stepId: string): PlanStep {
+  const step = plan.steps.find((candidate) => candidate.id === stepId)
+  if (!step) throw new PlanStateError(`Plan step '${stepId}' does not exist in plan '${plan.id}'.`)
+  if (checkpoint.status !== "running") {
+    throw new PlanStateError(`Plan '${plan.id}' is ${checkpoint.status}; only running plans can complete steps.`)
+  }
+  if (!checkpoint.currentStepId) {
+    throw new PlanStateError(`Plan '${plan.id}' has no active step to complete.`)
+  }
+  if (checkpoint.currentStepId !== stepId) {
+    throw new PlanStateError(`Plan '${plan.id}' active step mismatch: ledger=${stepId}, checkpoint=${checkpoint.currentStepId}.`)
+  }
+  const stepStatus = checkpoint.stepStatuses[stepId] ?? "pending"
+  if (stepStatus !== "running") {
+    throw new PlanStateError(`Plan step '${stepId}' is ${stepStatus}; only running steps can be completed.`)
+  }
+  const blockedDependency = (step.dependsOn ?? []).find((dependency) => checkpoint.stepStatuses[dependency] !== "completed")
+  if (blockedDependency) {
+    throw new PlanStateError(`Plan step '${stepId}' cannot complete before dependency '${blockedDependency}' is completed.`)
+  }
+  return step
 }
 
 export function planStepReportLineCount(report: string) {
@@ -451,6 +514,9 @@ export function renderPlanToMarkdown(plan: ExecutionPlan): string {
     }
     if (step.dependsOn && step.dependsOn.length > 0) {
       lines.push(`- **Depends On**: ${step.dependsOn.join(", ")}`)
+    }
+    if (step.timeoutMs) {
+      lines.push(`- **Timeout**: ${step.timeoutMs}ms`)
     }
     if (step.doneWhen) {
       lines.push(`- **Done When**: ${step.doneWhen}`)

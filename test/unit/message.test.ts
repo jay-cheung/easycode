@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { canonicalizeAssistantHistory, canonicalizeHistoryMessage, createMessage, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, validProviderMessageSuffix } from "../../src/message"
+import { canonicalizeAssistantHistory, canonicalizeHistoryMessage, createMessage, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, userMessage, validProviderMessageSuffix, type Message } from "../../src/message"
 
 describe("message", () => {
   test("converts text and tool parts", () => {
@@ -12,6 +12,27 @@ describe("message", () => {
     expect(provider[0].content).toBe("hi")
     expect(provider[1].content).toContain("tool_call")
     expect(provider[2].content).toContain("tool_result")
+  })
+
+  test("message factories reject malformed runtime inputs", () => {
+    expect(() => textMessage("user", undefined as unknown as string)).toThrow("text part must be a string")
+    expect(() => userMessage(null as unknown as string)).toThrow("user message text must be a string")
+    expect(() => toolCallMessage({ id: "", name: "read", input: {} })).toThrow("tool call part requires a valid tool call")
+    expect(() => toolResultMessage({ callID: "call_1", toolName: "read", status: "succeeded", output: undefined as unknown as string })).toThrow("tool result output must be a string")
+    expect(() => createMessage("assistant", [{ type: "text", text: undefined as unknown as string }])).toThrow("message parts contain invalid entries")
+  })
+
+  test("provider suffix normalization tolerates malformed historical messages", () => {
+    const suffix = validProviderMessageSuffix([
+      { id: "bad_user", role: "user", createdAt: 1 } as unknown as Message,
+      toolCallMessage({ id: "call_orphan", name: "read", input: { filePath: "a.ts" } }),
+      { id: "bad_tool", role: "tool", parts: undefined, createdAt: 2 } as unknown as Message,
+      { id: "bad_role", role: "unknown", parts: [], createdAt: 3 } as unknown as Message,
+      textMessage("assistant", "still usable"),
+    ])
+
+    expect(suffix.map((message) => message.role)).toEqual(["user", "assistant"])
+    expect(messagesToProviderInput(suffix).map((message) => message.content)).toEqual(["", "still usable"])
   })
 
   test("drops tool results that appear before a later matching tool call", () => {

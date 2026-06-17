@@ -11,6 +11,18 @@
 - `.env*` defaults to ask.
 - `secrets/**` defaults to deny.
 - The macOS native write sandbox also allows `/tmp`, `/private/tmp`, `/dev/null`, `/private/dev/null`, and the current session's per-user temp/cache root under `var/folders` for ordinary scratch I/O.
+- Tool-level path boundary checks still run even when the native write sandbox is unavailable.
+- Explicit `~/...`, absolute paths, Windows-style absolute paths, and `..` traversal references are resolved before boundary decisions.
+
+## Sandbox Platform Matrix
+| Platform | Native write sandbox | Path boundary check | Result metadata |
+| --- | --- | --- | --- |
+| macOS with `/usr/bin/sandbox-exec` | enabled for shell execution | always enabled | `nativeWriteSandbox=true`, `sandboxBypassed=false` |
+| macOS without `sandbox-exec` | unavailable | always enabled | `sandboxBypassed=true` |
+| Linux | unavailable until a Linux backend is added | always enabled | `sandboxBypassed=true` |
+| Windows | unavailable until a Windows backend is added | always enabled | `sandboxBypassed=true` |
+
+When `sandboxBypassed=true`, EasyCode must treat native write containment as unavailable and rely on path-boundary checks, permission rules, hard-denied command rules, and command-review.
 
 ## Bash
 - Default timeout is 120 seconds.
@@ -31,9 +43,17 @@
 ## Context
 - Token count is estimated with a local mixed-language heuristic: CJK characters count as 0.6 tokens and other characters count as 0.3 tokens.
 - Compaction triggers above `maxTokens * 0.75`.
-- Compaction asks the provider to generate a summary with the compact prompt, then preserves that summary plus the latest 3 complete user turns by default.
+- Compaction asks the provider to generate a summary with the compact prompt. If the provider summary fails, EasyCode writes a local fallback summary containing the failure and a bounded transcript excerpt, then still applies the compaction snapshot.
+- Compaction preserves the summary plus the latest 3 complete user turns by default.
 - The compaction contract must retain the current user requirement, a traceable direct user-input snippet, and the active capability surface (for example selected skills, MCP usage, connectors, or web-search engine) when they matter for continuation.
 
 ## Provider
 - Network/auth/rate-limit/overflow errors become `ProviderError` or tool feedback.
 - Fake provider is deterministic and does not use network.
+- Provider readiness diagnostics are local first: unknown provider names or missing required environment variables can fail/skip before smoke evals. Real network reachability is still validated by provider gate smoke checks.
+
+## Plan and Subagent Timeouts
+- `PlanStep.timeoutMs` is optional and capped at 30 minutes.
+- `delegate_subagent.timeoutMs` is optional and capped at 30 minutes.
+- An explicit subagent timeout overrides the active assigned plan-step timeout.
+- Timed-out subagents return failed tool metadata with `error="subagent_timeout"` and a retryable handoff summary.

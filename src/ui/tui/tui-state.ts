@@ -1,5 +1,6 @@
 import type { SubagentRole } from "../../agent/types"
 import type { ProviderRunMetrics } from "../timeline"
+import type { StoredExecutionPlan } from "../../plans"
 
 export type TuiUsageTotals = {
   inputTokens: number
@@ -35,6 +36,8 @@ export class TuiState {
   metrics: ProviderRunMetrics | undefined = undefined
   subagentUsage: TuiUsageTotals = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, cacheHitTokens: 0, cacheMissTokens: 0, roleCounts: {} }
   queuedPrompt: string | undefined = undefined
+  activePlan: StoredExecutionPlan | undefined = undefined
+  gitDiffStats: { filesChanged: number; insertions: number; deletions: number } | undefined = undefined
 
   beginRun(statusText: string) {
     const now = Date.now()
@@ -50,6 +53,8 @@ export class TuiState {
     this.phaseKey = "run:initializing"
     this.phaseElapsedStart = now
     this.phaseElapsedMs = 0
+    this.activePlan = undefined
+    this.gitDiffStats = undefined
   }
 
   beginStreaming(statusText: string) {

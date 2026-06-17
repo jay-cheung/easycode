@@ -96,6 +96,8 @@ describe("sandbox", () => {
     const outside = "/var/easycode-outside.txt"
     const sandbox = new Sandbox(root)
     await expect(sandbox.execute({ command: `printf x > ${outside}` })).rejects.toThrow(SandboxPathEscapeError)
+    await expect(sandbox.execute({ command: "cat ~/easycode-outside.txt" })).rejects.toThrow(SandboxPathEscapeError)
+    await expect(sandbox.execute({ command: "printf x --output=/var/easycode-outside.txt" })).rejects.toThrow(SandboxPathEscapeError)
     expect(await Bun.file(outside).exists()).toBe(false)
     await rm(root, { recursive: true, force: true })
   })

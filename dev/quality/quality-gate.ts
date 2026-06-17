@@ -280,12 +280,14 @@ export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean
   const insecure = applyTlsCliOverrides(argv)
   const provider = valueAfter(argv, "--provider")
   const providers = valueAfter(argv, "--providers")
+  const checks = valueAfter(argv, "--checks")
   const apixIDs = valueAfter(argv, "--apix-ids")
   const smokeTaskIDs = valueAfter(argv, "--smoke-ids")
   const parsedProviders = provider ? [provider] : providers ? splitCSV(providers) : undefined
   return {
     root: valueAfter(argv, "--root"),
     reportDir: valueAfter(argv, "--report-dir"),
+    checks: checks ? parseChecks(checks) : undefined,
     providers: parsedProviders as ProviderName[] | undefined,
     smokeTaskIDs: smokeTaskIDs ? splitCSV(smokeTaskIDs) : undefined,
     apixIDs: apixIDs ? splitCSV(apixIDs) : undefined,
@@ -295,6 +297,14 @@ export function parseArgs(argv: string[]): QualityGateOptions & { json?: boolean
     insecure,
     json: argv.includes("--json"),
   }
+}
+
+function parseChecks(value: string): QualityGateCheckName[] {
+  const allowed = new Set<QualityGateCheckName>(plannedChecks())
+  const checks = splitCSV(value)
+  const unknown = checks.filter((check): check is string => !allowed.has(check as QualityGateCheckName))
+  if (unknown.length > 0) throw new Error(`--checks contains unknown checks: ${unknown.join(", ")}. Available checks: ${plannedChecks().join(", ")}`)
+  return checks as QualityGateCheckName[]
 }
 
 function summarizeProviderGate(results: Array<{ provider: string; status: CheckStatus }>) {

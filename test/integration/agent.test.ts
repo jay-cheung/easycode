@@ -1683,6 +1683,42 @@ describe("agent integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("context compaction falls back locally when the summary provider fails", async () => {
+    const root = await fixture()
+    const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
+    for (let i = 0; i < 4; i += 1) {
+      context.add(textMessage("user", `old turn ${i} ${"history ".repeat(20)}`))
+      context.add(textMessage("assistant", `old reply ${i}`))
+    }
+    const events: RunUiEvent[] = []
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(input): AsyncIterable<ProviderEvent> {
+        if (input.prompt.includes("Summarize conversation")) {
+          yield { type: "failure", error: { message: "summary provider unavailable", output: "connection refused" } }
+          return
+        }
+        yield { type: "text_delta", text: "Done while summary fails." }
+      },
+    }
+
+    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) })
+    const result = await runner.run("Fix the failing test", "build")
+    await runner.waitForSummarySubagent()
+
+    expect(result.status).toBe("completed")
+    expect(context.state.summary).toContain("Fallback context summary generated locally")
+    expect(context.state.summary).toContain("connection refused")
+    expect(context.state.summary).toContain("old turn 0")
+    expect(events).toContainEqual(expect.objectContaining({ type: "subagent", status: "failed", error: expect.stringContaining("connection refused") }))
+    expect(events).toContainEqual(expect.objectContaining({
+      type: "context_compaction",
+      status: "completed",
+      error: expect.stringContaining("provider summary failed; used fallback"),
+    }))
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("context compaction summary subagent does not block the main provider turn", async () => {
     const root = await fixture()
     const context = new ContextManager({ maxTokens: 20, compactAt: 0.5 })
@@ -1884,6 +1920,54 @@ describe("agent integration", () => {
     expect(toolResults(result.messages).some((part) => part.toolName === "delegate_subagent" && part.status === "succeeded" && part.output.includes("Found export function add"))).toBe(true)
     expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "subagent.nesting_blocked", detail: expect.objectContaining({ role: "explorer" }) }))
     await rm(root, { recursive: true, force: true })
+  })
+
+  test("delegate_subagent honors explicit timeout", async () => {
+    const root = await fixture()
+    try {
+      let abortSeen = false
+      const provider: Provider = {
+        name: "timeout-provider",
+        async *stream(input): AsyncIterable<ProviderEvent> {
+          const results = toolResults(input.messages).map((part) => ({ tool: part.toolName, status: part.status, metadata: part.metadata }))
+          if (input.prompt === "Use timeout subagent") {
+            if (!results.some((result) => result.tool === "delegate_subagent")) {
+              yield { type: "tool_call", call: { id: "call_delegate_timeout", name: "delegate_subagent", input: { role: "explorer", task: "Wait until aborted", timeoutMs: 20 } } }
+              return
+            }
+            yield { type: "text_delta", text: "Coordinator received timeout." }
+            return
+          }
+          if (input.prompt === "Wait until aborted") {
+            await new Promise<void>((_resolve, reject) => {
+              const fallback = setTimeout(() => reject(new Error("timeout signal was not delivered")), 500)
+              if (input.signal?.aborted) {
+                abortSeen = true
+                clearTimeout(fallback)
+                reject(new Error("aborted by timeout"))
+                return
+              }
+              input.signal?.addEventListener("abort", () => {
+                abortSeen = true
+                clearTimeout(fallback)
+                reject(new Error("aborted by timeout"))
+              }, { once: true })
+            })
+          }
+        },
+      }
+
+      const result = await new AgentRunner({ root, provider }).run("Use timeout subagent", "build")
+      const delegateResult = toolResults(result.messages).find((part) => part.toolName === "delegate_subagent")
+
+      expect(result.status).toBe("completed")
+      expect(abortSeen).toBe(true)
+      expect(delegateResult?.metadata?.error).toBe("subagent_timeout")
+      expect(delegateResult?.metadata?.timeoutMs).toBe(20)
+      expect(delegateResult?.output).toContain("Subagent timed out after 20ms")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
   })
 
   test("subagent results stay coordinator-facing and emit role usage summaries", async () => {

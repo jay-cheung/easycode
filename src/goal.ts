@@ -28,6 +28,15 @@ export class GoalStateError extends Error {
 }
 
 const goalStatuses = new Set<GoalStatus>(["defining", "planning", "executing", "reviewing", "paused", "blocked", "completed"])
+const allowedGoalTransitions: Record<GoalStatus, ReadonlySet<GoalStatus>> = {
+  defining: new Set(["defining", "planning", "blocked", "paused"]),
+  planning: new Set(["planning", "executing", "blocked", "completed", "paused"]),
+  executing: new Set(["executing", "reviewing", "blocked", "paused"]),
+  reviewing: new Set(["reviewing", "executing", "blocked", "completed", "paused"]),
+  paused: new Set(["planning", "executing", "blocked", "completed", "paused"]),
+  blocked: new Set(["planning", "executing", "blocked", "completed"]),
+  completed: new Set(["completed"]),
+}
 
 export const goalLedgerSubjects = [
   "current_goal_id",
@@ -212,20 +221,32 @@ export function buildGoalAssessmentPrompt(goal: GoalState, reason?: string) {
 }
 
 export function activateGoalPlan(goal: GoalState, planId: string) {
-  return {
-    ...goal,
-    status: "executing" as const,
+  return transitionGoalState(goal, "executing", {
     iteration: goal.status === "reviewing" || goal.status === "paused" ? goal.iteration + 1 : goal.iteration,
     blocker: undefined,
     activePlanId: planId,
-    updatedAt: Date.now(),
-  }
+  })
 }
 
 export function assertGoalPhase(goal: GoalState | undefined, action: string, allowed: GoalStatus[]): GoalState {
   if (!goal) throw new GoalStateError(`No active goal for ${action}.`)
   if (allowed.includes(goal.status)) return goal
   throw new GoalStateError(`${action} may only be called during ${formatAllowedPhases(allowed)} (current: ${goal.status})`)
+}
+
+export function assertGoalTransition(goal: GoalState, nextStatus: GoalStatus) {
+  if (allowedGoalTransitions[goal.status].has(nextStatus)) return
+  throw new GoalStateError(`Invalid goal transition: ${goal.status} -> ${nextStatus}.`)
+}
+
+export function transitionGoalState(goal: GoalState, nextStatus: GoalStatus, updates: Partial<Omit<GoalState, "status" | "updatedAt">> = {}): GoalState {
+  assertGoalTransition(goal, nextStatus)
+  return {
+    ...goal,
+    ...updates,
+    status: nextStatus,
+    updatedAt: Date.now(),
+  }
 }
 
 export function goalHasAcceptance(goal: GoalState | undefined) {

@@ -255,4 +255,15 @@ describe("permission", () => {
     ]
     expect(evaluatePermission("edit", "src/admin/db.ts", customRules)).toBe("deny")
   })
+
+  test("does not auto-allow project edit patterns that traverse or target sensitive paths", () => {
+    const rules = defaultPermissionRules("build")
+
+    expect(evaluatePermission("edit", "..\\outside.ts", rules)).toBe("ask")
+    expect(evaluatePermission("edit", "src/../../outside.ts", rules)).toBe("ask")
+    expect(evaluatePermission("write", "./../outside.ts", rules)).toBe("ask")
+    expect(evaluatePermission("edit", "C:\\Windows\\System32\\drivers\\etc\\hosts", rules)).toBe("ask")
+    expect(evaluatePermission("write", "config/.env.local", rules)).toBe("ask")
+    expect(evaluatePermission("write", "config/secrets/token.txt", rules)).toBe("ask")
+  })
 })

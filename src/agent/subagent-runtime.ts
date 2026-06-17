@@ -8,6 +8,7 @@ export type SubagentRequest = {
   role: SubagentRole
   task: string
   successCriteria?: string
+  timeoutMs?: number
 }
 
 export type SubagentExecutionStatus = "succeeded" | "handoff" | "failed"
@@ -39,6 +40,7 @@ export type SubagentAssignedStep = {
   stepId: string
   goal: string
   doneWhen?: string
+  timeoutMs?: number
 }
 
 export type SubagentTaskPacket = {
@@ -47,6 +49,7 @@ export type SubagentTaskPacket = {
   task: string
   successCriteria?: string
   maxProviderCalls: number
+  timeoutMs?: number
   assignedStep?: SubagentAssignedStep
 }
 
@@ -95,6 +98,7 @@ export const subagentInvocationLimits: Record<SubagentRole, number> = {
 
 export const maxSubagentInvocationsPerRun = 10
 export const maxSubagentTurnsPerRun = 32
+export const maxSubagentTimeoutMs = 30 * 60 * 1000
 
 const coordinatorOnlyToolNames = new Set(["delegate_subagent", "plan_exit", "plan_step_complete", "plan_step_fail"])
 const writeToolNames = new Set(["patch", "write", "edit", "memory_add", "memory_promote", "git_stage", "git_commit", "git_restore_guarded", "git_branch", "connector_call"])
@@ -172,12 +176,19 @@ export function parseSubagentRequest(input: unknown): SubagentRequest | undefine
   const role = record.role
   const task = record.task
   const successCriteria = record.success_criteria
+  const timeoutMs = normalizeTimeoutMs(record.timeoutMs)
   if (!isSubagentRole(role) || typeof task !== "string" || !task.trim()) return undefined
   return {
     role,
     task: task.trim(),
     ...(typeof successCriteria === "string" && successCriteria.trim() ? { successCriteria: successCriteria.trim() } : {}),
+    ...(timeoutMs ? { timeoutMs } : {}),
   }
+}
+
+function normalizeTimeoutMs(value: unknown) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined
+  return Math.min(Math.round(value), maxSubagentTimeoutMs)
 }
 
 export function formatSubagentResult(result: SubagentExecutionResult) {

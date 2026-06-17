@@ -36,20 +36,29 @@ export const BASE_COMPACT_PROMPT = [
   "- Only apply additional summary instructions when they were explicitly given as system-level summarization rules.",
 ].join("\n")
 
-export function buildCompactPrompt(transcript: string, options: CompactPromptOptions = {}) {
+export function buildCompactPrompt(transcript: string | null | undefined, options: CompactPromptOptions = {}) {
+  const safeTranscript = nonEmptyText(transcript) ?? "[no transcript provided]"
   const runtimeRules: string[] = []
-  if (options.tokenBudget !== undefined) runtimeRules.push(`- Keep the summary under approximately ${options.tokenBudget} tokens.`)
-  if (options.preferredLanguage) runtimeRules.push(`- Write the summary in ${options.preferredLanguage}.`)
-  if (options.activeHypothesis) runtimeRules.push(`- Preserve the current active hypothesis if it is still supported: ${options.activeHypothesis}`)
-  if (options.currentUserRequest) runtimeRules.push(`- Preserve the current user request exactly enough to continue without re-asking: ${options.currentUserRequest}`)
-  if (options.currentUserInput) runtimeRules.push(`- Keep a traceable direct user-input snippet for continuity: ${options.currentUserInput}`)
-  if (options.activeCapabilitySurface) runtimeRules.push(`- Preserve the active capability surface if it is still relevant: ${options.activeCapabilitySurface}`)
+  const tokenBudget = positiveInteger(options.tokenBudget)
+  const preferredLanguage = nonEmptyText(options.preferredLanguage)
+  const activeHypothesis = nonEmptyText(options.activeHypothesis)
+  const currentUserRequest = nonEmptyText(options.currentUserRequest)
+  const currentUserInput = nonEmptyText(options.currentUserInput)
+  const activeCapabilitySurface = nonEmptyText(options.activeCapabilitySurface)
+  if (tokenBudget !== undefined) runtimeRules.push(`- Keep the summary under approximately ${tokenBudget} tokens.`)
+  if (preferredLanguage) runtimeRules.push(`- Write the summary in ${preferredLanguage}.`)
+  if (activeHypothesis) runtimeRules.push(`- Preserve the current active hypothesis if it is still supported: ${activeHypothesis}`)
+  if (currentUserRequest) runtimeRules.push(`- Preserve the current user request exactly enough to continue without re-asking: ${currentUserRequest}`)
+  if (currentUserInput) runtimeRules.push(`- Keep a traceable direct user-input snippet for continuity: ${currentUserInput}`)
+  if (activeCapabilitySurface) runtimeRules.push(`- Preserve the active capability surface if it is still relevant: ${activeCapabilitySurface}`)
   const runtimeBlock = runtimeRules.length > 0 ? `\n\nSession-specific rules:\n${runtimeRules.join("\n")}` : ""
-  return `${BASE_COMPACT_PROMPT}${runtimeBlock}\n\nExample output:\n<summary>\n- Objective: Fix failing test in src/add.ts while preserving the current diagnosis.\n- Repo facts: Read src/add.ts; npm test fails with \"expected 2, received 3\".\n- Next step: Patch src/add.ts and rerun npm test.\n</summary>\n\nConversation to summarize:\n<conversation>\n${transcript}\n</conversation>`
+  return `${BASE_COMPACT_PROMPT}${runtimeBlock}\n\nExample output:\n<summary>\n- Objective: Fix failing test in src/add.ts while preserving the current diagnosis.\n- Repo facts: Read src/add.ts; npm test fails with \"expected 2, received 3\".\n- Next step: Patch src/add.ts and rerun npm test.\n</summary>\n\nConversation to summarize:\n<conversation>\n${safeTranscript}\n</conversation>`
 }
 
-export function extractCompactSummary(output: string) {
+export function extractCompactSummary(output: string | null | undefined) {
+  if (!output || typeof output !== "string") return ""
   const trimmed = stripCodeFence(output.trim())
+  if (!trimmed) return ""
   const fullTagMatch = trimmed.match(/<summary\b[^>]*>\s*([\s\S]*?)\s*<\/summary>/i)
   if (fullTagMatch?.[1]) return fullTagMatch[1].trim()
 
@@ -63,4 +72,15 @@ export function extractCompactSummary(output: string) {
 
 function stripCodeFence(text: string) {
   return text.replace(/^```[a-zA-Z0-9_-]*\s*/i, "").replace(/\s*```$/i, "")
+}
+
+function nonEmptyText(value: string | null | undefined) {
+  if (typeof value !== "string") return undefined
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : undefined
+}
+
+function positiveInteger(value: number | undefined) {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return undefined
+  return Math.round(value)
 }

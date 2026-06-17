@@ -1,4 +1,5 @@
 import { uiText, type UiLanguage } from "../../i18n"
+import type { StoredExecutionPlan } from "../../plans"
 import type { ProviderRunMetrics } from "../timeline"
 import { displayWidth, formatDuration, truncateToWidth } from "./tui-ansi"
 import type { TuiContext } from "./tui-types"
@@ -21,9 +22,11 @@ export function generateStatusPanelLines(input: {
   spinnerFrame: number
   elapsedMs: number
   statusText: string
-  queuedPrompt?: string
-  metrics?: ProviderRunMetrics
-}) {
+	  queuedPrompt?: string
+	  metrics?: ProviderRunMetrics
+	  activePlan?: StoredExecutionPlan
+	  gitDiffStats?: { filesChanged: number; insertions: number; deletions: number }
+	}) {
   const copy = uiText(input.language)
   const width = Math.max(60, Math.min(input.columns, 90))
   const chars = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" }

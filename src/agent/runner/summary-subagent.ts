@@ -135,6 +135,7 @@ export async function runSummarySubagentTask(
       })
     }
   } catch (error) {
+    const errorText = error instanceof Error ? error.message : String(error)
     const metrics = finalizedMetrics()
     if (metrics) deps.onEvent?.({ type: "provider_metrics", metrics })
     deps.onEvent?.({
@@ -151,9 +152,40 @@ export async function runSummarySubagentTask(
         maxOutputTokens: task.route.maxOutputTokens,
       },
       elapsedMs: Date.now() - task.startedAt,
-      error: error instanceof Error ? error.message : String(error),
+      error: errorText,
       metrics,
     })
-    deps.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: error instanceof Error ? error.message : String(error) })
+    const fallbackSummary = fallbackCompactSummary(task.snapshot, errorText)
+    const compacted = deps.context.compactSnapshot(fallbackSummary, task.snapshot)
+    if (!compacted) {
+      deps.onEvent?.({ type: "context_compaction", status: "failed", elapsedMs: Date.now() - task.startedAt, error: errorText })
+      return
+    }
+    const storedSummary = deps.context.state.summary ?? fallbackSummary
+    await deps.onBackgroundContextUpdate?.()
+    deps.onEvent?.({
+      type: "context_compaction",
+      status: "completed",
+      elapsedMs: Date.now() - task.startedAt,
+      summaryChars: storedSummary.length,
+      summaryTokens: estimateTextTokens(storedSummary),
+      error: `provider summary failed; used fallback: ${errorText}`,
+    })
   }
+}
+
+function fallbackCompactSummary(snapshot: ContextCompactionSnapshot, errorText: string) {
+  const sections = [
+    "Fallback context summary generated locally because provider compaction failed.",
+    `Compaction error: ${errorText}`,
+  ]
+  if (snapshot.previousSummary) {
+    sections.push(`Previous summary:\n${snapshot.previousSummary}`)
+  }
+  const transcript = snapshot.providerMessages
+    .map((message) => `${message.role}: ${message.content}`)
+    .join("\n\n")
+    .trim()
+  if (transcript) sections.push(`Compacted transcript excerpt:\n${transcript}`)
+  return sections.join("\n\n")
 }

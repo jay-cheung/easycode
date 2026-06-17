@@ -75,6 +75,7 @@ The JSON format MUST be exactly:
       "delegationPolicy": "required" | "preferred",
       "targetFiles": ["file1.ts", "file2.ts"],
       "dependsOn": [],
+      "timeoutMs": 120000,
       "doneWhen": "Conditions under which this step is considered done",
       "fallback": "What to do if this step fails"
     }

@@ -61,6 +61,26 @@ describe("agent runner ui events", () => {
     expect(prompt).toContain("[truncated]")
   })
 
+  test("subagent task prompts include wall clock and assigned step timeout budgets", () => {
+    const prompt = buildSubagentTaskPrompt({
+      requestId: 3,
+      role: "tester",
+      task: "Run bounded checks",
+      maxProviderCalls: 2,
+      timeoutMs: 1_500,
+      assignedStep: {
+        planId: "plan_timeout",
+        stepId: "step_1",
+        goal: "Verify bounded execution",
+        timeoutMs: 1_500,
+      },
+    }, "", undefined)
+
+    expect(prompt).toContain("Wall Clock Timeout:")
+    expect(prompt).toContain("Finish or hand off within 1500ms.")
+    expect(prompt).toContain("Timeout: 1500ms")
+  })
+
   test("validated provider loop retries plan-gate violations without converting them into provider errors", async () => {
     let attempts = 0
     const invalidTurn: ProviderTurnResult = {

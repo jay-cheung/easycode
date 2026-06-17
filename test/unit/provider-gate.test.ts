@@ -73,8 +73,15 @@ describe("provider gate", () => {
         status: "skipped",
       })
       expect(report.providers[0].checks[0]).toMatchObject({
+        name: "readiness",
+        status: "skipped",
+      })
+      expect(report.providers[0].checks[1]).toMatchObject({
         name: "env",
         status: "skipped",
+      })
+      expect(report.providers[0].checks[0].details).toMatchObject({
+        missingEnv: ["OPENAI_API_KEY"],
       })
       expect(paths?.jsonPath.startsWith(reportDir)).toBe(true)
       expect(await Bun.file(paths?.jsonPath ?? "").exists()).toBe(true)
@@ -100,7 +107,7 @@ describe("provider gate", () => {
       const markdown = formatProviderGateReport(report)
 
       expect(report.status).toBe("passed")
-      expect(report.providers[0].checks.map((check) => check.name)).toEqual(["env", "smoke_eval"])
+      expect(report.providers[0].checks.map((check) => check.name)).toEqual(["readiness", "env", "smoke_eval"])
       expect(markdown).toContain("## fake: passed")
       expect(markdown).toContain("smoke_eval: passed")
     } finally {

@@ -52,9 +52,24 @@ describe("compact prompt", () => {
     expect(prompt).toContain("Example output:")
   })
 
+  test("guards empty compact transcript and invalid runtime options", () => {
+    const prompt = buildCompactPrompt(undefined, {
+      tokenBudget: Number.NaN,
+      preferredLanguage: " ",
+      activeHypothesis: "",
+    })
+
+    expect(prompt).toContain("[no transcript provided]")
+    expect(prompt).not.toContain("undefined")
+    expect(prompt).not.toContain("NaN")
+    expect(prompt).not.toContain("Session-specific rules:")
+  })
+
   test("recovers summary content from fenced or partially wrapped output", () => {
     expect(extractCompactSummary("```xml\n<summary>\n- Objective: ok\n</summary>\n```")).toBe("- Objective: ok")
     expect(extractCompactSummary("<analysis>scratch</analysis>\n<summary>\n- Next step: patch file\n")).toBe("- Next step: patch file")
     expect(extractCompactSummary("<analysis>scratch</analysis>\n- Repo facts: kept")).toBe("- Repo facts: kept")
+    expect(extractCompactSummary(undefined)).toBe("")
+    expect(extractCompactSummary("   ")).toBe("")
   })
 })

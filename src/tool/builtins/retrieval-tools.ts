@@ -2,9 +2,9 @@ import { McpSourceService, WebFetchService, WebSearchService, formatMcpResource,
 import { SkillInput, PlanExitInput, McpListResourcesInput, McpReadResourceInput, WebSearchInput, WebFetchInput, PlanStepCompleteInput, PlanStepFailInput, GoalCompleteInput, GoalBlockedInput, GoalSetAcceptanceInput, DelegateSubagentInput, objectSchema } from "./common"
 import type { ToolRegistry } from "../registry"
 import type { SkillArtifact, SkillInfo } from "../../skill"
-import { loadStructuredPlanState, nextIncompletePlanStep, truncateIntermediatePlanStepReport } from "../../plans"
+import { PlanStateError, assertPlanStepCanComplete, loadStructuredPlanState, nextIncompletePlanStep, truncateIntermediatePlanStepReport } from "../../plans"
 import { PlanTracker } from "../../agent/planner"
-import { GoalStateError, assertGoalPhase, goalStateFromContext, writeGoalState } from "../../goal"
+import { GoalStateError, assertGoalPhase, goalStateFromContext, transitionGoalState, writeGoalState } from "../../goal"
 import type { Message } from "../../message"
 
 function formatSkillArtifact(artifact: SkillArtifact) {
@@ -183,6 +183,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       role: { type: "string", enum: ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"] },
       task: { type: "string" },
       success_criteria: { type: "string" },
+      timeoutMs: { type: "number" },
     }, ["role", "task"]),
     permission: "delegate_subagent",
     modes: ["build"],
@@ -234,6 +235,18 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       const state = await loadStructuredPlanState(ctx.sandbox.root, sessionId, planId)
       if (!state) return { title: "Error", output: `Could not load structured plan ${planId}.`, metadata: { status: "failed" } }
       const { plan, checkpoint } = state
+      try {
+        assertPlanStepCanComplete(plan, checkpoint, currentStepId)
+      } catch (error) {
+        if (error instanceof PlanStateError) {
+          return {
+            title: "Plan Step Rejected",
+            output: error.message,
+            metadata: { status: "failed", error: "plan_state_invalid", planId, currentStepId },
+          }
+        }
+        throw error
+      }
       const stepStatuses = { ...checkpoint.stepStatuses, [currentStepId]: "completed" as const }
       const nextStep = nextIncompletePlanStep(plan, stepStatuses)
       const rawReport = params.report.trim()
@@ -343,16 +356,13 @@ export function registerRetrievalTools(registry: ToolRegistry) {
           metadata: { status: "failed", error: "goal_acceptance_wrong_phase" },
         }
       }
-      writeGoalState(ctx.context, {
-        ...goal,
-        status: "planning",
+      writeGoalState(ctx.context, transitionGoalState(goal, "planning", {
         complexity: params.complexity,
         firstSlice: params.firstSlice,
         acceptanceCriteria: params.acceptanceCriteria.map((item) => item.trim()).filter(Boolean),
         completionChecks: params.completionChecks.map((item) => item.trim()).filter(Boolean),
         blocker: undefined,
-        updatedAt: Date.now(),
-      })
+      }))
       return {
         title: "Goal Acceptance Recorded",
         output: [
@@ -412,7 +422,18 @@ export function registerRetrievalTools(registry: ToolRegistry) {
               }
             }
           }
-          writeGoalState(ctx.context, { ...goal, status: "completed", blocker: undefined, summary: params.summary, updatedAt: Date.now() })
+          try {
+            writeGoalState(ctx.context, transitionGoalState(goal, "completed", { blocker: undefined, summary: params.summary }))
+          } catch (error) {
+            if (error instanceof GoalStateError) {
+              return {
+                title: "Goal Completed",
+                output: error.message,
+                metadata: { status: "failed", error: "goal_transition_invalid", goalStatus: goal.status },
+              }
+            }
+            throw error
+          }
           if (planId) await PlanTracker.clearActivePlan(ctx.context, ctx.sandbox.root, planId)
         }
       }
@@ -437,7 +458,7 @@ export function registerRetrievalTools(registry: ToolRegistry) {
       if (ctx.context) {
         const goal = goalStateFromContext(ctx.context)
         if (goal) {
-          writeGoalState(ctx.context, { ...goal, status: "blocked", blocker: params.reason, updatedAt: Date.now() })
+          writeGoalState(ctx.context, transitionGoalState(goal, "blocked", { blocker: params.reason }))
           const planId = ctx.context.state.ledger?.current.find((record) => record.subject === "current_plan_id" && record.status === "current")?.value
           if (planId) await PlanTracker.clearActivePlan(ctx.context, ctx.sandbox.root, planId)
         }

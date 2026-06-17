@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { DeepSeekProvider, OpenAICompatibleProvider, OpenAIProvider } from "../../src/provider"
 import { clampSubagentRoute, resolveSubagentRoute } from "../../src/agent/subagent-routing"
-import { classifySubagentToolFailure, createSubagentTaskState, noteSubagentToolResult, shouldStopSubagentAfterFailure, suggestedCoordinatorSubagentRole } from "../../src/agent/subagent-runtime"
+import { classifySubagentToolFailure, createSubagentTaskState, maxSubagentTimeoutMs, noteSubagentToolResult, parseSubagentRequest, shouldStopSubagentAfterFailure, suggestedCoordinatorSubagentRole } from "../../src/agent/subagent-runtime"
 import { defaultSessionSettings } from "../../src/settings"
 
 describe("subagent routing", () => {
@@ -230,5 +230,19 @@ describe("subagent routing", () => {
     expect(classified?.retryable).toBe(false)
     expect(classified?.recommendedNextRole).toBe("explorer")
     expect(classified?.recommendedNextTool).toBe("read_lines")
+  })
+
+  test("delegate_subagent request timeout is bounded and optional", () => {
+    expect(parseSubagentRequest({
+      role: "explorer",
+      task: "Inspect bounded files",
+      timeoutMs: maxSubagentTimeoutMs + 1,
+    })?.timeoutMs).toBe(maxSubagentTimeoutMs)
+
+    expect(parseSubagentRequest({
+      role: "explorer",
+      task: "Inspect without timeout",
+      timeoutMs: -1,
+    })?.timeoutMs).toBeUndefined()
   })
 })

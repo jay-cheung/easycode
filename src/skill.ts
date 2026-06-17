@@ -26,9 +26,18 @@ export type SkillInfo = {
   artifacts?: SkillArtifact[]
 }
 
+export type SkillDiagnostic = {
+  code: "read_failed" | "missing_required_frontmatter" | "duplicate_name"
+  message: string
+  location?: string
+  name?: string
+  ids?: string[]
+}
+
 export interface SkillServiceLike {
   available(): Promise<SkillInfo[]>
   load(nameOrId: string): Promise<SkillInfo | undefined>
+  diagnostics?(): Promise<SkillDiagnostic[]>
 }
 
 function parseFrontmatter(text: string) {
@@ -141,6 +150,7 @@ export class SkillService implements SkillServiceLike {
   readonly roots: string[]
   private readonly projectRoot: string
   private cache?: SkillInfo[]
+  private diagnosticCache?: SkillDiagnostic[]
 
   constructor(projectRoot: string, roots?: string[]) {
     this.projectRoot = projectRoot
@@ -155,11 +165,24 @@ export class SkillService implements SkillServiceLike {
       const files = (await Promise.all(this.roots.map(skillFiles))).flat()
       const seenNames = new Map<string, string[]>() // name -> [file, loc]
       const skills: SkillInfo[] = []
+      const diagnostics: SkillDiagnostic[] = []
       for (const file of files) {
-        const parsed = parseFrontmatter(await Bun.file(file).text())
+        const text = await Bun.file(file).text().catch(() => undefined)
+        if (text === undefined) {
+          diagnostics.push({ code: "read_failed", location: file, message: `Could not read skill file: ${file}` })
+          continue
+        }
+        const parsed = parseFrontmatter(text)
         const name = parsed.data.get("name")
         const description = parsed.data.get("description")
-        if (!name || !description) continue
+        if (!name || !description) {
+          diagnostics.push({
+            code: "missing_required_frontmatter",
+            location: file,
+            message: `Skill file is missing required frontmatter: ${[!name ? "name" : "", !description ? "description" : ""].filter(Boolean).join(", ")}`,
+          })
+          continue
+        }
         const id = path.relative(this.projectRoot, file).replace(/\\/g, "/")
         // Dedup by id (silently skip if the same id appears twice)
         if (skills.some((s) => s.id === id)) continue
@@ -169,9 +192,25 @@ export class SkillService implements SkillServiceLike {
         else seenNames.set(name, [id])
         skills.push({ id, name, description, location: file })
       }
+      for (const [name, ids] of seenNames) {
+        if (ids.length > 1) {
+          diagnostics.push({
+            code: "duplicate_name",
+            name,
+            ids,
+            message: `Multiple skills share the name '${name}': ${ids.join(", ")}`,
+          })
+        }
+      }
       this.cache = skills.sort((left, right) => left.name.localeCompare(right.name))
+      this.diagnosticCache = diagnostics
     }
     return this.cache.map((skill) => ({ ...skill, content: undefined }))
+  }
+
+  async diagnostics() {
+    await this.available()
+    return (this.diagnosticCache ?? []).map((diagnostic) => diagnostic.ids ? { ...diagnostic, ids: [...diagnostic.ids] } : { ...diagnostic })
   }
 
   async load(nameOrId: string) {
@@ -179,7 +218,9 @@ export class SkillService implements SkillServiceLike {
     // Try exact id match first, then exact name match (backward compat)
     const skill = skills.find((item) => item.id === nameOrId || item.name === nameOrId)
     if (!skill) return undefined
-    const parsed = parseFrontmatter(await Bun.file(skill.location).text())
+    const text = await Bun.file(skill.location).text().catch(() => undefined)
+    if (text === undefined) return undefined
+    const parsed = parseFrontmatter(text)
     return { ...skill, content: parsed.content, artifacts: await extractSkillArtifacts(skill.location, parsed.content) }
   }
 }

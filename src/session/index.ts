@@ -7,8 +7,11 @@ import { stripGoalLedger } from "../goal"
 import { ProjectMemoryStore } from "../memory"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "../message"
 import { planStoreDir } from "../plans"
-import { normalizeSessionSettings, type SessionSettings } from "../settings"
+import { defaultProviderName, normalizeSessionSettings, type SessionSettings } from "../settings"
+import { loadJsonWithBackup, writeJsonAtomically } from "../storage"
 import { persistedSessionMessages } from "./session-tail"
+
+export const sessionDataVersion = 1
 
 export type SessionTokenUsage = {
   inputTokens: number
@@ -22,6 +25,7 @@ export type SessionTokenUsage = {
 }
 
 export type SessionData = {
+  version: typeof sessionDataVersion
   id: string
   messages: Message[]
   summary?: string
@@ -54,9 +58,9 @@ export class SessionStore {
   }
 
   async load(id: string) {
-    const file = Bun.file(this.filePath(id))
-    if (!(await file.exists())) return undefined
-    return JSON.parse(await file.text()) as SessionData
+    const loaded = await loadJsonWithBackup<Partial<SessionData> & { version?: unknown }>(this.filePath(id))
+    if (!loaded.data) return undefined
+    return normalizeSessionData(loaded.data)
   }
 
   async list(): Promise<SessionSummary[]> {
@@ -71,13 +75,13 @@ export class SessionStore {
     for (const entry of entries) {
       if (!entry.endsWith(".json")) continue
       try {
-        const data = JSON.parse(await Bun.file(path.join(this.dir, entry)).text()) as Partial<SessionData>
-        if (typeof data.id !== "string" || !data.id.trim()) continue
+        const data = normalizeSessionData(JSON.parse(await Bun.file(path.join(this.dir, entry)).text()) as Partial<SessionData> & { version?: unknown })
+        if (!data) continue
         sessions.push({
           id: data.id,
           file: entry,
-          messageCount: Array.isArray(data.messages) ? data.messages.length : 0,
-          updatedAt: typeof data.updatedAt === "number" ? data.updatedAt : 0,
+          messageCount: data.messages.length,
+          updatedAt: data.updatedAt,
         })
       } catch {
         continue
@@ -92,6 +96,7 @@ export class SessionStore {
       ? persistedSessionMessages(context.state.messages, context.preserveRecentUserTurns, context.compactPreserveTokens)
       : context.state.messages
     const data: SessionData = {
+      version: sessionDataVersion,
       id,
       messages: truncateLargeMessageOutputs(redactProtectedMessages(messages)),
       summary: context.state.summary,
@@ -100,10 +105,10 @@ export class SessionStore {
       ...(tokenUsage ? { tokenUsage: normalizeSessionTokenUsage(tokenUsage) } : {}),
       updatedAt: Date.now(),
     }
-    await Bun.write(this.filePath(id), `${JSON.stringify(data, null, 2)}\n`)
+    await writeJsonAtomically(this.filePath(id), data)
   }
 
-  async settings(id: string, fallbackProvider = "fake") {
+  async settings(id: string, fallbackProvider = defaultProviderName) {
     return normalizeSessionSettings((await this.load(id))?.settings, fallbackProvider)
   }
 
@@ -238,4 +243,20 @@ function latestMessageText(messages: Message[], role: Message["role"]) {
 
 function normalizeUsageNumber(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : 0
+}
+
+function normalizeSessionData(input: Partial<SessionData> & { version?: unknown }): SessionData | undefined {
+  if (input.version !== undefined && input.version !== sessionDataVersion) return undefined
+  if (typeof input.id !== "string" || !input.id.trim()) return undefined
+  if (!Array.isArray(input.messages)) return undefined
+  return {
+    version: sessionDataVersion,
+    id: input.id,
+    messages: input.messages,
+    ...(typeof input.summary === "string" ? { summary: input.summary } : {}),
+    ...(input.ledger ? { ledger: input.ledger } : {}),
+    ...(input.settings ? { settings: normalizeSessionSettings(input.settings, input.settings.provider) } : {}),
+    ...(input.tokenUsage ? { tokenUsage: normalizeSessionTokenUsage(input.tokenUsage) } : {}),
+    updatedAt: typeof input.updatedAt === "number" && Number.isFinite(input.updatedAt) ? input.updatedAt : 0,
+  }
 }

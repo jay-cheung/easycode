@@ -2,15 +2,15 @@ import path from "node:path"
 import { mkdir } from "node:fs/promises"
 import { easycodeDir } from "../../src/easycode-path"
 import { runCacheBenchmark } from "./cache-benchmark"
-import { loadEnvFile, missingProviderEnv } from "../../src/cli/startup"
+import { loadEnvFile } from "../../src/cli/startup"
 import { runEval, type EvalResult } from "./eval"
 import { runAPIxEval } from "./apix"
-import { hasProvider, listProviders, type ProviderName } from "../../src/provider"
+import { diagnoseProviderReadiness, formatProviderReadinessSummary, hasProvider, listProviders, providerReadinessCheckStatus, type ProviderName } from "../../src/provider"
 
 type CheckStatus = "passed" | "failed" | "skipped"
 
 type GateCheck = {
-  name: "env" | "smoke_eval" | "apix_subset" | "cache_benchmark"
+  name: "readiness" | "env" | "smoke_eval" | "apix_subset" | "cache_benchmark"
   status: CheckStatus
   summary: string
   details?: unknown
@@ -84,8 +84,20 @@ export async function runProviderGate(options: ProviderGateOptions = {}) {
 }
 
 async function runProviderChecks(provider: ProviderName, root: string, options: ProviderGateOptions): Promise<ProviderGateResult> {
-  const missingEnv = missingProviderEnv(provider)
   const checks: GateCheck[] = []
+  const readiness = diagnoseProviderReadiness(provider)
+  const readinessStatus = providerReadinessCheckStatus(readiness)
+  checks.push({
+    name: "readiness",
+    status: readinessStatus,
+    summary: formatProviderReadinessSummary(readiness),
+    details: readiness,
+  })
+  if (readinessStatus === "failed") {
+    return { provider, status: "failed", checks }
+  }
+
+  const missingEnv = readiness.missingEnv
   if (missingEnv.length > 0) {
     checks.push({
       name: "env",

@@ -6,6 +6,7 @@ import { SandboxPathEscapeError, type BashResult, Sandbox } from "../../src/sand
 import { PermissionService, defaultPermissionAutoReviewer, defaultPermissionRules } from "../../src/permission"
 import { SkillService } from "../../src/skill"
 import { toolCallMessage, toolResultMessage, userMessage, type Message } from "../../src/message"
+import { PlanTracker } from "../../src/agent/planner"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
@@ -42,6 +43,35 @@ describe("tool", () => {
     expect(registry.list("build").some((tool) => tool.name === "edit")).toBe(true)
     expect(registry.list("plan").some((tool) => tool.name === "plan_exit")).toBe(true)
     expect(registry.list("build").some((tool) => tool.name === "plan_exit")).toBe(true)
+  })
+
+  test("denies multi-pattern tool requests when any pattern is denied", async () => {
+    const registry = new ToolRegistry()
+    let executed = false
+    registry.register({
+      name: "multi_read",
+      description: "Read multiple paths",
+      inputSchema: z.object({}),
+      jsonSchema: { type: "object", properties: {}, additionalProperties: false },
+      permission: "read",
+      modes: ["build"],
+      patterns: () => ["src/a.ts", "secrets/key.txt"],
+      execute: async () => {
+        executed = true
+        return { title: "multi_read", output: "executed", metadata: { status: "succeeded" } }
+      },
+    })
+    const root = await tmpdir()
+    const permission = new PermissionService([
+      { permission: "read", pattern: "*", action: "allow" },
+      { permission: "read", pattern: "secrets/*", action: "deny" },
+    ])
+
+    const result = await registry.run("multi_read", {}, { ...toolContext(root), permission })
+
+    expect(result.metadata.status).toBe("denied")
+    expect(result.metadata.error).toBe("PermissionDeniedError")
+    expect(executed).toBe(false)
   })
 
   test("goal tools update transient goal ledger state", async () => {
@@ -477,6 +507,38 @@ describe("tool", () => {
     expect(context.state.ledger?.current).toContainEqual(expect.objectContaining({ subject: "current_goal_status", value: "reviewing" }))
   })
 
+  test("plan_step_complete fails when ledger and persisted checkpoint disagree", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const context = new ContextManager()
+    await PlanTracker.activatePlan(context, root, "default", {
+      id: "plan_state_guard",
+      title: "Plan State Guard",
+      lowRisk: true,
+      steps: [
+        { id: "step_1", goal: "Inspect current state", kind: "inspect" },
+        { id: "step_2", goal: "Verify current state", kind: "verify" },
+      ],
+    }, {
+      currentStepId: "step_1",
+      stepStatuses: { step_1: "running", step_2: "pending" },
+      status: "running",
+    })
+    const current = context.state.ledger?.current.map((record) => record.subject === "current_plan_step"
+      ? { ...record, value: "step_2" }
+      : record) ?? []
+    context.setLedger({ current, history: context.state.ledger?.history ?? [] })
+
+    const result = await registry.run("plan_step_complete", {
+      message: "verify done",
+      report: "Verification completed.",
+    }, { ...toolContext(root), context })
+
+    expect(result.metadata.status).toBe("failed")
+    expect(result.metadata.error).toBe("plan_state_invalid")
+    expect(result.output).toContain("active step mismatch")
+  })
+
   test("ledger tool pulls structured context only when called", async () => {
     const registry = createBuiltinRegistry()
     const context = new ContextManager()
@@ -636,6 +698,34 @@ describe("tool", () => {
     expect(result.metadata.status).toBe("failed")
     expect(result.metadata.error).toBe("duplicate_inspection")
     expect(result.output).toContain("read sample.ts")
+  })
+
+  test("allows duplicate reads inside the same pending assistant tool batch", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    await Bun.write(path.join(root, "sample.ts"), "one\ntwo\n")
+    const activeBatchMessages: Message[] = [
+      userMessage("Inspect sample.ts twice in parallel"),
+      toolCallMessage([
+        { id: "call_read_1", name: "read", input: { filePath: "sample.ts" } },
+        { id: "call_read_2", name: "read", input: { filePath: "sample.ts" } },
+      ]),
+      toolResultMessage({ callID: "call_read_1", toolName: "read", status: "succeeded", output: "one\ntwo\n", metadata: { status: "succeeded" } }),
+    ]
+
+    const sameBatch = await registry.run("read", { filePath: "sample.ts" }, toolContext(root, activeBatchMessages))
+
+    expect(sameBatch.metadata.status).toBe("succeeded")
+    expect(sameBatch.output).toContain("one")
+
+    const completedBatchMessages: Message[] = [
+      ...activeBatchMessages,
+      toolResultMessage({ callID: "call_read_2", toolName: "read", status: "succeeded", output: "one\ntwo\n", metadata: { status: "succeeded" } }),
+    ]
+    const nextTurn = await registry.run("read", { filePath: "sample.ts" }, toolContext(root, completedBatchMessages))
+
+    expect(nextTurn.metadata.status).toBe("failed")
+    expect(nextTurn.metadata.error).toBe("duplicate_inspection")
   })
 
   test("allows read_lines on the same file when the requested range differs", async () => {
@@ -889,22 +979,20 @@ describe("tool", () => {
 
   test("web_fetch returns bounded structured HTTP evidence", async () => {
     const registry = createBuiltinRegistry()
-    const server = Bun.serve({
-      port: 0,
-      fetch(request) {
-        const accept = request.headers.get("accept") ?? "missing"
-        return new Response("<html><title>Example Page</title><body>Hello from web_fetch.</body></html>", {
-          status: 200,
-          headers: {
-            "content-type": "text/html; charset=utf-8",
-            etag: `"accept:${accept}"`,
-          },
-        })
-      },
-    })
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async (_input, init) => {
+      const accept = new Headers(init?.headers).get("accept") ?? "missing"
+      return new Response("<html><title>Example Page</title><body>Hello from web_fetch.</body></html>", {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          etag: `"accept:${accept}"`,
+        },
+      })
+    }) as typeof fetch
     try {
       const result = await registry.run("web_fetch", {
-        url: `http://127.0.0.1:${server.port}/docs`,
+        url: "http://example.test/docs",
         followRedirects: true,
         headers: { accept: "text/html" },
       }, toolContext())
@@ -922,7 +1010,7 @@ describe("tool", () => {
         title: "Example Page",
       })
     } finally {
-      await server.stop(true)
+      globalThis.fetch = originalFetch
     }
   })
 
