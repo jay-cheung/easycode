@@ -377,6 +377,9 @@ describe("session store", () => {
     await store.save("archive/me", context, { provider: "openai", model: "gpt-5.5", language: "zh", thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [] }, { inputTokens: 120, outputTokens: 45, calls: 2, subagentInputTokens: 60, subagentOutputTokens: 10, subagentCalls: 1, subagentCacheHitTokens: 30, subagentCacheMissTokens: 30 })
 
     const safe = safeSessionID("archive/me")
+    const sessionPath = path.join(root, ".easycode", "sessions", `${safe}.json`)
+    const sessionBackupPath = backupPath(sessionPath)
+    await Bun.write(sessionBackupPath, "{\"id\":\"backup\"}\n")
     const logsDir = path.join(root, ".easycode", "logs", "sessions")
     await mkdir(logsDir, { recursive: true })
     await Bun.write(path.join(logsDir, `${safe}.jsonl`), "{\"type\":\"data\"}\n")
@@ -392,14 +395,16 @@ describe("session store", () => {
 
     expect(result.existed).toBe(true)
     expect(result.deletedPaths).toEqual(expect.arrayContaining([
-      path.join(root, ".easycode", "sessions", `${safe}.json`),
+      sessionPath,
+      sessionBackupPath,
       path.join(root, ".easycode", "logs", "sessions", `${safe}.jsonl`),
       path.join(root, ".easycode", "logs", "sessions", `${safe}.txt`),
       path.join(root, ".easycode", "logs", "sessions", `${safe}.subagents.jsonl`),
       path.join(root, ".easycode", "logs", "sessions", `${safe}.subagents.txt`),
       plansDir,
     ]))
-    expect(await Bun.file(path.join(root, ".easycode", "sessions", `${safe}.json`)).exists()).toBe(false)
+    expect(await Bun.file(sessionPath).exists()).toBe(false)
+    expect(await Bun.file(sessionBackupPath).exists()).toBe(false)
     expect(await Bun.file(path.join(logsDir, `${safe}.jsonl`)).exists()).toBe(false)
     expect(await Bun.file(path.join(logsDir, `${safe}.txt`)).exists()).toBe(false)
     expect(await Bun.file(path.join(logsDir, `${safe}.subagents.jsonl`)).exists()).toBe(false)

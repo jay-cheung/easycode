@@ -8,7 +8,7 @@ import { ProjectMemoryStore } from "../memory"
 import { redactProtectedMessages, truncateLargeMessageOutputs, type Message } from "../message"
 import { planStoreDir } from "../plans"
 import { defaultProviderName, normalizeSessionSettings, type SessionSettings } from "../settings"
-import { loadJsonWithBackup, writeJsonAtomically } from "../storage"
+import { backupPath, loadJsonWithBackup, writeJsonAtomically } from "../storage"
 import { persistedSessionMessages } from "./session-tail"
 
 export const sessionDataVersion = 1
@@ -178,8 +178,10 @@ export function safeSessionID(id: string) {
 function sessionDeletePaths(root: string, id: string) {
   const safe = safeSessionID(id)
   const base = easycodeDir(root)
+  const sessionPath = path.join(base, "sessions", `${safe}.json`)
   return [
-    { path: path.join(base, "sessions", `${safe}.json`), directory: false },
+    { path: sessionPath, directory: false },
+    { path: backupPath(sessionPath), directory: false },
     { path: path.join(base, "logs", "sessions", `${safe}.jsonl`), directory: false },
     { path: path.join(base, "logs", "sessions", `${safe}.txt`), directory: false },
     { path: path.join(base, "logs", "sessions", `${safe}.subagents.jsonl`), directory: false },
