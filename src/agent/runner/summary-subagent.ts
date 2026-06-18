@@ -99,8 +99,9 @@ export async function runSummarySubagentTask(
       emitProgressEvents: false,
       observeContextUsage: false,
     })
-    if (providerMetrics && providerMetrics.calls > task.route.maxProviderCalls) {
-      throw new Error(`Subagent ${task.route.role} exceeded provider call budget: ${providerMetrics.calls}/${task.route.maxProviderCalls}`)
+    const logicalProviderCalls = providerMetrics ? providerMetrics.calls - providerMetrics.providerRetries : 0
+    if (providerMetrics && logicalProviderCalls > task.route.maxProviderCalls) {
+      throw new Error(`Subagent ${task.route.role} exceeded provider call budget: ${logicalProviderCalls}/${task.route.maxProviderCalls}`)
     }
     if (turn.failureText) throw new Error(turn.failureText)
     const extracted = extractCompactSummary(turn.text)

@@ -14,6 +14,7 @@ export type ProviderMetricsAccumulator = {
   maxOutputTokens?: number
   maxProviderCalls?: number
   pricing: CachePricing
+  providerRetries: number
   calls: number
   inputTokens: number
   outputTokens: number
@@ -45,6 +46,7 @@ export function createProviderMetrics(
     maxOutputTokens: metadata.maxOutputTokens,
     maxProviderCalls: metadata.maxProviderCalls,
     pricing: defaultCachePricing(),
+    providerRetries: 0,
     calls: 0,
     inputTokens: 0,
     outputTokens: 0,
@@ -97,6 +99,7 @@ export function finalizeProviderMetrics(metrics: ProviderMetricsAccumulator): Pr
     effort: metrics.effort,
     maxOutputTokens: metrics.maxOutputTokens,
     maxProviderCalls: metrics.maxProviderCalls,
+    providerRetries: metrics.providerRetries,
     calls: metrics.calls,
     inputTokens: metrics.inputTokens,
     outputTokens: metrics.outputTokens,

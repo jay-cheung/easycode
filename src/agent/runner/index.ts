@@ -41,6 +41,7 @@ import { createSubagentLogger, withSubagentLogContext, buildSubagentTaskPrompt, 
 import type { AgentRunState, SubagentRole } from "../types"
 
 const coordinatorDelegationGateBypassProviders = new Set(["fake", "test-provider", "simulated"])
+const defaultNetworkRetryDelaysMs = [1_000, 2_000, 3_000, 4_000, 5_000]
 const subagentRoles: SubagentRole[] = ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"]
 const readOnlyDelegationFallbackToolNames = new Set([
   "read",
@@ -127,6 +128,7 @@ export class AgentRunner {
   readonly onBackgroundContextUpdate?: () => void | Promise<void>
   readonly sessionId?: string
   readonly forcePlanning?: boolean
+  readonly networkRetryDelaysMs: number[]
   private summarySubagent: BackgroundAgentTask | undefined
   private nextSummarySubagentID = 1
   private nextSubagentRequestID = 1
@@ -165,6 +167,7 @@ export class AgentRunner {
     this.onEvent = options.onEvent
     this.toolProgressIntervalMs = options.toolProgressIntervalMs ?? defaultToolProgressIntervalMs
     this.providerProgressIntervalMs = options.providerProgressIntervalMs ?? defaultProviderProgressIntervalMs
+    this.networkRetryDelaysMs = normalizeNetworkRetryDelays(options.networkRetryDelaysMs)
     this.settings = options.settings ?? defaultSessionSettings(this.provider.name)
     this.onBackgroundContextUpdate = options.onBackgroundContextUpdate
     this.activeHypothesis = activeHypothesisFromLedger(this.context.state.ledger)
@@ -742,7 +745,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     if (turn.failureText) {
       const recoverableController = turn.failureCategory === "network" && this.hasActiveRecoverableController()
       const recoveryText = recoverableController
-        ? "Network/provider failure persisted after one retry. The active goal/plan checkpoint was preserved; continue to retry from the current step."
+        ? `Network/provider failure persisted after ${this.networkRetryDelaysMs.length} retries. The active goal/plan checkpoint was preserved; continue to retry from the current step.`
         : ""
       if (recoverableController) {
         emitLog(this.logger, {
@@ -814,7 +817,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
 
   private async runProviderTurn(input: ProviderTurnInput): Promise<ProviderTurnResult> {
     const provider = input.provider ?? this.provider
-    const turn = await runProviderTurnStream(
+    const runTurn = () => runProviderTurnStream(
       {
         provider,
         providerProgressIntervalMs: this.providerProgressIntervalMs,
@@ -825,24 +828,22 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       input,
       (text) => runFailureText(text, "provider_error"),
     )
-    if (turn.failureCategory !== "network" || !this.hasActiveRecoverableController()) return turn
-    emitLog(this.logger, {
-      type: "provider",
-      name: "provider.retry",
-      detail: { provider: provider.name, model: provider.model, category: turn.failureCategory, reason: "active_goal_or_plan_network_failure", attempt: 1, maxAttempts: 1 },
-    })
-    await sleep(150)
-    return runProviderTurnStream(
-      {
-        provider,
-        providerProgressIntervalMs: this.providerProgressIntervalMs,
-        onEvent: this.onEvent,
-        onTextDelta: this.onTextDelta,
-        onUsage: (event) => this.context.observeUsage(event),
-      },
-      input,
-      (text) => runFailureText(text, "provider_error"),
-    )
+    let turn = await runTurn()
+    for (let index = 0; index < this.networkRetryDelaysMs.length && isRetryableProviderFailure(turn.failureCategory); index += 1) {
+      const attempt = index + 1
+      const delayMs = this.networkRetryDelaysMs[index] ?? 0
+      const reason = this.hasActiveRecoverableController() ? "active_goal_or_plan_provider_failure" : "provider_failure"
+      emitLog(this.logger, {
+        type: "provider",
+        name: "provider.retry",
+        detail: { provider: provider.name, model: provider.model, category: turn.failureCategory, reason, attempt, maxAttempts: this.networkRetryDelaysMs.length, delayMs },
+      })
+      if (input.providerMetrics) input.providerMetrics.providerRetries += 1
+      this.onEvent?.({ type: "provider_retry", category: turn.failureCategory, attempt, maxAttempts: this.networkRetryDelaysMs.length, scope: "main" })
+      await sleep(delayMs)
+      turn = await runTurn()
+    }
+    return turn
   }
 
   private async runValidatedProviderTurn(input: ProviderTurnInput, requiresProposedPlan: boolean, activePlanStep?: PlanStep): Promise<ProviderTurnResult> {
@@ -1294,11 +1295,10 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
     const tools = filterToolsForAgent(this.subagentRegistry.list("build"), { role: packet.role, depth: agent.depth ?? 1 })
     const reasoningChunks: string[] = []
 
-    let networkFailureRetried = false
     for (let callIndex = 0; callIndex < packet.maxProviderCalls; callIndex += 1) {
       if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
       const providerMessages = context.compose({ agent, instructions: [], skills: [], selectedSkills: [], pendingSkillLoads: [], tools })
-      const turn = await runProviderTurnStream(
+      const runTurn = () => runProviderTurnStream(
         {
           provider,
           providerProgressIntervalMs: 0,
@@ -1318,24 +1318,29 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
         },
         (text) => runFailureText(text, "provider_error"),
       )
+      let turn = await runTurn()
+      for (let index = 0; index < this.networkRetryDelaysMs.length && isRetryableProviderFailure(turn.failureCategory); index += 1) {
+        const attempt = index + 1
+        const delayMs = this.networkRetryDelaysMs[index] ?? 0
+        emitLog(this.subagentLogger, {
+          type: "provider",
+          name: "provider.retry",
+          detail: { requestId, role: packet.role, category: turn.failureCategory, reason: "subagent_network_failure", attempt, maxAttempts: this.networkRetryDelaysMs.length, delayMs },
+        })
+        providerMetrics.providerRetries += 1
+        this.onEvent?.({ type: "provider_retry", category: turn.failureCategory, attempt, maxAttempts: this.networkRetryDelaysMs.length, scope: "subagent" })
+        await sleep(delayMs)
+        turn = await runTurn()
+        if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
+      }
       if (timeout.timedOut()) return subagentTimeoutResult(packet.role, timeout.timeoutMs)
 
       if (turn.failureText) {
-        if (turn.failureCategory === "network" && !networkFailureRetried) {
-          networkFailureRetried = true
-          emitLog(this.subagentLogger, {
-            type: "provider",
-            name: "provider.retry",
-            detail: { requestId, role: packet.role, category: turn.failureCategory, reason: "subagent_network_failure", attempt: 1, maxAttempts: 1 },
-          })
-          await sleep(150)
-          continue
-        }
         if (turn.failureCategory === "network") {
           return {
             role: packet.role,
             status: "handoff",
-            summary: appendOutput(turn.failureText, "Subagent provider failure remained after one retry; coordinator may retry later or use the plan fallback."),
+            summary: appendOutput(turn.failureText, `Subagent provider failure remained after ${this.networkRetryDelaysMs.length} retries; coordinator may retry later or use the plan fallback.`),
             blockerClass: "network_or_provider",
             retryable: true,
             nextAction: "Retry this delegation later, or use the active plan fallback if it allows bounded coordinator recovery.",
@@ -1831,9 +1836,9 @@ function latestAssignedSubagentResult(messages: Message[], activePlanStep: PlanS
   return undefined
 }
 
-export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; settings?: SessionSettings; sessionId?: string; forcePlanning?: boolean }) {
+export function createRunner(input: { root: string; provider?: ProviderName; mode?: AgentMode; logger?: Logger; context?: ContextManagerLike; permission?: PermissionService; onTextDelta?: (text: string) => void; onEvent?: (event: RunUiEvent) => void; onBackgroundContextUpdate?: () => void | Promise<void>; toolProgressIntervalMs?: number; networkRetryDelaysMs?: number[]; settings?: SessionSettings; sessionId?: string; forcePlanning?: boolean }) {
   const settings = input.settings ?? defaultSessionSettings(input.provider ?? defaultProviderName)
-  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider, { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, settings, sessionId: input.sessionId, forcePlanning: input.forcePlanning })
+  return new AgentRunner({ root: input.root, provider: createProvider(input.provider ?? settings.provider, { model: settings.model, thinking: settings.thinking, effort: settings.effort }), permission: input.permission ?? PermissionService.autoApprove(defaultPermissionRules(input.mode ?? "build")), logger: input.logger, context: input.context, onTextDelta: input.onTextDelta, onEvent: input.onEvent, onBackgroundContextUpdate: input.onBackgroundContextUpdate, toolProgressIntervalMs: input.toolProgressIntervalMs, networkRetryDelaysMs: input.networkRetryDelaysMs, settings, sessionId: input.sessionId, forcePlanning: input.forcePlanning })
 }
 
 function lastSubagentDelegationFailedOrHandoff(messages: Message[]): boolean {
@@ -1992,6 +1997,16 @@ function fallbackTaskText(prompt: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function normalizeNetworkRetryDelays(delays: number[] | undefined) {
+  if (!delays) return defaultNetworkRetryDelaysMs
+  const normalized = delays.map((delay) => Math.max(0, Math.round(delay))).filter((delay) => Number.isFinite(delay))
+  return normalized.length > 0 ? normalized : defaultNetworkRetryDelaysMs
+}
+
+function isRetryableProviderFailure(category: ProviderTurnResult["failureCategory"]) {
+  return category === "network" || category === "api"
 }
 
 function firstMissingPlanStepReport(toolCalls: ToolCall[]) {

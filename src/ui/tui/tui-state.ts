@@ -34,6 +34,7 @@ export class TuiState {
   panelDrawnLines = 0
   panelDirty = false
   metrics: ProviderRunMetrics | undefined = undefined
+  providerRetryCount = 0
   subagentUsage: TuiUsageTotals = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, cacheHitTokens: 0, cacheMissTokens: 0, roleCounts: {} }
   queuedPrompt: string | undefined = undefined
   activePlan: StoredExecutionPlan | undefined = undefined
@@ -46,6 +47,7 @@ export class TuiState {
     this.pausedForPrompt = false
     this.queuedPrompt = undefined
     this.metrics = undefined
+    this.providerRetryCount = 0
     this.subagentUsage = { inputTokens: 0, outputTokens: 0, calls: 0, invocations: 0, cacheHitTokens: 0, cacheMissTokens: 0, roleCounts: {} }
     this.statusText = statusText
     this.runElapsedStart = now

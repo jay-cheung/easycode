@@ -59,8 +59,8 @@ export abstract class HttpSSEProviderBase<TState = unknown> implements Provider 
     try {
       response = await fetch(this.url, fetchOptions)
     } catch (error) {
-      const detail = formatFetchFailure(error)
-      throw new ProviderError(`${this.errorPrefix}: ${detail}`, { output: detail })
+      const failure = formatFetchFailure(error)
+      throw new ProviderError(`${this.errorPrefix}: ${failure.detail}`, { output: failure.detail, code: failure.code })
     }
     if (!response.ok || !response.body) {
       const output = await safeReadResponseText(response, "error response body")
@@ -113,9 +113,13 @@ export function responseHeaders(response: Response) {
 
 function formatFetchFailure(error: unknown) {
   const messages = collectErrorMessages(error)
-  if (messages.length === 0) return "network request failed"
-  if (messages.length === 1) return messages[0]
-  return `${messages[0]} (cause: ${messages.slice(1).join("; ")})`
+  const codes = collectErrorCodes(error)
+  const detail = messages.length === 0
+    ? "network request failed"
+    : messages.length === 1
+      ? messages[0] ?? "network request failed"
+      : `${messages[0]} (cause: ${messages.slice(1).join("; ")})`
+  return { detail, code: codes[0] ?? "fetch_failed" }
 }
 
 function collectErrorMessages(error: unknown, seen = new Set<unknown>()): string[] {
@@ -145,6 +149,20 @@ function uniqueNonEmpty(values: string[]) {
     result.push(value)
   }
   return result
+}
+
+function collectErrorCodes(error: unknown, seen = new Set<unknown>()): string[] {
+  if (!error || seen.has(error)) return []
+  seen.add(error)
+
+  if (typeof error === "object" && error !== null) {
+    const code = "code" in error && typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code.trim()
+      : ""
+    const causeCodes = "cause" in error ? collectErrorCodes((error as { cause?: unknown }).cause, seen) : []
+    return uniqueNonEmpty([code, ...causeCodes])
+  }
+  return []
 }
 
 async function safeReadResponseText(response: Response, label: string) {

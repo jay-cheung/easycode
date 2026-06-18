@@ -13,6 +13,7 @@ export type ProviderRunMetrics = {
   effort?: ReasoningEffort
   maxOutputTokens?: number
   maxProviderCalls?: number
+  providerRetries?: number
   calls: number
   inputTokens: number
   outputTokens: number
@@ -48,6 +49,7 @@ export type RunUiEvent =
   | { type: "run_start"; mode: string; provider: string; model?: string }
   | { type: "goal"; phase: "started" | "definition" | "planning" | "executing" | "reviewing" | "paused" | "blocked" | "completed" | "cleared"; goal?: TuiGoalContext }
   | { type: "provider_progress"; provider: string; model?: string; elapsedMs: number; phase?: "waiting" | "thinking" | "answering" }
+  | { type: "provider_retry"; category: "network" | "api" | "validation" | "runtime"; attempt: number; maxAttempts: number; scope?: "main" | "subagent" }
   | { type: "provider_metrics"; metrics: ProviderRunMetrics; interim?: boolean }
   | { type: "subagent"; status: "scheduled" | "completed" | "failed"; info: SubagentUiInfo; elapsedMs?: number; error?: string; metrics?: ProviderRunMetrics }
   | { type: "context_compaction"; status: "started" | "completed" | "failed"; inputMessages?: number; summaryChars?: number; summaryTokens?: number; elapsedMs?: number; error?: string }

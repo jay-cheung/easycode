@@ -35,6 +35,7 @@ export function drawStatusPanel(input: RenderLoopDeps) {
     statusText: input.state.statusText,
     queuedPrompt: input.state.queuedPrompt,
     metrics: input.state.metrics,
+    providerRetryCount: input.state.providerRetryCount,
     activePlan: input.state.activePlan,
     gitDiffStats: input.state.gitDiffStats,
   })

@@ -258,6 +258,40 @@ describe("tui renderer", () => {
     expect(new Set(visibleWidths).size).toBe(1)
   })
 
+  test("shows provider retry count in the live status panel", () => {
+    const lines = generateStatusPanelLines({
+      context: {
+        root: "/tmp/project",
+        mode: "build",
+        provider: "fake",
+        session: "demo",
+      },
+      language: "en",
+      columns: 88,
+      spinnerFrame: 0,
+      elapsedMs: 1_250,
+      statusText: "Waiting for fake...",
+      providerRetryCount: 3,
+      metrics: {
+        provider: "fake",
+        calls: 4,
+        inputTokens: 100,
+        outputTokens: 25,
+        cacheHitTokens: 50,
+        cacheMissTokens: 50,
+        hitRate: 0.5,
+        providerElapsedMs: 1_250,
+        effectiveCost: 0,
+        rates: { inputCacheHit: 0, inputCacheMiss: 0, output: 0 },
+      },
+    })
+
+    expect(lines.join("\n")).toContain("provider retries:")
+    expect(lines.join("\n")).toContain("3")
+    const visibleWidths = lines.map((line) => displayWidth(line))
+    expect(new Set(visibleWidths).size).toBe(1)
+  })
+
   test("keeps zh card headers aligned for tty rendering", () => {
     const card = drawCard("实时状态", ["第一行", "第二行"], 88, { borderStyle: "round" })
     const visibleWidths = card.split("\n").map((line) => displayWidth(line))

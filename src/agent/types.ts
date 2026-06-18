@@ -55,6 +55,7 @@ export type AgentRunnerOptions = {
   onBackgroundContextUpdate?: () => void | Promise<void>
   toolProgressIntervalMs?: number
   providerProgressIntervalMs?: number
+  networkRetryDelaysMs?: number[]
   settings?: SessionSettings
   sessionId?: string
   forcePlanning?: boolean

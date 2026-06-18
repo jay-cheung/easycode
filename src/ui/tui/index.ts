@@ -161,6 +161,8 @@ export class TuiRenderer {
         statusText = copy.statusAnswering
       }
       this.state.setStatus(statusText, this.currentProviderPhaseKey)
+    } else if (event.type === "provider_retry") {
+      this.state.providerRetryCount += 1
     } else if (event.type === "tool_call") {
       this.state.setStatus(copy.statusExecutingTool(event.call.name), `tool:${event.call.id}:call`)
     } else if (event.type === "tool_progress") {
@@ -223,6 +225,7 @@ export class TuiRenderer {
     // Forward to timeline (excluding progress and metrics events which are already displayed in the TUI status panel / cards)
     if (
       event.type !== "provider_progress" &&
+      event.type !== "provider_retry" &&
       event.type !== "tool_progress" &&
       event.type !== "provider_metrics" &&
       event.type !== "run_done" &&
@@ -469,4 +472,3 @@ async function getGitDiffStats(cwd: string): Promise<{ filesChanged: number; ins
     return undefined
   }
 }
-

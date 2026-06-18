@@ -68,11 +68,13 @@ export interface Provider {
 export class ProviderError extends Error {
   readonly status?: number
   readonly output?: string
+  readonly code?: string
 
-  constructor(message: string, options: { status?: number; output?: string } = {}) {
+  constructor(message: string, options: { status?: number; output?: string; code?: string } = {}) {
     super(message)
     this.name = "ProviderError"
     this.status = options.status
     this.output = options.output
+    this.code = options.code
   }
 }

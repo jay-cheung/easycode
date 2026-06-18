@@ -114,7 +114,7 @@ export async function runProviderTurnStream(
       if (event.type === "failure") {
         stopProviderProgress()
         failureText = failureFormatter(event.error.output || event.error.message)
-        const classified = classifyProviderFailure(event.error)
+        const classified = classifyProviderFailure({ ...event.error, explicitProviderFailure: true })
         failureCategory = classified.category
         replayEvents.push({ type: "failure", text: failureText, source: "provider", category: classified.category })
         if (emitDeltas) {
@@ -145,7 +145,12 @@ export async function runProviderTurnStream(
         ? error.message
         : String(error)
     const formattedFailure = failureFormatter(message)
-    const classified = classifyProviderFailure({ message, output: message })
+    const classified = classifyProviderFailure({
+      code: error instanceof ProviderError ? error.code : errorCode(error),
+      status: error instanceof ProviderError ? error.status : undefined,
+      message,
+      output: error instanceof ProviderError ? error.output ?? message : message,
+    })
     replayEvents.push({ type: "failure", text: formattedFailure, source: "provider", category: classified.category })
     if (emitDeltas) deps.onEvent?.({ type: "failure", text: formattedFailure, source: "provider", category: classified.category })
     return { text: currentText(), reasoningText: currentReasoning(), toolCalls, failureText: formattedFailure, failureCategory: classified.category, replayEvents }
@@ -220,18 +225,32 @@ function providerFailureText(error: ProviderError) {
   return error.output?.trim() || error.message
 }
 
-function classifyProviderFailure(error: { code?: string; message: string; output: string }) {
-  const code = (error.code ?? "").toLowerCase()
-  const text = `${error.message}\n${error.output}`.toLowerCase()
-  if (
-    /\b(econnrefused|econnreset|enotfound|eai_again|etimedout|timeout|timed out|connection refused|connection reset|network request failed|fetch failed|socket hang up|socket connection|tls|ssl|certificate|unable to get local issuer certificate)\b/.test(text)
-  ) {
-    return { category: "network" as const }
+function errorCode(error: unknown) {
+  if (typeof error === "object" && error !== null && "code" in error && typeof (error as { code?: unknown }).code === "string") {
+    return (error as { code: string }).code
   }
-  if (/\b(quota|rate_limit|insufficient_quota|invalid_api_key|unauthorized|forbidden|payment_required)\b/.test(code) || /\b(quota exceeded|rate limit|unauthorized|forbidden)\b/.test(text)) {
+  return undefined
+}
+
+function classifyProviderFailure(error: { code?: string; status?: number; message: string; output: string; explicitProviderFailure?: boolean }) {
+  const code = (error.code ?? "").toLowerCase()
+  if (isNetworkErrorCode(code)) return { category: "network" as const }
+  if (error.explicitProviderFailure || isProviderApiStatus(error.status) || isProviderApiErrorCode(code)) {
     return { category: "api" as const }
   }
   return { category: "runtime" as const }
+}
+
+function isNetworkErrorCode(code: string) {
+  return /\b(econnrefused|econnreset|enotfound|eai_again|etimedout|etls|cert_|self_signed_cert|unable_to_get_issuer_cert|socket|fetch_failed|network_error)\b/.test(code)
+}
+
+function isProviderApiStatus(status: number | undefined) {
+  return status !== undefined && (status < 200 || status >= 300)
+}
+
+function isProviderApiErrorCode(code: string) {
+  return code.length > 0
 }
 
 function appendOutput(output: string, part: string) {

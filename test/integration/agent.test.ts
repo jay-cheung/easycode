@@ -329,7 +329,7 @@ describe("agent integration", () => {
         yield { type: "done" }
       },
     }
-    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event), networkRetryDelaysMs: [0, 0, 0, 0, 0] }).run("Fix", "build")
     expect(result.text).toBe("done")
     expect(events.some((event) => event.type === "provider" && event.name === "provider.request")).toBe(false)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.status === 200)).toBe(false)
@@ -350,7 +350,7 @@ describe("agent integration", () => {
         yield { type: "done" }
       },
     }
-    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event), networkRetryDelaysMs: [0, 0, 0, 0, 0] }).run("Fix", "build")
     expect(result.status).toBe("failed")
     expect(events.some((event) => event.type === "provider" && event.name === "provider.request")).toBe(false)
     expect(events.some((event) => event.type === "provider" && event.name === "provider.response" && event.detail?.body === "{\"error\":\"quota\"}" && event.detail.status === undefined)).toBe(true)
@@ -361,14 +361,17 @@ describe("agent integration", () => {
   test("returns provider error output to the user", async () => {
     const root = await fixture()
     const events: LogEvent[] = []
+    let calls = 0
     const provider: Provider = {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
         throw new ProviderError("quota exceeded", { status: 429, output: "{\"error\":{\"message\":\"quota exceeded\"}}" })
       },
     }
-    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event), networkRetryDelaysMs: [0, 0, 0, 0, 0] }).run("Fix", "build")
     expect(result.status).toBe("failed")
+    expect(calls).toBe(6)
     expect(result.text).toContain("{\"error\":{\"message\":\"quota exceeded\"}}")
     expect(result.text).toContain("Run failed. Continue with another message")
     expect(result.messages.at(-1)?.role).toBe("assistant")
@@ -379,25 +382,62 @@ describe("agent integration", () => {
   test("fails gracefully and emits run_done when provider throws a generic connection error", async () => {
     const root = await fixture()
     const uiEvents: RunUiEvent[] = []
+    let calls = 0
     const result = await new AgentRunner({
       root,
       provider: {
         name: "test-provider",
         async *stream(): AsyncIterable<ProviderEvent> {
-          throw new Error("The socket connection was closed unexpectedly.")
+          calls += 1
+          const error = new Error("The socket connection was closed unexpectedly.")
+          ;(error as Error & { code?: string }).code = "ECONNRESET"
+          throw error
         },
       },
       onEvent: (event) => uiEvents.push(event),
+      networkRetryDelaysMs: [0, 0, 0, 0, 0],
     }).run("Fix", "build")
 
     expect(result.status).toBe("failed")
+    expect(calls).toBe(6)
     expect(result.text).toContain("The socket connection was closed unexpectedly.")
     expect(uiEvents).toContainEqual(expect.objectContaining({ type: "failure", source: "provider", category: "network" }))
+    expect(uiEvents.filter((event) => event.type === "provider_retry" && event.category === "network")).toHaveLength(5)
     expect(uiEvents).toContainEqual(expect.objectContaining({ type: "run_done", status: "failed" }))
     await rm(root, { recursive: true, force: true })
   })
 
-  test("active plans retry network provider failures once and preserve a recoverable pause", async () => {
+  test("retries structured fetch failures without relying on friendly error text", async () => {
+    const root = await fixture()
+    const uiEvents: RunUiEvent[] = []
+    let calls = 0
+    const provider: Provider = {
+      name: "test-provider",
+      async *stream(): AsyncIterable<ProviderEvent> {
+        calls += 1
+        throw new ProviderError("DeepSeek API failed: Unable to connect. Is the computer able to access the url?", {
+          output: "Unable to connect. Is the computer able to access the url?",
+          code: "fetch_failed",
+        })
+      },
+    }
+
+    const result = await new AgentRunner({
+      root,
+      provider,
+      onEvent: (event) => uiEvents.push(event),
+      networkRetryDelaysMs: [0, 0, 0, 0, 0],
+    }).run("Fix", "build")
+
+    expect(result.status).toBe("failed")
+    expect(calls).toBe(6)
+    expect(result.text).toContain("Unable to connect. Is the computer able to access the url?")
+    expect(uiEvents.filter((event) => event.type === "provider_retry" && event.category === "network")).toHaveLength(5)
+    expect(uiEvents).toContainEqual(expect.objectContaining({ type: "failure", source: "provider", category: "network" }))
+    await rm(root, { recursive: true, force: true })
+  })
+
+  test("active plans retry network provider failures five times and preserve a recoverable pause", async () => {
     const root = await fixture()
     const context = new ContextManager()
     const logs: LogEvent[] = []
@@ -420,21 +460,33 @@ describe("agent integration", () => {
     })
 
     let calls = 0
+    const uiEvents: RunUiEvent[] = []
     const provider: Provider = {
       name: "test-provider",
       async *stream(): AsyncIterable<ProviderEvent> {
         calls += 1
-        throw new Error("The socket connection was closed unexpectedly.")
+        const error = new Error("The socket connection was closed unexpectedly.")
+        ;(error as Error & { code?: string }).code = "ECONNRESET"
+        throw error
       },
     }
 
-    const result = await new AgentRunner({ root, provider, context, logger: (event) => logs.push(event) }).run("Continue active plan after network issue", "build")
+    const result = await new AgentRunner({
+      root,
+      provider,
+      context,
+      logger: (event) => logs.push(event),
+      onEvent: (event) => uiEvents.push(event),
+      networkRetryDelaysMs: [0, 0, 0, 0, 0],
+    }).run("Continue active plan after network issue", "build")
 
     expect(result.status).toBe("failed")
-    expect(calls).toBe(2)
-    expect(result.text).toContain("Network/provider failure persisted after one retry.")
+    expect(calls).toBe(6)
+    expect(result.text).toContain("Network/provider failure persisted after 5 retries.")
     expect(result.text).toContain("checkpoint was preserved")
-    expect(logs).toContainEqual(expect.objectContaining({ type: "provider", name: "provider.retry", detail: expect.objectContaining({ category: "network", attempt: 1, maxAttempts: 1 }) }))
+    expect(logs).toContainEqual(expect.objectContaining({ type: "provider", name: "provider.retry", detail: expect.objectContaining({ category: "network", attempt: 1, maxAttempts: 5, delayMs: 0 }) }))
+    expect(logs).toContainEqual(expect.objectContaining({ type: "provider", name: "provider.retry", detail: expect.objectContaining({ category: "network", attempt: 5, maxAttempts: 5, delayMs: 0 }) }))
+    expect(uiEvents.filter((event) => event.type === "provider_retry" && event.category === "network")).toHaveLength(5)
     expect(logs).toContainEqual(expect.objectContaining({ type: "state", name: "goal.retryable_pause", detail: expect.objectContaining({ category: "network", hasActivePlan: true }) }))
     await rm(root, { recursive: true, force: true })
   })
@@ -449,7 +501,7 @@ describe("agent integration", () => {
         yield { type: "done" }
       },
     }
-    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event) }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, logger: (event) => events.push(event), networkRetryDelaysMs: [0, 0, 0, 0, 0] }).run("Fix", "build")
     expect(result.status).toBe("failed")
     expect(result.text).toContain("{\"code\":\"insufficient_quota\",\"message\":\"quota exceeded\"}")
     expect(result.text).toContain("Run failed. Continue with another message")
@@ -468,7 +520,7 @@ describe("agent integration", () => {
         yield { type: "failure", error: { code: "quota", message: "quota exceeded", output: "quota exceeded" } }
       },
     }
-    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider") }).run("Fix", "build")
+    const result = await new AgentRunner({ root, provider, settings: defaultSessionSettings("test-provider"), networkRetryDelaysMs: [0, 0, 0, 0, 0] }).run("Fix", "build")
     expect(result.status).toBe("failed")
     expect(result.text).toContain("I checked the current state.\nquota exceeded")
     expect(result.text).toContain("Run failed. Continue with another message")
@@ -1619,7 +1671,7 @@ describe("agent integration", () => {
         yield { type: "text_delta", text: "Done." }
       },
     }
-    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) })
+    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event), networkRetryDelaysMs: [0, 0, 0, 0, 0] })
     const result = await runner.run("修复失败测试", "build")
     await runner.waitForSummarySubagent()
     expect(result.status).toBe("completed")
@@ -1702,7 +1754,7 @@ describe("agent integration", () => {
       },
     }
 
-    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event) })
+    const runner = new AgentRunner({ root, provider, context, onEvent: (event) => events.push(event), networkRetryDelaysMs: [0, 0, 0, 0, 0] })
     const result = await runner.run("Fix the failing test", "build")
     await runner.waitForSummarySubagent()
 

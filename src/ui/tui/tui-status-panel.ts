@@ -22,11 +22,12 @@ export function generateStatusPanelLines(input: {
   spinnerFrame: number
   elapsedMs: number
   statusText: string
-	  queuedPrompt?: string
-	  metrics?: ProviderRunMetrics
-	  activePlan?: StoredExecutionPlan
-	  gitDiffStats?: { filesChanged: number; insertions: number; deletions: number }
-	}) {
+  queuedPrompt?: string
+  metrics?: ProviderRunMetrics
+  providerRetryCount?: number
+  activePlan?: StoredExecutionPlan
+  gitDiffStats?: { filesChanged: number; insertions: number; deletions: number }
+}) {
   const copy = uiText(input.language)
   const width = Math.max(60, Math.min(input.columns, 90))
   const chars = { tl: "╭", tr: "╮", bl: "╰", br: "╯", h: "─", v: "│" }
@@ -83,15 +84,20 @@ export function generateStatusPanelLines(input: {
     body = `  \x1b[33m📥\x1b[0m  \x1b[1m${copy.queuedNextLabel}:\x1b[0m \x1b[90m"${truncateToWidth(input.queuedPrompt, width - 20)}"\x1b[0m`
   } else if (input.metrics) {
     const hitRate = (input.metrics.hitRate * 100).toFixed(1)
-    body = `  \x1b[33m📊\x1b[0m  \x1b[1m${copy.metricsLabel}:\x1b[0m calls: \x1b[1m${input.metrics.calls}\x1b[0m  ·  tokens: \x1b[1m${input.metrics.inputTokens + input.metrics.outputTokens}\x1b[0m (hit: \x1b[32m${hitRate}%\x1b[0m)`
+    body = metricsPanelBody(copy.metricsLabel, input.metrics.calls, input.metrics.inputTokens + input.metrics.outputTokens, hitRate, input.providerRetryCount ?? 0, width)
   } else {
-    body = `  \x1b[33m📊\x1b[0m  \x1b[1m${copy.metricsLabel}:\x1b[0m calls: \x1b[1m0\x1b[0m  ·  tokens: \x1b[1m0\x1b[0m (hit: \x1b[32m0.0%\x1b[0m)`
+    body = metricsPanelBody(copy.metricsLabel, 0, 0, "0.0", input.providerRetryCount ?? 0, width)
   }
   lines.push(padPanelLine(body, width, chars, color, reset))
 
   const hintText = ` ${copy.typeCancelHint} `
   lines.push(drawBorderLine(hintText, width, { left: chars.bl, right: chars.br, h: chars.h }, color, reset))
   return lines
+}
+
+function metricsPanelBody(label: string, calls: number, tokens: number, hitRate: string, providerRetryCount: number, width: number) {
+  const retryLabel = width >= 76 ? "provider retries" : "retries"
+  return `  \x1b[33m📊\x1b[0m  \x1b[1m${label}:\x1b[0m calls: \x1b[1m${calls}\x1b[0m  ·  tokens: \x1b[1m${tokens}\x1b[0m  ·  hit: \x1b[32m${hitRate}%\x1b[0m  ·  ${retryLabel}: \x1b[1m${providerRetryCount}\x1b[0m`
 }
 
 function padPanelLine(
