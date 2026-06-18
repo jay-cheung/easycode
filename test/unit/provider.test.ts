@@ -499,6 +499,36 @@ describe("provider", () => {
     }
   })
 
+  test("serializes reasoning-only assistant history with content for chat completions", async () => {
+    const previous = process.env.DEEPSEEK_API_KEY
+    process.env.DEEPSEEK_API_KEY = "test-key"
+    try {
+      const provider = new DeepSeekProvider("deepseek-v4-pro")
+      const reasoning = "Need to recover from the interrupted session."
+      const history = messagesToProviderInput([
+        createMessage("assistant", [reasoningPart(reasoning)]),
+        textMessage("user", "继续"),
+      ])
+      const stream = provider.stream({ mode: "build", prompt: "继续", messages: [], providerMessages: history, tools: [] })[Symbol.asyncIterator]()
+      const first = await stream.next()
+      await stream.return?.()
+      expect(first.value).toMatchObject({
+        type: "request",
+        request: {
+          body: {
+            messages: [
+              { role: "assistant", content: "", reasoning_content: reasoning },
+              { role: "user", content: "继续" },
+            ],
+          },
+        },
+      })
+    } finally {
+      if (previous === undefined) delete process.env.DEEPSEEK_API_KEY
+      else process.env.DEEPSEEK_API_KEY = previous
+    }
+  })
+
   test("provides empty reasoning_content when thinking is enabled but reasoning is empty", async () => {
     const previous = process.env.DEEPSEEK_API_KEY
     process.env.DEEPSEEK_API_KEY = "test-key"

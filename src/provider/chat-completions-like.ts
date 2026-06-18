@@ -252,7 +252,7 @@ export function chatMessagesFromProviderMessage(
   if (role === "assistant") {
     const text = parts.filter((part): part is TextPart | SummaryPart => part.type === "text" || part.type === "summary").map((part) => partToText(part)).join("\n")
     const reasoningContent = parts.filter((part): part is ReasoningPart => part.type === "reasoning").map((part) => part.text).join("")
-    return [{ role, content: text || null, ...(supportsThinking ? { reasoning_content: reasoningContent || "" } : reasoningContent ? { reasoning_content: reasoningContent } : {}) }]
+    return [{ role, content: text || "", ...(supportsThinking ? { reasoning_content: reasoningContent || "" } : reasoningContent ? { reasoning_content: reasoningContent } : {}) }]
   }
   return [{ role, content: message.content }]
 }
