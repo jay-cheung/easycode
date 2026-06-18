@@ -36,7 +36,7 @@ export function createInitialStrategyState(options: ContextOptions, maxTokens: n
     maxTokens,
     compactAt: clampNumber(options.compactAt ?? 0.75, 0.6, 0.9),
     activeWindowUserTurns: clampInt(options.activeWindowUserTurns ?? options.preserveRecentUserTurns ?? defaultActiveWindowUserTurns, 1, 10),
-    toolResultTokenBudget: clampInt(options.toolResultTokenBudget ?? 1_200, 300, 4_000),
+    toolResultTokenBudget: clampInt(options.toolResultTokenBudget ?? 600, 300, 4_000),
     dynamicSummaryTokenBudget: clampInt(options.dynamicSummaryTokenBudget ?? 3_000, 800, 8_000),
     maxSteps: options.maxSteps ?? defaultMaxSteps,
   }

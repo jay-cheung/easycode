@@ -235,7 +235,7 @@ export function toolResultMessage(input: {
 
 export const protectedToolResultRedaction = "[redacted: permission-gated tool result]"
 export const largeOutputLimit = 8_000
-export const defaultToolResultTokenBudget = 1_200
+export const defaultToolResultTokenBudget = 600
 const largeOutputHead = 4_000
 const largeOutputTail = 3_000
 const historyAssistantTextLimit = 4_000
@@ -243,7 +243,15 @@ const historyReasoningTextLimit = 1_500
 const historyPlanTextLimit = 3_000
 const historyToolExcerptLimit = 2_400
 const historyCanonicalVersion = 1
-type MessageTextOptions = { redactProtectedToolResults?: boolean; truncateLargeOutputs?: boolean; largeOutputLimit?: number; toolResultTokenBudget?: number }
+type MessageTextOptions = {
+  redactProtectedToolResults?: boolean
+  truncateLargeOutputs?: boolean
+  largeOutputLimit?: number
+  toolResultTokenBudget?: number
+  foldedToolResults?: Map<string, ToolResultFold>
+}
+
+type ToolResultFold = { reason: string; retrievalHint: string }
 
 export function isProtectedToolResult(part: MessagePart) {
   return part.type === "tool_result" && part.metadata.permissionAction === "ask"
@@ -613,7 +621,9 @@ export function messageToText(message: Message, options: MessageTextOptions = {}
 
 export function messagesToProviderInput(messages: Message[], options: MessageTextOptions = {}): ProviderInputMessage[] {
   messages = normalizeMessages(messages)
-  return messages.map((message) => ({ role: message.role, content: messageToText(message, options), parts: providerParts(message, options) }))
+  const foldedToolResults = supersededToolResultFolds(messages)
+  const renderOptions = foldedToolResults.size > 0 ? { ...options, foldedToolResults } : options
+  return messages.map((message) => ({ role: message.role, content: messageToText(message, renderOptions), parts: providerParts(message, renderOptions) }))
 }
 
 export function toolResults(messages: Message[]) {
@@ -682,17 +692,252 @@ function providerParts(message: Message, options: MessageTextOptions) {
   })
 }
 
+type ToolResultRecord = {
+  callID: string
+  toolName: string
+  status: ToolResultPart["status"]
+  input: unknown
+  metadata: Record<string, unknown>
+  feature?: ToolResultFeature
+}
+
+function supersededToolResultFolds(messages: Message[]) {
+  const inputsByCallID = new Map<string, unknown>()
+  const records: ToolResultRecord[] = []
+  for (const message of messages) {
+    for (const part of message.parts) {
+      if (part.type === "tool_call") inputsByCallID.set(part.call.id, part.call.input)
+      if (part.type === "tool_result") {
+        const record = { callID: part.callID, toolName: part.toolName, status: part.status, input: inputsByCallID.get(part.callID), metadata: part.metadata }
+        records.push({ ...record, feature: toolResultFeature(record) })
+      }
+    }
+  }
+  const folded = new Map<string, ToolResultFold>()
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]
+    const fold = records.slice(index + 1).map((later) => toolResultSupersession(later, record)).find((item) => item !== undefined)
+    if (fold) folded.set(record.callID, fold)
+  }
+  return folded
+}
+
+function toolResultSupersession(candidate: ToolResultRecord, target: ToolResultRecord): ToolResultFold | undefined {
+  if (candidate.status !== "succeeded" || target.status !== "succeeded") return undefined
+  if (!candidate.feature || !target.feature) return undefined
+  return toolResultFeatureSupersession(candidate.feature, target.feature)
+}
+
+type ToolResultFeature =
+  | { kind: "file_range"; toolName: "read" | "read_lines"; filePath: string; full: boolean; startLine?: number; endLine?: number }
+  | { kind: "git_diff"; mode: "summary" | "files" | "stat" | "file"; filePath?: string; truncated: boolean }
+  | { kind: "query"; toolName: string; key: string; limit?: number; depth?: number }
+  | { kind: "exact"; toolName: string; key: string }
+
+const queryFoldableTools = new Set(["grep", "rg_search", "find_definition", "find_references", "call_graph", "repo_map"])
+const exactInspectionFoldableTools = new Set(["list", "git_status", "git_branch", "git_log", "ledger", "memory_query", "connector_list", "mcp_list_resources", "mcp_read_resource"])
+
+function toolResultFeature(record: Omit<ToolResultRecord, "feature">): ToolResultFeature | undefined {
+  return fileReadFeature(record) ?? gitDiffFeature(record) ?? queryInspectionFeature(record) ?? exactInspectionFeature(record)
+}
+
+function toolResultFeatureSupersession(candidate: ToolResultFeature, target: ToolResultFeature): ToolResultFold | undefined {
+  if (candidate.kind === "file_range" && target.kind === "file_range") return fileRangeFeatureSupersession(candidate, target)
+  if (candidate.kind === "git_diff" && target.kind === "git_diff") return gitDiffFeatureSupersession(candidate, target)
+  if (candidate.kind === "query" && target.kind === "query") return queryFeatureSupersession(candidate, target)
+  if (candidate.kind === "exact" && target.kind === "exact") return exactFeatureSupersession(candidate, target)
+  return undefined
+}
+
+function fileRangeFeatureSupersession(candidate: Extract<ToolResultFeature, { kind: "file_range" }>, target: Extract<ToolResultFeature, { kind: "file_range" }>): ToolResultFold | undefined {
+  if (candidate.filePath !== target.filePath || !fileRangeCovers(candidate, target)) return undefined
+  return {
+    reason: "file_read_range_superseded",
+    retrievalHint: target.full
+      ? `use the later full-file read for ${target.filePath}`
+      : `use the later read covering ${target.filePath}:${target.startLine}-${target.endLine}`,
+  }
+}
+
+function gitDiffFeatureSupersession(candidate: Extract<ToolResultFeature, { kind: "git_diff" }>, target: Extract<ToolResultFeature, { kind: "git_diff" }>): ToolResultFold | undefined {
+  if (!gitDiffCovers(candidate, target)) return undefined
+  return {
+    reason: "git_diff_view_superseded",
+    retrievalHint: candidate.mode === "file" && candidate.filePath ? `use the later git_diff mode=file for ${candidate.filePath}` : `use the later git_diff mode=${candidate.mode}`,
+  }
+}
+
+function queryFeatureSupersession(candidate: Extract<ToolResultFeature, { kind: "query" }>, target: Extract<ToolResultFeature, { kind: "query" }>): ToolResultFold | undefined {
+  if (candidate.toolName !== target.toolName || candidate.key !== target.key) return undefined
+  if (!limitCovers(candidate.limit, target.limit) || !limitCovers(candidate.depth, target.depth)) return undefined
+  return {
+    reason: "query_result_superseded",
+    retrievalHint: `use the later ${candidate.toolName} result for the same query/input`,
+  }
+}
+
+function exactFeatureSupersession(candidate: Extract<ToolResultFeature, { kind: "exact" }>, target: Extract<ToolResultFeature, { kind: "exact" }>): ToolResultFold | undefined {
+  if (candidate.toolName !== target.toolName || candidate.key !== target.key) return undefined
+  return {
+    reason: "same_inspection_superseded",
+    retrievalHint: `use the later ${candidate.toolName} result for the same input`,
+  }
+}
+
+function fileReadFeature(record: Omit<ToolResultRecord, "feature">): ToolResultFeature | undefined {
+  if (record.toolName !== "read" && record.toolName !== "read_lines") return undefined
+  const filePath = stringMetadata(record.metadata, "filePath") ?? stringInput(record.input, "filePath")
+  if (!filePath) return undefined
+  if (record.toolName === "read") return { kind: "file_range", toolName: "read", filePath, full: true }
+  const startLine = numberMetadata(record.metadata, "startLine") ?? numberInput(record.input, "startLine")
+  const endLine = numberMetadata(record.metadata, "endLine") ?? numberInput(record.input, "endLine")
+  if (startLine === undefined || endLine === undefined) return undefined
+  return { kind: "file_range", toolName: "read_lines", filePath, full: false, startLine, endLine }
+}
+
+function gitDiffFeature(record: Omit<ToolResultRecord, "feature">): ToolResultFeature | undefined {
+  if (record.toolName !== "git_diff") return undefined
+  const mode = gitDiffMode(stringMetadata(record.metadata, "mode") ?? stringInput(record.input, "mode") ?? "summary")
+  if (!mode) return undefined
+  const filePath = stringMetadata(record.metadata, "filePath") ?? stringInput(record.input, "filePath")
+  if (mode === "file" && !filePath) return undefined
+  return { kind: "git_diff", mode, filePath, truncated: booleanMetadata(record.metadata, "truncated") === true }
+}
+
+function queryInspectionFeature(record: Omit<ToolResultRecord, "feature">): ToolResultFeature | undefined {
+  if (!queryFoldableTools.has(record.toolName) || !isRecord(record.input)) return undefined
+  const normalized = queryFeatureInput(record.toolName, record.input)
+  if (!normalized) return undefined
+  return {
+    kind: "query",
+    toolName: record.toolName,
+    key: stableStringifyFeature(normalized.key),
+    limit: normalized.limit,
+    depth: normalized.depth,
+  }
+}
+
+function exactInspectionFeature(record: Omit<ToolResultRecord, "feature">): ToolResultFeature | undefined {
+  if (!exactInspectionFoldableTools.has(record.toolName)) return undefined
+  return { kind: "exact", toolName: record.toolName, key: stableStringifyFeature(normalizeExactInspectionInput(record.toolName, record.input)) }
+}
+
+function fileRangeCovers(candidate: Extract<ToolResultFeature, { kind: "file_range" }>, target: Extract<ToolResultFeature, { kind: "file_range" }>) {
+  if (candidate.full) return true
+  if (target.full) return false
+  if (candidate.startLine === undefined || candidate.endLine === undefined || target.startLine === undefined || target.endLine === undefined) return false
+  return candidate.startLine <= target.startLine && candidate.endLine >= target.endLine
+}
+
+function gitDiffCovers(candidate: Extract<ToolResultFeature, { kind: "git_diff" }>, target: Extract<ToolResultFeature, { kind: "git_diff" }>) {
+  if (candidate.mode === "summary" && target.mode !== "file") return true
+  if (candidate.mode === "files" && target.mode === "files") return true
+  if (candidate.mode === "stat" && target.mode === "stat") return true
+  if (candidate.mode === "file" && target.mode === "file") return candidate.filePath === target.filePath && !candidate.truncated
+  return false
+}
+
+function queryFeatureInput(toolName: string, input: Record<string, unknown>) {
+  if (toolName === "grep") return { key: { query: input.query, dir: stringOrDefault(input.dir, ".") } }
+  if (toolName === "rg_search") {
+    return {
+      key: { query: input.query, dir: stringOrDefault(input.dir, "."), fileType: input.fileType },
+      limit: finiteNumber(input.maxResults),
+    }
+  }
+  if (toolName === "find_definition" || toolName === "find_references") {
+    return {
+      key: { symbol: input.symbol, language: input.language },
+      limit: finiteNumber(input.maxResults),
+    }
+  }
+  if (toolName === "call_graph") {
+    return {
+      key: { symbol: input.symbol, direction: input.direction, language: input.language },
+      depth: finiteNumber(input.depth),
+      limit: finiteNumber(input.maxResults),
+    }
+  }
+  if (toolName === "repo_map") {
+    return {
+      key: { dir: stringOrDefault(input.dir, "."), language: input.language, query: input.query, useCache: input.useCache },
+      limit: finiteNumber(input.maxFiles),
+    }
+  }
+  return undefined
+}
+
+function normalizeExactInspectionInput(toolName: string, input: unknown) {
+  if (!isRecord(input)) return input
+  if (toolName === "list") return { dirPath: stringOrDefault(input.dirPath, ".") }
+  return input
+}
+
+function limitCovers(candidate: number | undefined, target: number | undefined) {
+  if (candidate === undefined || target === undefined) return candidate === target
+  return candidate >= target
+}
+
+function gitDiffMode(value: string) {
+  return value === "summary" || value === "files" || value === "stat" || value === "file" ? value : undefined
+}
+
+function stringInput(input: unknown, key: string) {
+  return isRecord(input) && typeof input[key] === "string" && input[key].trim() ? input[key].trim() : undefined
+}
+
+function numberInput(input: unknown, key: string) {
+  return isRecord(input) ? finiteNumber(input[key]) : undefined
+}
+
+function stringOrDefault(value: unknown, fallback: string) {
+  return typeof value === "string" && value.length > 0 ? value : fallback
+}
+
+function finiteNumber(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function stableStringifyFeature(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map((item) => stableStringifyFeature(item)).join(",")}]`
+  const entries = Object.entries(value as Record<string, unknown>)
+    .filter(([, entryValue]) => entryValue !== undefined)
+    .sort(([left], [right]) => left.localeCompare(right))
+  return `{${entries.map(([key, entryValue]) => `${JSON.stringify(key)}:${stableStringifyFeature(entryValue)}`).join(",")}}`
+}
+
 function imageSourceLabel(source: ImageSource) {
   return source.type === "url" ? source.url : source.path
 }
 
 function renderToolResultOutputForProvider(part: ToolResultPart, output: string, options: MessageTextOptions) {
+  const fold = options.foldedToolResults?.get(part.callID)
+  if (fold) return renderFoldedToolResult(part, fold)
   const budgetChars = toolResultBudgetChars(options.toolResultTokenBudget)
   const truncated = renderEvidenceFirstToolResult(part, output, budgetChars)
   if (part.toolName !== "delegate_subagent") return truncated
   const coordinatorSummary = stringMetadata(part.metadata, "coordinatorSummary")
   if (!coordinatorSummary) return truncated
   return `${truncated}\n<coordinator_summary>\n${coordinatorSummary}\n</coordinator_summary>`
+}
+
+function renderFoldedToolResult(part: ToolResultPart, fold: ToolResultFold) {
+  const rawLength = numberMetadata(part.metadata, "rawOutputLength")
+  const lineCount = numberMetadata(part.metadata, "lineCount")
+  return [
+    "<evidence>",
+    "status: partial",
+    `source: ${part.toolName}`,
+    ...toolSourceLines(part).map((line) => shortInline(line, 180)),
+    ...(lineCount !== undefined ? [`lineCount: ${lineCount}`] : []),
+    ...(rawLength !== undefined ? [`rawOutputLength: ${rawLength}`] : []),
+    `omitted: ${fold.reason}`,
+    `retrievalHint: ${fold.retrievalHint}`,
+    "</evidence>",
+    "excerpt:",
+    "(excerpt omitted because a later tool result supersedes this result)",
+  ].join("\n")
 }
 
 function renderEvidenceFirstToolResult(part: ToolResultPart, output: string, budgetChars: number) {
@@ -720,7 +965,11 @@ function renderEvidenceFirstToolResult(part: ToolResultPart, output: string, bud
 }
 
 function toolResultBudgetChars(tokenBudget = defaultToolResultTokenBudget) {
-  return Math.max(300, Math.min(4_000, Math.floor(tokenBudget))) * 4
+  return normalizedToolResultTokenBudget(tokenBudget) * 4
+}
+
+function normalizedToolResultTokenBudget(tokenBudget = defaultToolResultTokenBudget) {
+  return Math.max(300, Math.min(4_000, Math.floor(tokenBudget)))
 }
 
 function isPartialToolResult(part: ToolResultPart, output: string, budgetChars: number) {

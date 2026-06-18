@@ -311,6 +311,8 @@ describe("agent runner ui events", () => {
       expect(result.status).toBe("completed")
       expect(capturedSystemMessages.some((content) => content.includes("Review Planning Gate Template:"))).toBe(true)
       expect(capturedSystemMessages.some((content) => content.includes("Call plan_exit with a low-risk review plan once the review scope is clear."))).toBe(true)
+      expect(capturedSystemMessages.some((content) => content.includes("first use git_diff in summary/files/stat mode"))).toBe(true)
+      expect(capturedSystemMessages.some((content) => content.includes("Delegation is optional"))).toBe(true)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -386,6 +388,29 @@ describe("agent runner ui events", () => {
     })
 
     expect(prepared.providerMessages.some((message) => message.content.includes("Exploration checkpoint reached"))).toBe(false)
+  })
+
+  test("active plan steps still receive context budget checkpoints", () => {
+    const context = new ContextManager()
+    context.add(textMessage("user", "Review the current changes"))
+    const prepared = prepareProviderTurnRequest({
+      context,
+      step: 4,
+      maxSteps: 66,
+      agent: { kind: "build", name: "run", depth: 0, mode: "build", tools: "enabled", systemPrompt: "test" },
+      instructions: [],
+      skills: [],
+      selectedSkills: [],
+      pendingSkillLoads: [],
+      tools: [{ name: "git_diff" } as never],
+      usedTools: Array.from({ length: 8 }, () => "git_diff"),
+      activeHypothesisMessages: [],
+      activePlanStepId: "step_3",
+    })
+
+    expect(prepared.availableTools).toEqual([])
+    expect(prepared.providerMessages.some((message) => message.content.includes("Context budget checkpoint reached"))).toBe(true)
+    expect(prepared.providerMessages.some((message) => message.content.includes("plan_step_complete"))).toBe(true)
   })
 
   test("emits immediate provider wait state after a tool result before the next model output", async () => {

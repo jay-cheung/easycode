@@ -3,7 +3,7 @@ import type { ContextManagerLike } from "../../context"
 import type { InstructionInfo } from "../../instruction"
 import type { SkillInfo } from "../../skill"
 import type { ToolDef } from "../../tool"
-import { explorationSummaryReadinessMessage, explorationSummaryStep } from "./runner-helpers"
+import { contextBudgetReadinessMessage, explorationSummaryReadinessMessage, explorationSummaryStep } from "./runner-helpers"
 
 export function prepareProviderTurnRequest(input: {
   context: ContextManagerLike
@@ -28,7 +28,14 @@ export function prepareProviderTurnRequest(input: {
     pendingSkillLoads: input.pendingSkillLoads,
     tools: input.tools,
   })
+  const contextBudgetMessage = contextBudgetReadinessMessage({ usedTools: input.usedTools, activePlanStepId: input.activePlanStepId })
   const shouldCheckSummaryReadiness = !input.activePlanStepId && input.usedTools.length > 0 && input.step >= explorationSummaryStep(input.maxSteps)
+  if (contextBudgetMessage) {
+    return {
+      providerMessages: [...plan.providerMessages, ...input.activeHypothesisMessages, contextBudgetMessage],
+      availableTools: [],
+    }
+  }
   return {
     providerMessages: shouldCheckSummaryReadiness
       ? [...plan.providerMessages, ...input.activeHypothesisMessages, explorationSummaryReadinessMessage(input.step + 1, input.maxSteps)]

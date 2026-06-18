@@ -300,7 +300,7 @@ function inferExecutorHint(goal: string, kind: PlanStepKind, doneWhen: string, f
   if (/\bdelegate\b|delegate_subagent|subagent|委派|子\s*agent/i.test(text)) return "subagent"
   if (isSkillScriptFailureDiagnosis(text)) return "subagent"
   if ((kind === "inspect" || kind === "verify" || kind === "gate") && isSkillScriptInspection(text)) return "subagent"
-  if ((kind === "inspect" || kind === "verify" || kind === "gate") && /\bresearch\b|调研|review|审查|评审|debug|排查|定位|test|验证/i.test(text)) {
+  if ((kind === "inspect" || kind === "verify" || kind === "gate") && /\bdebug\b|排查|定位|test|验证/i.test(text)) {
     return "subagent"
   }
   return undefined

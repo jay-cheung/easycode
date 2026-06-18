@@ -140,6 +140,25 @@ describe("Planning Layer & Executable Plans", () => {
     expect(plan.steps[0]).toMatchObject({ executorHint: "subagent", subagentRole: "explorer", delegationPolicy: "preferred" })
   })
 
+  test("normalizeExecutionPlan keeps ordinary review inspection on the coordinator", () => {
+    const plan = parseExecutionPlanFromResponse(JSON.stringify({
+      id: "plan_review_diff",
+      steps: [
+        {
+          id: "step_1",
+          goal: "Review the current git diff and report concrete findings",
+          kind: "inspect",
+          doneWhen: "The diff review findings are summarized.",
+          fallback: "Use available git_diff evidence and produce findings from research notes.",
+        },
+      ],
+    }))
+
+    expect(plan.steps[0].executorHint).toBeUndefined()
+    expect(plan.steps[0].subagentRole).toBeUndefined()
+    expect(plan.steps[0].delegationPolicy).toBeUndefined()
+  })
+
   test("normalizeExecutionPlan drops subagent role metadata when executorHint is explicitly main", () => {
     const plan = parseExecutionPlanFromResponse(JSON.stringify({
       id: "plan_main_review",

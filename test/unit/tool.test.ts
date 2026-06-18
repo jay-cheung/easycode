@@ -1304,6 +1304,55 @@ describe("tool", () => {
     expect(requested).toEqual([`bash:review:shell_complexity:${command}`])
   })
 
+  test("readonly inspection shell pipelines skip command review", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "export const value = 1" }),
+    } as unknown as Sandbox
+    const requested: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(request.patterns.join(","))
+      return "once"
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+    const command = `cd ${root} && git show HEAD:src/add.ts | grep "^export " | head -20`
+
+    const result = await registry.run("bash", { command }, ctx)
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.patterns).toEqual([`bash:exact:${command}`])
+    expect(result.metadata.approvalScope).toBe("exact command")
+    expect(result.metadata.permissionAutoReviewSource).toBeUndefined()
+    expect(requested).toEqual([])
+  })
+
+  test("find exec shell pipelines still require command review", async () => {
+    const registry = createBuiltinRegistry()
+    const root = await tmpdir()
+    const sandbox = {
+      root,
+      resolve: (target = ".") => path.resolve(root, target),
+      execute: async (input: { command: string }) => bashResult({ command: input.command, exitCode: 0, stdout: "ok" }),
+    } as unknown as Sandbox
+    const requested: string[] = []
+    const permission = new PermissionService(defaultPermissionRules("build"), (request) => {
+      requested.push(request.patterns.join(","))
+      return "once"
+    }, defaultPermissionAutoReviewer)
+    const ctx = { agentMode: "build" as const, sandbox, permission, skills: new SkillService(root), messages: [] }
+    const command = "find . -exec rm {} \\; | head -1"
+
+    const result = await registry.run("bash", { command }, ctx)
+
+    expect(result.metadata.status).toBe("succeeded")
+    expect(result.metadata.patterns).toEqual([`bash:review:shell_complexity:${command}`])
+    expect(result.metadata.approvalScope).toBe("command-review shell_complexity")
+    expect(requested).toEqual([`bash:review:shell_complexity:${command}`])
+  })
+
   test("replaceable bash commands run while retaining audit metadata", async () => {
     const registry = createBuiltinRegistry()
     const root = await tmpdir()

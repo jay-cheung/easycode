@@ -175,18 +175,35 @@ export async function runSummarySubagentTask(
   }
 }
 
+const fallbackPreviousSummaryChars = 4_000
+const fallbackTranscriptMessages = 8
+const fallbackMessageChars = 700
+
 function fallbackCompactSummary(snapshot: ContextCompactionSnapshot, errorText: string) {
   const sections = [
     "Fallback context summary generated locally because provider compaction failed.",
     `Compaction error: ${errorText}`,
   ]
   if (snapshot.previousSummary) {
-    sections.push(`Previous summary:\n${snapshot.previousSummary}`)
+    sections.push(`Previous summary:\n${compactFallbackText(snapshot.previousSummary, fallbackPreviousSummaryChars)}`)
   }
-  const transcript = snapshot.providerMessages
-    .map((message) => `${message.role}: ${message.content}`)
+  const transcript = snapshot.providerMessages.slice(-fallbackTranscriptMessages)
+    .map((message) => `${message.role}: ${compactFallbackText(message.content, fallbackMessageChars)}`)
     .join("\n\n")
     .trim()
-  if (transcript) sections.push(`Compacted transcript excerpt:\n${transcript}`)
+  if (transcript) {
+    sections.push([
+      "Recent compacted transcript excerpt (bounded; older raw transcript omitted):",
+      transcript,
+    ].join("\n"))
+  }
   return sections.join("\n\n")
+}
+
+function compactFallbackText(text: string, limit: number) {
+  const trimmed = text.trim()
+  if (trimmed.length <= limit) return trimmed
+  const head = Math.max(0, Math.floor(limit * 0.65))
+  const tail = Math.max(0, limit - head)
+  return `${trimmed.slice(0, head)}\n[compaction fallback omitted ${trimmed.length - limit} chars]\n${trimmed.slice(-tail)}`
 }

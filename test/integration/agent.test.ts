@@ -1759,9 +1759,12 @@ describe("agent integration", () => {
     await runner.waitForSummarySubagent()
 
     expect(result.status).toBe("completed")
-    expect(context.state.summary).toContain("Fallback context summary generated locally")
-    expect(context.state.summary).toContain("connection refused")
-    expect(context.state.summary).toContain("old turn 0")
+    const summary = context.state.summary
+    if (!summary) throw new Error("expected fallback compaction summary")
+    expect(summary).toContain("Fallback context summary generated locally")
+    expect(summary).toContain("connection refused")
+    expect(summary).toContain("Recent compacted transcript excerpt (bounded; older raw transcript omitted)")
+    expect(summary.length).toBeLessThan(8_000)
     expect(events).toContainEqual(expect.objectContaining({ type: "subagent", status: "failed", error: expect.stringContaining("connection refused") }))
     expect(events).toContainEqual(expect.objectContaining({
       type: "context_compaction",

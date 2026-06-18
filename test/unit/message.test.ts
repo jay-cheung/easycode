@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { canonicalizeAssistantHistory, canonicalizeHistoryMessage, createMessage, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, userMessage, validProviderMessageSuffix, type Message } from "../../src/message"
+import { providerToolResultStats } from "../../src/instrumentation/instrumentation-provider"
 
 describe("message", () => {
   test("converts text and tool parts", () => {
@@ -155,6 +156,181 @@ describe("message", () => {
     expect(content).toContain("MIDDLE ERROR")
     expect(content).toContain("retrievalHint:")
     expect(content.length).toBeLessThanOrEqual(1_450)
+  })
+
+  test("folds older read_lines results for the same file into stable index cards", () => {
+    const messages = [
+      toolResultMessage({
+        callID: "call_old",
+        toolName: "read_lines",
+        status: "succeeded",
+        output: `old important line\n${"x".repeat(2_000)}`,
+        metadata: {
+          filePath: "src/file.ts",
+          startLine: 40,
+          endLine: 80,
+          lineCount: 41,
+          rawOutputLength: 2_019,
+        },
+      }),
+      toolResultMessage({
+        callID: "call_latest",
+        toolName: "read_lines",
+        status: "succeeded",
+        output: `latest important line\n${"y".repeat(2_000)}`,
+        metadata: {
+          filePath: "src/file.ts",
+          startLine: 1,
+          endLine: 160,
+          lineCount: 160,
+          rawOutputLength: 2_022,
+        },
+      }),
+    ]
+
+    const provider = messagesToProviderInput(messages, { toolResultTokenBudget: 300 })
+    const content = provider.map((message) => message.content).join("\n")
+    const oldToolPart = provider[0]?.parts?.find((part) => part.type === "tool_result")
+
+    expect(content).toContain("latest important line")
+    expect(content).not.toContain("old important line")
+    expect(content).toContain("file_read_range_superseded")
+    expect(content).toContain("path: src/file.ts:40-80")
+    expect(oldToolPart).toMatchObject({ type: "tool_result", output: expect.stringContaining("rawOutputLength: 2019") })
+  })
+
+  test("does not fold read_lines results when a later read does not cover the old range", () => {
+    const messages = [
+      toolResultMessage({
+        callID: "call_file_0",
+        toolName: "read_lines",
+        status: "succeeded",
+        output: `important line 0\n${"x".repeat(4_000)}`,
+        metadata: {
+          filePath: "src/file.ts",
+          startLine: 1,
+          endLine: 80,
+          rawOutputLength: 4_020,
+        },
+      }),
+      toolResultMessage({
+        callID: "call_file_1",
+        toolName: "read_lines",
+        status: "succeeded",
+        output: `important line 1\n${"x".repeat(4_000)}`,
+        metadata: {
+          filePath: "src/file.ts",
+          startLine: 81,
+          endLine: 160,
+          rawOutputLength: 4_020,
+        },
+      }),
+    ]
+
+    const provider = messagesToProviderInput(messages, { toolResultTokenBudget: 300 })
+    const content = provider.map((message) => message.content).join("\n")
+
+    expect(content).toContain("important line 0")
+    expect(content).toContain("important line 1")
+    expect(content).not.toContain("file_read_range_superseded")
+  })
+
+  test("folds read_lines when a later full-file read covers it", () => {
+    const provider = messagesToProviderInput([
+      toolResultMessage({
+        callID: "call_lines",
+        toolName: "read_lines",
+        status: "succeeded",
+        output: "old slice only marker",
+        metadata: { filePath: "src/file.ts", startLine: 5, endLine: 8 },
+      }),
+      toolResultMessage({
+        callID: "call_read",
+        toolName: "read",
+        status: "succeeded",
+        output: "full file including the same range",
+        metadata: { filePath: "src/file.ts", lineCount: 30 },
+      }),
+    ])
+    const content = provider.map((message) => message.content).join("\n")
+
+    expect(content).not.toContain("old slice only marker")
+    expect(content).toContain("full file including the same range")
+    expect(content).toContain("file_read_range_superseded")
+  })
+
+  test("folds git_diff overview results only when a later diff view covers them", () => {
+    const provider = messagesToProviderInput([
+      toolResultMessage({
+        callID: "call_files",
+        toolName: "git_diff",
+        status: "succeeded",
+        output: "src/a.ts\nsrc/b.ts",
+        metadata: { mode: "files" },
+      }),
+      toolResultMessage({
+        callID: "call_patch",
+        toolName: "git_diff",
+        status: "succeeded",
+        output: "@@ patch body",
+        metadata: { mode: "file", filePath: "src/a.ts" },
+      }),
+      toolResultMessage({
+        callID: "call_summary",
+        toolName: "git_diff",
+        status: "succeeded",
+        output: "M src/a.ts\nM src/b.ts\nstat lines",
+        metadata: { mode: "summary" },
+      }),
+    ])
+    const content = provider.map((message) => message.content).join("\n")
+
+    expect(content).not.toContain("src/a.ts\nsrc/b.ts")
+    expect(content).toContain("@@ patch body")
+    expect(content).toContain("M src/a.ts")
+    expect(content).toContain("git_diff_view_superseded")
+  })
+
+  test("folds repeated query tools when the later result has a wider limit", () => {
+    const provider = messagesToProviderInput([
+      toolCallMessage({ id: "call_rg_1", name: "rg_search", input: { query: "token budget", dir: "src", maxResults: 10 } }),
+      toolResultMessage({
+        callID: "call_rg_1",
+        toolName: "rg_search",
+        status: "succeeded",
+        output: "old ten results",
+        metadata: { count: 10 },
+      }),
+      toolCallMessage({ id: "call_rg_2", name: "rg_search", input: { query: "token budget", dir: "src", maxResults: 50 } }),
+      toolResultMessage({
+        callID: "call_rg_2",
+        toolName: "rg_search",
+        status: "succeeded",
+        output: "new fifty results",
+        metadata: { count: 50 },
+      }),
+    ])
+    const content = provider.map((message) => message.content).join("\n")
+
+    expect(content).not.toContain("old ten results")
+    expect(content).toContain("new fifty results")
+    expect(content).toContain("query_result_superseded")
+  })
+
+  test("summarizes rendered provider tool result volume by tool", () => {
+    const provider = messagesToProviderInput([
+      toolResultMessage({ callID: "call_read", toolName: "read_lines", status: "succeeded", output: "read output", metadata: { filePath: "a.ts", startLine: 1, endLine: 3 } }),
+      toolResultMessage({ callID: "call_bash", toolName: "bash", status: "failed", output: "bash error output ".repeat(50), metadata: { command: "bun test", exitCode: 1 } }),
+      toolResultMessage({ callID: "call_bash_2", toolName: "bash", status: "succeeded", output: "bash ok", metadata: { command: "bun --version", exitCode: 0 } }),
+    ])
+
+    const stats = providerToolResultStats(provider)
+
+    expect(stats.toolResultCount).toBe(3)
+    expect(stats.estimatedTokens).toBeGreaterThan(0)
+    expect(stats.maxTool).toBe("bash")
+    expect(stats.byTool.map((item) => item.tool)).toContain("bash")
+    expect(stats.byTool.find((item) => item.tool === "bash")).toMatchObject({ count: 2 })
   })
 
   test("keeps long evidence metadata inside the configured tool result budget", () => {

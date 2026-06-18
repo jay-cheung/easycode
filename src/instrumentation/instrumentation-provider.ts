@@ -1,4 +1,4 @@
-import type { ProviderInputMessage } from "../message"
+import type { ProviderInputMessage, ToolResultPart } from "../message"
 import { ProviderError, type ProviderEvent } from "../provider"
 import { emitLog, type Logger } from "../logger"
 import { estimateTextTokens } from "../context"
@@ -22,6 +22,69 @@ export function providerInputTokenEstimate(providerMessages: Array<{ content: st
     toolTokens,
     providerMessageCount: providerMessages.length,
     toolCount: tools.length,
+  }
+}
+
+export function providerToolResultStats(providerMessages: ProviderInputMessage[]) {
+  const byTool = new Map<string, {
+    tool: string
+    count: number
+    renderedChars: number
+    estimatedTokens: number
+    maxRenderedChars: number
+    maxEstimatedTokens: number
+  }>()
+  let count = 0
+  let renderedChars = 0
+  let estimatedTokens = 0
+  let maxRenderedChars = 0
+  let maxEstimatedTokens = 0
+  let maxTool = ""
+  let maxCallID = ""
+
+  for (const message of providerMessages) {
+    for (const part of message.parts ?? []) {
+      if (part.type !== "tool_result") continue
+      const toolPart = part as ToolResultPart
+      const chars = toolPart.output.length
+      const tokens = estimateTextTokens(toolPart.output)
+      count += 1
+      renderedChars += chars
+      estimatedTokens += tokens
+      if (chars > maxRenderedChars) {
+        maxRenderedChars = chars
+        maxEstimatedTokens = tokens
+        maxTool = toolPart.toolName
+        maxCallID = toolPart.callID
+      }
+      const current = byTool.get(toolPart.toolName) ?? {
+        tool: toolPart.toolName,
+        count: 0,
+        renderedChars: 0,
+        estimatedTokens: 0,
+        maxRenderedChars: 0,
+        maxEstimatedTokens: 0,
+      }
+      current.count += 1
+      current.renderedChars += chars
+      current.estimatedTokens += tokens
+      if (chars > current.maxRenderedChars) {
+        current.maxRenderedChars = chars
+        current.maxEstimatedTokens = tokens
+      }
+      byTool.set(toolPart.toolName, current)
+    }
+  }
+
+  return {
+    toolResultCount: count,
+    renderedChars,
+    estimatedTokens,
+    maxRenderedChars,
+    maxEstimatedTokens,
+    maxTool,
+    maxCallID,
+    byTool: [...byTool.values()].sort((a, b) => b.estimatedTokens - a.estimatedTokens || b.count - a.count || a.tool.localeCompare(b.tool)),
   }
 }
 

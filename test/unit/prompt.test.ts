@@ -24,6 +24,10 @@ describe("compact prompt", () => {
     expect(buildPrompt).toContain("Use bash only when dedicated tools cannot express the needed inspection or action.")
     expect(buildPrompt).toContain("These semantic tools outrank rg_search, grep, and bash whenever the question is about symbols.")
     expect(buildPrompt).toContain("Use memory_promote only for durable cross-session lessons")
+    expect(buildPrompt).toContain("Budget discipline: your context, tool-call, and subagent budgets are finite.")
+    expect(buildPrompt).toContain("close the task with the evidence you have before the budget is wasted.")
+    expect(planPrompt).toContain("Budget discipline: your context, tool-call, and subagent budgets are finite.")
+    expect(planPrompt).toContain("submit the plan before the planning budget is wasted.")
   })
 
   test("adds runtime summary rules and format example", () => {

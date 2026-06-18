@@ -89,6 +89,7 @@ export function bashApprovalForCommand(command: string, cwd = process.cwd()): Ba
   if (analysis.commandClass === "git_inspect" || analysis.commandClass === "file_read" || analysis.commandClass === "text_search" || analysis.commandClass === "line_read") {
     return exactBashApproval(trimmed)
   }
+  if (isReadonlyInspectionShellCommand(trimmed, cwd)) return exactBashApproval(trimmed)
   if (isComplexShellCommand(trimmed) && analysis.replaceableBy.length === 0) {
     return reviewBashApproval(trimmed, ["shell_complexity"])
   }
@@ -133,6 +134,56 @@ function reviewBashApproval(command: string, riskTags: string[]): BashApproval {
 
 function isComplexShellCommand(command: string) {
   return /[;&|><`$]/.test(command)
+}
+
+function isReadonlyInspectionShellCommand(command: string, cwd: string) {
+  if (!isComplexShellCommand(command)) return false
+  if (/[`$]/.test(command)) return false
+  const withoutStderrRedirects = command
+    .replace(/\s+2>\s*\/dev\/null\b/g, "")
+    .replace(/\s+2>&1\b/g, "")
+  if (/[<>]/.test(withoutStderrRedirects)) return false
+  const segments = withoutStderrRedirects
+    .split(/\s*(?:&&|\|\|?|\;)\s*/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+  if (segments.length < 2) return false
+  return segments.every((segment, index) => isReadonlyInspectionSegment(segment, cwd, index === 0))
+}
+
+function isReadonlyInspectionSegment(segment: string, cwd: string, first: boolean) {
+  const words = shellWords(segment)
+  if (!words || words.length === 0) return false
+  const [program = "", ...args] = words
+  const normalizedProgram = path.basename(program).toLowerCase()
+  if (normalizedProgram === "cd") {
+    if (!first || args.length !== 1) return false
+    const resolved = path.resolve(cwd, args[0] ?? ".")
+    const normalizedResolved = normalizedPath(resolved)
+    const normalizedCwd = normalizedPath(cwd)
+    return normalizedResolved === normalizedCwd || normalizedResolved.startsWith(`${normalizedCwd}/`)
+  }
+  if (normalizedProgram === "git") return isReadonlyGitSegment(args)
+  if (normalizedProgram === "grep" || normalizedProgram === "rg") return true
+  if (normalizedProgram === "head" || normalizedProgram === "tail" || normalizedProgram === "sort" || normalizedProgram === "uniq") return true
+  if (normalizedProgram === "find") return isReadonlyFindSegment(args)
+  if (normalizedProgram === "wc" || normalizedProgram === "ls" || normalizedProgram === "pwd" || normalizedProgram === "echo") return true
+  if (normalizedProgram === "sed") return args.some((arg) => arg === "-n" || /^-[^-]*n/.test(arg))
+  if (normalizedProgram === "cat") return args.length > 0
+  return false
+}
+
+function isReadonlyGitSegment(args: string[]) {
+  const subcommand = args[0]
+  return subcommand === "show" ||
+    subcommand === "status" ||
+    subcommand === "diff" ||
+    subcommand === "log" ||
+    subcommand === "branch"
+}
+
+function isReadonlyFindSegment(args: string[]) {
+  return !args.some((arg) => arg === "-delete" || arg === "-exec" || arg === "-execdir" || arg === "-ok" || arg === "-okdir")
 }
 
 function exactBashApproval(command: string): BashApproval {

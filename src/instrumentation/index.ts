@@ -5,7 +5,7 @@ import type { SkillServiceLike } from "../skill"
 import { type ContextManagerLike } from "../context"
 import type { ToolRegistryLike } from "../tool"
 import { emitLog, type Logger } from "../logger"
-import { emitProviderTranscript, logProviderEvent, providerErrorDetail, providerInputTokenEstimate, providerUsageLog, renderProviderInput, type ProviderUsageLog } from "./instrumentation-provider"
+import { emitProviderTranscript, logProviderEvent, providerErrorDetail, providerInputTokenEstimate, providerToolResultStats, providerUsageLog, renderProviderInput, type ProviderUsageLog } from "./instrumentation-provider"
 import { LoggingContextDecorator } from "./instrumentation-context"
 
 export interface RunAspect {
@@ -86,6 +86,7 @@ export class LoggingRunAspect implements RunAspect {
         const summaryRequest = input.prompt.includes("Summarize conversation")
         const inputText = renderProviderInput(input.providerMessages)
         emitLog(logger, { type: "provider", name: "provider.input_tokens", detail: providerInputTokenEstimate(input.providerMessages, input.tools) })
+        emitLog(logger, { type: "provider", name: "provider.tool_result_stats", detail: providerToolResultStats(input.providerMessages) })
         emitLog(logger, {
           type: "provider",
           name: "provider.input",

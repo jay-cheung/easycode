@@ -885,12 +885,10 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
             return {
               correction: [
                 "Reviewer delegation anti-pattern gate:",
-                "- Before outputting a review/repair/optimization plan, check whether the review can be delegated to reviewer.",
-                "- This task can be split into bounded review scopes such as Code Complete dimensions, file groups, type-safety, error handling, or test coverage.",
-                "- Do not complete the whole review as coordinator.",
-                "- Call delegate_subagent with role='reviewer' for at least one bounded review task, then synthesize only the reviewer conclusion.",
+                "- This active plan step explicitly requires reviewer delegation.",
+                "- Call delegate_subagent with role='reviewer' for the assigned bounded review task, then synthesize only the reviewer conclusion.",
               ].join("\n"),
-              failureText: "Reviewer delegation gate failed: broad review output requires a bounded reviewer subagent result before final synthesis.",
+              failureText: "Reviewer delegation gate failed: this required reviewer step needs a bounded reviewer subagent result before final synthesis.",
             }
           }
           const assignedSubagentStep = activePlanStep?.executorHint === "subagent" ? activePlanStep : undefined
@@ -1867,6 +1865,7 @@ function hasSuccessfulReviewerSubagent(messages: Message[]): boolean {
 }
 
 function requiresReviewerDelegationBeforeFinal(prompt: string, activePlanStep?: PlanStep) {
+  if (activePlanStep?.executorHint !== "subagent" || activePlanStep.subagentRole !== "reviewer" || activePlanStep.delegationPolicy !== "required") return false
   const text = [prompt, activePlanStep?.goal ?? "", activePlanStep?.doneWhen ?? ""].join("\n").toLowerCase()
   const reviewIntent = /\b(code complete|code review|review\/repair|review\/fix|audit)\b|code-complete|项目\s*review|代码审查|代码评审|审查\/修复|修复\/优化方案|优化方案/.test(text)
   const boundedReviewSignal = /\b(cc|code complete|type safety|error handling|test coverage|bounded scope|dimension|file group)\b|维度|文件组|类型安全|错误处理|测试覆盖|防御式编程/.test(text)
@@ -1884,11 +1883,12 @@ function reviewPlanningTemplate(prompt: string) {
     "Review Planning Gate Template:",
     `- The current request looks like a review task: ${compactLine(prompt) || "review task"}.`,
     "- Use only bounded read-only inspection before submitting the proposal plan.",
+    "- For current-diff reviews, first use git_diff in summary/files/stat mode and include the concise diff evidence in the review prompt context; only fetch mode=file patches for the few files needed to support concrete findings.",
     "- Call plan_exit with a low-risk review plan once the review scope is clear.",
-    "- Anti-pattern warning: before outputting a review/repair/optimization plan, check whether reviewer can be delegated. If a broad review can be split into bounded scopes such as Code Complete dimensions, file groups, type safety, error handling, or test coverage, include reviewer delegation; coordinator must synthesize, not do all review work itself.",
+    "- Delegation is optional. If reviewer delegation is useful, make each delegated scope narrow and set delegationPolicy=\"preferred\" unless coordinator fallback is unsafe.",
     "- Use this structure:",
     "  1. Research Phase: inspect diff/relevant files.",
-    "  2. Delegation Phase: delegate bounded review or exploration work.",
+    "  2. Optional Delegation Phase: delegate bounded review or exploration work only when it saves context.",
     "  3. Review Phase: synthesize findings and produce the final review output.",
     "- If you need delegate_subagent or deeper multi-step investigation, put that inside plan steps instead of calling it now.",
     "- If the scope is broad, still submit a small bounded first-pass review plan now.",
