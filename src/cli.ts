@@ -16,7 +16,7 @@ import { normalizeSessionSettings } from "./settings"
 import { parseSlashCommand } from "./slash"
 import { SkillService } from "./skill"
 import { LineReader, eofPrompt } from "./cli/line-reader"
-import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, writeCliText } from "./cli/session-helpers"
+import { collectRunInput, handleSlashCommand, maybeShowWebSearchSetupHint, permissionService, question, selectSession, sessionsText, writeCliText } from "./cli/session-helpers"
 import { configuredUiLanguage, interactiveStartupEnabled, loadEnvFile, setupInteractiveEnv, setupInteractiveLanguage, setupInteractiveWebSearchEnv } from "./cli/startup"
 import { TimelineRenderer, type RunUiEvent } from "./ui/timeline"
 import type { ProviderRunMetrics } from "./ui/timeline"
@@ -496,9 +496,9 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           } else if (target === session) {
             const nextSession = (await store.list())[0]?.id ?? "default"
             await switchSession(nextSession)
-            writeSessionMessage(uiText(activeSettings.language).sessionDeletedAndSwitched(target, session, deleted.archivedMemoryId ?? "memory"))
+            writeCliText(tui, uiText(activeSettings.language).sessionDeletedAndSwitched(target, session, deleted.archivedMemoryId ?? "memory") + "\n\n" + await sessionsText(store, nextSession, activeSettings.language), uiText(activeSettings.language).sessionsTitle)
           } else {
-            writeSessionMessage(uiText(activeSettings.language).sessionDeleted(target, deleted.archivedMemoryId ?? "memory"))
+            writeCliText(tui, uiText(activeSettings.language).sessionDeleted(target, deleted.archivedMemoryId ?? "memory") + "\n\n" + await sessionsText(store, session, activeSettings.language), uiText(activeSettings.language).sessionsTitle)
           }
         } else {
           tui?.configure({ provider: activeSettings.provider, model: activeSettings.model, mode: activeMode, language: activeSettings.language, session })
