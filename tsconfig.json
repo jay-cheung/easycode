@@ -6,6 +6,7 @@
     "strict": true,
     "types": ["bun"],
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "noEmit": true,
     "allowImportingTsExtensions": true
   },

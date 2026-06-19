@@ -1,4 +1,5 @@
 import { languageDisplay, uiText, type UiLanguage } from "../../i18n"
+import packageJson from "../../../package.json"
 import type { ProviderRunMetrics } from "../timeline"
 import { compactPath, displayWidth, drawCard, formatDuration } from "./tui-ansi"
 import type { TuiContext } from "./tui-types"
@@ -60,7 +61,7 @@ export function buildWelcomeDashboardCard(context: TuiContext, status: string, c
     `\x1b[1m💡 ${copy.welcomeSlashCommands}\x1b[0m`,
     ...copy.welcomeCommandLines,
   ]
-  return drawCard(copy.welcomeTitle, lines, columns, {
+  return drawCard(`${copy.welcomeTitle} v${packageJson.version}`, lines, columns, {
     color: "\x1b[38;5;99m",
     borderStyle: "round",
     minWidth: 72,

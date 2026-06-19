@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test"
+import packageJson from "../../package.json"
 import { displayWidth, drawCard } from "../../src/ui/tui/tui-ansi"
 import { buildFailureSummaryCard, buildPanelCard } from "../../src/ui/tui/tui-cards"
 import { generateStatusPanelLines } from "../../src/ui/tui/tui-status-panel"
@@ -23,6 +24,7 @@ describe("tui renderer", () => {
     renderer.finish()
 
     expect(output).toContain("EasyCode TUI")
+    expect(output).toContain(`EasyCode TUI v${packageJson.version}`)
     expect(output).toContain("session=demo")
     expect(output).toContain("/help /settings /plan /goal /sessions")
     expect(output).toContain("[status] /settings")
