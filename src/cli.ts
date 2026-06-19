@@ -124,7 +124,14 @@ function addSubagentUsageToUsage(usage: SessionTokenUsage, subagentUsage: Sessio
 }
 
 async function main() {
-  let args = parseArgs(process.argv.slice(2))
+  const argv = process.argv.slice(2)
+  if (argv[0] === "sidecar") {
+    const { runSidecarStdio } = await import("./sidecar")
+    await runSidecarStdio(argv.slice(1))
+    return 0
+  }
+
+  let args = parseArgs(argv)
   const loadedEnvVars = await loadEnvFile(args.root)
 
   if (!args.providerExplicit && process.env.EASYCODE_PROVIDER && hasProvider(process.env.EASYCODE_PROVIDER)) {

@@ -1,0 +1,45 @@
+{
+  "name": "@easycode/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main/main.js",
+  "scripts": {
+    "dev": "cd ../.. && bun run build && cd apps/desktop && bun run build && EASYCODE_DESKTOP_SIDECAR_PATH=../../dist/easycode electron .",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && vite build",
+    "electron": "electron .",
+    "package": "electron-builder"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.0.0",
+    "electron": "^39.0.0",
+    "electron-builder": "^26.0.0",
+    "vite": "^7.0.0",
+    "typescript": "^5.8.2",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0"
+  },
+  "build": {
+    "appId": "dev.easycode.desktop",
+    "productName": "EasyCode",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**"
+    ],
+    "extraResources": [
+      {
+        "from": "../../dist",
+        "to": "sidecar",
+        "filter": [
+          "easycode*"
+        ]
+      }
+    ]
+  }
+}

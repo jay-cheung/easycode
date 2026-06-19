@@ -1,0 +1,74 @@
+name: Desktop Release
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build desktop ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - name: linux-x64
+            os: ubuntu-latest
+          - name: darwin-x64
+            os: macos-13
+          - name: darwin-arm64
+            os: macos-14
+          - name: win-x64
+            os: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build desktop artifacts
+        shell: bash
+        run: bash scripts/release-desktop.sh "${GITHUB_REF_NAME}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.blockmap
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.dmg
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.rpm
+            apps/desktop/release/*.zip
+            apps/desktop/release/latest*.yml
+
+  release:
+    name: Create Desktop Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Compute checksums
+        run: |
+          cd artifacts
+          find . -type f ! -name "*.sha256" -print0 | while IFS= read -r -d '' f; do
+            sha256sum "$f" > "$f.sha256"
+          done
+
+      - name: Create Desktop Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          generate_release_notes: true
