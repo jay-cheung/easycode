@@ -8,8 +8,8 @@ import { providerMessageToResponseInput } from "../../src/provider"
 describe("context", () => {
   test("uses larger default context and execution budgets", () => {
     const context = new ContextManager()
-    expect(context.state.maxTokens).toBe(64_000)
-    expect(context.compactPreserveTokens).toBe(16_000)
+    expect(context.state.maxTokens).toBe(32_000)
+    expect(context.compactPreserveTokens).toBe(8_000)
     expect(context.strategyState.maxSteps).toBe(66)
   })
 

@@ -22,7 +22,7 @@ export const maxSessionSteps = 200
 export const maxResponseReserveTokens = 64_000
 
 export function defaultSessionSettings(provider = defaultProviderName): SessionSettings {
-  return { provider, language: detectUiLanguage(), thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 64_000, maxSteps: 66 }
+  return { provider, language: detectUiLanguage(), thinking: true, effort: "high", selectedSkills: [], pendingSkillLoads: [], maxTokens: 32_000, maxSteps: 66 }
 }
 
 export function normalizeSessionSettings(input: Partial<SessionSettings> | undefined, fallbackProvider = defaultProviderName): SessionSettings {

@@ -291,6 +291,31 @@ describe("message", () => {
     expect(content).toContain("git_diff_view_superseded")
   })
 
+  test("folds older repeated truncated git_diff file results", () => {
+    const provider = messagesToProviderInput([
+      toolResultMessage({
+        callID: "call_old_patch",
+        toolName: "git_diff",
+        status: "succeeded",
+        output: "@@ old truncated patch body",
+        metadata: { mode: "file", filePath: "src/a.ts", truncated: true, rawOutputLength: 20_000 },
+      }),
+      toolResultMessage({
+        callID: "call_new_patch",
+        toolName: "git_diff",
+        status: "succeeded",
+        output: "@@ new truncated patch body",
+        metadata: { mode: "file", filePath: "src/a.ts", truncated: true, rawOutputLength: 20_000 },
+      }),
+    ], { toolResultTokenBudget: 300 })
+    const content = provider.map((message) => message.content).join("\n")
+
+    expect(content).not.toContain("@@ old truncated patch body")
+    expect(content).toContain("@@ new truncated patch body")
+    expect(content).toContain("git_diff_view_superseded")
+    expect(content).toContain("path: src/a.ts")
+  })
+
   test("folds repeated query tools when the later result has a wider limit", () => {
     const provider = messagesToProviderInput([
       toolCallMessage({ id: "call_rg_1", name: "rg_search", input: { query: "token budget", dir: "src", maxResults: 10 } }),

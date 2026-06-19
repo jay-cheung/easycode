@@ -1,7 +1,7 @@
 import { clampInt, clampNumber } from "../utils/math"
 import type { ContextOptions, ContextStrategyState } from "./types"
 
-export const defaultMaxTokens = 64_000
+export const defaultMaxTokens = 32_000
 export const defaultMaxSteps = 66
 export const minMaxTokens = 16_000
 export const defaultSafetyMultiplier = 1.6

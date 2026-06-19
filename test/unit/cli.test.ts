@@ -2,7 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
 import path from "node:path"
 import os from "node:os"
-import { configuredStartupModel, fetchStartupModelChoices, loadEnvFile, mergeEnvText, missingProviderEnv, needsEnvSetup, parseArgs, parseEnvFile, recentStartupModels, selectStartupModel, startupModelChoices, startupProviders } from "../../src/cli"
+import { configuredStartupModel, fetchStartupModelChoices, loadEnvFile, mergeEnvText, missingProviderEnv, needsEnvSetup, parseArgs, parseEnvFile, recentStartupModels, selectStartupModel, shouldCompleteReadOnlyGoalPlanningResult, startupModelChoices, startupProviders } from "../../src/cli"
+import { createGoalState } from "../../src/goal"
 
 async function tmpdir() {
   return mkdtemp(path.join(os.tmpdir(), "easycode-cli-"))
@@ -115,6 +116,46 @@ describe("cli startup model selection", () => {
       async () => new Response("boom", { status: 500 }),
     )
     expect(models).toEqual(["deepseek-v4-pro", "deepseek-v4-flash"])
+  })
+})
+
+describe("cli goal planning completion", () => {
+  test("allows read-only review goal planning to finish with the review summary", () => {
+    const goal = {
+      ...createGoalState("review 当前变更"),
+      status: "planning" as const,
+      firstSlice: "Review the current git diff and report findings.",
+      acceptanceCriteria: ["The current changes have concrete review findings."],
+      completionChecks: ["Summarize correctness and regression risks."],
+    }
+
+    expect(shouldCompleteReadOnlyGoalPlanningResult(goal, "Review summary: no blocking findings.", [])).toBe(true)
+  })
+
+  test("does not complete planning summaries for mutation or verification goals", () => {
+    const goal = {
+      ...createGoalState("review and fix 当前变更"),
+      status: "planning" as const,
+      firstSlice: "Fix the failing review finding.",
+      acceptanceCriteria: ["The defect is fixed."],
+      completionChecks: ["Run tests."],
+    }
+
+    expect(shouldCompleteReadOnlyGoalPlanningResult(goal, "Review summary: found a defect to fix.", [])).toBe(false)
+  })
+
+  test("does not treat planning gate failures or tool failures as read-only completion", () => {
+    const goal = {
+      ...createGoalState("review 当前代码"),
+      status: "planning" as const,
+      acceptanceCriteria: ["The current code is reviewed."],
+      completionChecks: ["Report findings."],
+    }
+
+    expect(shouldCompleteReadOnlyGoalPlanningResult(goal, "Planning mode hard gate failed: return a proposed plan.", [])).toBe(false)
+    expect(shouldCompleteReadOnlyGoalPlanningResult(goal, "Review summary: no findings.", [
+      { toolName: "git_diff", output: "denied", metadata: {}, status: "denied" },
+    ])).toBe(false)
   })
 })
 

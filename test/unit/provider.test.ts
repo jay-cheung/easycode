@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { chatCompletionSSEToProviderEvents, ChatCompletionsLikeProvider, createDeepSeekStreamParseState, createOpenAIStreamParseState, createProvider, DeepSeekProvider, diagnoseProviderReadiness, FakeProvider, hasProvider, listProviders, missingProviderEnv, OpenAICompatibleProvider, OpenAILikeProvider, OpenAIProvider, ResponsesProvider, StreamXmlFilter, TextToolProtocolProvider, normalizeModelName, openAIStreamEventToProviderEvents, providerMessageToResponseInput, registerProvider, requiredProviderEnv, textToolProtocolInput, textToolProtocolOutputToProviderEvents, toolToChatCompletionTool, toolToResponseTool } from "../../src/provider"
 import { createMessage, imagePart, messagesToProviderInput, reasoningPart, textMessage, textPart, toolCallMessage, toolResultMessage, userMessage } from "../../src/message"
 import { createBuiltinRegistry } from "../../src/tool"
+import { estimateTextTokens } from "../../src/context"
+import { providerInputTokenEstimate } from "../../src/instrumentation/instrumentation-provider"
 import type { Provider, ProviderEvent } from "../../src/provider"
 
 describe("provider", () => {
@@ -22,6 +24,17 @@ describe("provider", () => {
     const tool = createBuiltinRegistry().get("read")
     if (!tool) throw new Error("missing read tool")
     expect(toolToResponseTool(tool)).toMatchObject({ type: "function", name: "read", strict: true })
+  })
+
+  test("provider input token estimate counts provider tool schema, not internal ToolDef", () => {
+    const tool = createBuiltinRegistry().get("read_lines")
+    if (!tool) throw new Error("missing read_lines tool")
+    const expectedToolTokens = estimateTextTokens(JSON.stringify([toolToResponseTool(tool)]))
+    const internalToolDefTokens = estimateTextTokens(JSON.stringify([tool]))
+    const estimate = providerInputTokenEstimate([{ content: "hello" }], [tool])
+
+    expect(estimate.toolTokens).toBe(expectedToolTokens)
+    expect(estimate.toolTokens).toBeLessThan(internalToolDefTokens)
   })
 
   test("maps optional tool parameters to strict nullable schema", () => {

@@ -8,6 +8,7 @@ import { SkillService, type SkillArtifact, type SkillServiceLike, type SkillInfo
 import { InstructionService, type InstructionServiceLike, type InstructionInfo } from "../../instruction"
 import { createBuiltinRegistry, type ToolRegistryLike, type ToolDef, type ToolResult } from "../../tool"
 import { createRunAspect, type RunAspect } from "../../instrumentation"
+import { providerInputTokenEstimate, providerToolResultStats } from "../../instrumentation/instrumentation-provider"
 import { createLogger, emitLog, type Logger } from "../../logger"
 import { ProjectMemoryStore, renderProjectMemoryRecall, shouldAutoRecallProjectMemory, type ProjectMemoryRecord } from "../../memory"
 import * as protocol from "../protocol"
@@ -43,6 +44,9 @@ import type { AgentRunState, SubagentRole } from "../types"
 const coordinatorDelegationGateBypassProviders = new Set(["fake", "test-provider", "simulated"])
 const defaultNetworkRetryDelaysMs = [1_000, 2_000, 3_000, 4_000, 5_000]
 const subagentRoles: SubagentRole[] = ["summary", "explorer", "reviewer", "debugger", "tester", "docs_researcher"]
+const planningInspectionToolNames = new Set(["git_status", "git_diff", "rg_search", "read_lines", "repo_map", "plan_exit"])
+const readOnlyReviewToolNames = new Set(["git_status", "git_diff", "rg_search", "read_lines", "repo_map"])
+const activePlanControlToolNames = new Set(["plan_step_complete", "plan_step_fail"])
 const readOnlyDelegationFallbackToolNames = new Set([
   "read",
   "read_lines",
@@ -140,6 +144,7 @@ export class AgentRunner {
   private pendingValidationCorrection: string | undefined
   private validationBypass: ValidationBypass | undefined
   private bypassNextCoordinatorDelegationGate = false
+  private forceFullToolsetNextTurn: string | undefined
 
   constructor(options: AgentRunnerOptions) {
     this.root = options.root
@@ -189,6 +194,7 @@ export class AgentRunner {
     this.pendingValidationCorrection = undefined
     this.validationBypass = undefined
     this.bypassNextCoordinatorDelegationGate = false
+    this.forceFullToolsetNextTurn = undefined
     const prep = await this.prepareRun(prompt, mode, input)
     if (prep.aborted) {
       return this.cancelledResult("", prep.usedTools, undefined, prep.providerMetrics)
@@ -653,6 +659,10 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       }
     }
 
+    const forcedFullToolsetReason = this.forceFullToolsetNextTurn
+    this.forceFullToolsetNextTurn = undefined
+    const toolSelection = selectProviderToolsForTurn(tools, { prompt, requiresProposedPlan, activePlanStep, forceFullToolsetReason: forcedFullToolsetReason })
+    const turnTools = toolSelection.tools
     const preparedTurn = prepareProviderTurnRequest({
       context: this.context,
       step,
@@ -662,7 +672,7 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       skills,
       selectedSkills,
       pendingSkillLoads: this.pendingSelectedSkills(selectedSkills),
-      tools,
+      tools: turnTools,
       usedTools,
       activeHypothesisMessages: activeHypothesisMsgs,
       activePlanStepId: activePlanStep?.id,
@@ -671,6 +681,21 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       ? [...preparedTurn.providerMessages, { role: "system" as const, content: reviewPlanningTemplate(prompt) }]
       : preparedTurn.providerMessages
     const effectiveProviderMessages = this.consumePendingValidationCorrection(providerMessages)
+    emitLog(this.logger, {
+      type: "provider",
+      name: "provider.toolset",
+      detail: {
+        mode: agent.mode,
+        reason: toolSelection.reason,
+        narrowed: toolSelection.narrowed,
+        requestedToolCount: turnTools.length,
+        availableToolCount: preparedTurn.availableTools.length,
+        requestedTools: turnTools.map((tool) => tool.name),
+        availableTools: preparedTurn.availableTools.map((tool) => tool.name),
+        estimate: providerInputTokenEstimate(effectiveProviderMessages, preparedTurn.availableTools),
+        toolResultStats: providerToolResultStats(effectiveProviderMessages),
+      },
+    })
 
     let currentState = this.aspect.transition("streaming", { step: step + 1 })
     const turn = await this.runValidatedProviderTurn({
@@ -697,6 +722,35 @@ If you hit an unrecoverable failure or block, call 'plan_step_fail' with a clear
       const validationFailureCount = turn.validationFailureCount ?? 0
       const failureFingerprint = validationFingerprint(turn, requiresProposedPlan)
       const repeatedCount = this.bumpValidationBypassCounter(failureFingerprint)
+      const upgradeReason = toolsetUpgradeReasonAfterValidation(turn, {
+        allTools: tools,
+        availableTools: preparedTurn.availableTools,
+        requiresProposedPlan,
+      })
+      if (upgradeReason) {
+        this.forceFullToolsetNextTurn = upgradeReason
+        if (canBypassCoordinatorDelegationGate(turn, activePlanStep)) {
+          this.bypassNextCoordinatorDelegationGate = true
+        }
+        this.pendingValidationCorrection = turn.retryMessage
+        emitLog(this.logger, {
+          type: "provider",
+          name: "provider.toolset_upgrade",
+          detail: {
+            reason: upgradeReason,
+            validationFailureCount,
+            repeatedCount,
+            availableTools: preparedTurn.availableTools.map((tool) => tool.name),
+            allToolCount: tools.length,
+          },
+        })
+        return {
+          action: "continue",
+          reasoningTranscript: nextReasoningTranscript,
+          latestAssistantText,
+          state: this.aspect.transition("streaming", { step: step + 1 })
+        }
+      }
       if (validationFailureCount >= 2 || repeatedCount >= 2) {
         if (canBypassCoordinatorDelegationGate(turn, activePlanStep)) {
           this.bypassNextCoordinatorDelegationGate = true
@@ -1875,7 +1929,55 @@ function requiresReviewerDelegationBeforeFinal(prompt: string, activePlanStep?: 
 
 function shouldInjectReviewPlanningTemplate(prompt: string, requiresProposedPlan: boolean) {
   if (!requiresProposedPlan) return false
+  return looksLikeReviewPrompt(prompt)
+}
+
+function looksLikeReviewPrompt(prompt: string) {
   return /\b(review|code review|audit|regression)\b|代码评审|代码审查|审查代码|评审代码|review 当前代码/i.test(prompt)
+}
+
+type ToolsetSelection = {
+  tools: ToolDef[]
+  reason: string
+  narrowed: boolean
+}
+
+function selectProviderToolsForTurn(tools: ToolDef[], input: { prompt: string; requiresProposedPlan: boolean; activePlanStep?: PlanStep; forceFullToolsetReason?: string }): ToolsetSelection {
+  if (input.forceFullToolsetReason) return { tools, reason: `validation_upgrade:${input.forceFullToolsetReason}`, narrowed: false }
+  if (input.requiresProposedPlan) return { tools: toolsNamed(tools, planningInspectionToolNames), reason: "planning_inspection", narrowed: true }
+  const taskText = [input.prompt, input.activePlanStep?.goal, input.activePlanStep?.doneWhen, input.activePlanStep?.fallback].filter(Boolean).join("\n")
+  const reviewOrReadOnly = looksLikeReviewPrompt(taskText) || looksLikeReadOnlyInspectionPrompt(taskText) || isReadOnlyPlanStep(input.activePlanStep)
+  if (!reviewOrReadOnly) return { tools, reason: "full:task_not_read_only_review", narrowed: false }
+  if (taskLikelyNeedsWrite(taskText)) return { tools, reason: "full:write_intent", narrowed: false }
+  if (taskLikelyNeedsRuntimeAction(taskText, input.activePlanStep)) return { tools, reason: "full:runtime_intent", narrowed: false }
+  const allowed = new Set(readOnlyReviewToolNames)
+  if (input.activePlanStep) {
+    for (const name of activePlanControlToolNames) allowed.add(name)
+    allowed.add("delegate_subagent")
+  }
+  return { tools: toolsNamed(tools, allowed), reason: input.activePlanStep ? "active_plan_read_only_review" : "read_only_review", narrowed: true }
+}
+
+function toolsNamed(tools: ToolDef[], names: Set<string>) {
+  return tools.filter((tool) => names.has(tool.name))
+}
+
+function isReadOnlyPlanStep(step: PlanStep | undefined) {
+  if (!step) return false
+  return step.kind === "inspect" || step.kind === "document" || step.subagentRole === "reviewer"
+}
+
+function looksLikeReadOnlyInspectionPrompt(text: string) {
+  return /\b(inspect|explain|analy[sz]e|summari[sz]e|investigat|research)\b|看看|查看|分析|解释|说明|统计|调研|排查/i.test(text)
+}
+
+function taskLikelyNeedsWrite(text: string) {
+  return /\b(implement|fix|repair|change|modify|update|edit|write|create|delete|remove|refactor|commit|stage|apply|patch)\b|实现|修复|修改|更新|新增|创建|删除|移除|重构|提交|暂存|应用补丁/i.test(text)
+}
+
+function taskLikelyNeedsRuntimeAction(text: string, step: PlanStep | undefined) {
+  if (step?.kind === "verify") return true
+  return /\b(test|verify|run|execute|lint|typecheck|build|benchmark)\b|测试|验证|运行|执行|检查|构建|跑一下/i.test(text)
 }
 
 function reviewPlanningTemplate(prompt: string) {
@@ -1936,6 +2038,29 @@ function validationFingerprint(turn: ProviderTurnResult, requiresProposedPlan: b
   const toolNames = turn.lastRejectedTurn?.toolNames?.join(",") || "none"
   const text = compactLine(turn.lastRejectedTurn?.text?.trim() || "")
   return [requiresProposedPlan ? "plan" : "build", correction, toolNames, text].join("::")
+}
+
+function toolsetUpgradeReasonAfterValidation(turn: ProviderTurnResult, input: { allTools: ToolDef[]; availableTools: ToolDef[]; requiresProposedPlan: boolean }) {
+  if (input.requiresProposedPlan) return undefined
+  if (input.availableTools.length >= input.allTools.length) return undefined
+  const allToolNames = new Set(input.allTools.map((tool) => tool.name))
+  const availableToolNames = new Set(input.availableTools.map((tool) => tool.name))
+  const retryMessage = turn.retryMessage ?? ""
+  const missingRequired = mentionedToolNames(retryMessage, allToolNames).filter((name) => !availableToolNames.has(name))
+  if (missingRequired.length > 0) return `required_tool_unavailable:${missingRequired.join(",")}`
+  if (/^Coordinator delegation gate:/i.test(retryMessage) && availableToolNames.has("delegate_subagent")) return undefined
+  if (/^Plan step completion gate:/i.test(retryMessage) && availableToolNames.has("plan_step_complete")) return undefined
+  if ((turn.validationFailureCount ?? 0) >= 2) return "validation_rejected_twice"
+  return undefined
+}
+
+function mentionedToolNames(text: string, toolNames: Set<string>) {
+  const names: string[] = []
+  for (const name of toolNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    if (new RegExp(`(?:^|[^A-Za-z0-9_])${escaped}(?:$|[^A-Za-z0-9_])`).test(text)) names.push(name)
+  }
+  return names
 }
 
 function fallbackStructuredPlan(prompt: string): ExecutionPlan {

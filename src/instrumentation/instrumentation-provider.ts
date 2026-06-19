@@ -1,7 +1,9 @@
 import type { ProviderInputMessage, ToolResultPart } from "../message"
 import { ProviderError, type ProviderEvent } from "../provider"
+import { toolToResponseTool } from "../provider/utils"
 import { emitLog, type Logger } from "../logger"
 import { estimateTextTokens } from "../context"
+import type { ToolDef } from "../tool"
 
 export type ProviderUsageLog = {
   inputTokens: number
@@ -13,9 +15,10 @@ export type ProviderUsageLog = {
   cacheHit: boolean
 }
 
-export function providerInputTokenEstimate(providerMessages: Array<{ content: string }>, tools: unknown[]) {
+export function providerInputTokenEstimate(providerMessages: Array<{ content: string }>, tools: ToolDef[]) {
   const messageTokens = estimateTextTokens(providerMessages.map((message) => message.content).join(""))
-  const toolTokens = estimateTextTokens(tools.length > 0 ? JSON.stringify(tools) : "")
+  const providerTools = tools.map(toolToResponseTool)
+  const toolTokens = estimateTextTokens(providerTools.length > 0 ? JSON.stringify(providerTools) : "")
   return {
     tokenEstimate: messageTokens + toolTokens,
     messageTokens,

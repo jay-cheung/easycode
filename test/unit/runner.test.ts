@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { AgentRunner } from "../../src/agent"
 import { buildSubagentTaskPrompt } from "../../src/agent/runner/helpers"
+import { PlanTracker } from "../../src/agent/planner"
 import { prepareProviderTurnRequest } from "../../src/agent/runner/runner-turn-prep"
 import { recordToolOutcome } from "../../src/agent/runner/tool-execution"
 import { runValidatedProviderTurnLoop } from "../../src/agent/runner/validated-provider-turn"
@@ -12,6 +13,7 @@ import { createBuiltinRegistry } from "../../src/tool"
 import { createProvider } from "../../src/provider"
 import { PermissionService, defaultPermissionRules } from "../../src/permission"
 import { ContextManager } from "../../src/context"
+import type { LogEvent } from "../../src/logger"
 import type { ProviderTurnResult } from "../../src/agent/runner/provider-turn"
 import type { Provider, ProviderEvent } from "../../src/provider"
 
@@ -318,10 +320,11 @@ describe("agent runner ui events", () => {
     }
   })
 
-  test("planning mode allows bounded coordinator inspection before the plan hard gate", async () => {
+  test("planning mode exposes only narrow bounded inspection tools before the plan hard gate", async () => {
     const root = await tmpdir()
     try {
       let providerCalls = 0
+      let firstTurnTools: string[] = []
       const provider: Provider = {
         name: "custom",
         capabilities: {
@@ -336,17 +339,17 @@ describe("agent runner ui events", () => {
         },
         async *stream(input): AsyncGenerator<ProviderEvent, void, unknown> {
           providerCalls += 1
+          if (providerCalls === 1) firstTurnTools = input.tools.map((tool) => tool.name)
           const corrections = input.providerMessages
             .filter((message) => message.role === "system")
             .map((message) => message.content)
             .join("\n")
           if (providerCalls === 1) {
             expect(corrections.includes("Coordinator delegation gate")).toBe(false)
-            yield { type: "tool_call", call: { id: "call_read", name: "read", input: { filePath: "src/add.ts" } } }
+            yield { type: "text_delta", text: "<proposed_plan>\n# Plan\n- Inspect src/add.ts\n</proposed_plan>" }
+            yield { type: "done" }
             return
           }
-          yield { type: "text_delta", text: "<proposed_plan>\n# Plan\n- Inspect src/add.ts\n</proposed_plan>" }
-          yield { type: "done" }
         },
       }
 
@@ -360,10 +363,199 @@ describe("agent runner ui events", () => {
 
       const result = await runner.run("review 当前代码", "build")
 
-      expect(providerCalls).toBe(2)
+      expect(providerCalls).toBe(1)
       expect(result.status).toBe("completed")
-      expect(result.usedTools).toEqual(["read"])
+      expect(firstTurnTools).toEqual(["rg_search", "read_lines", "repo_map", "git_diff", "git_status", "plan_exit"])
+      expect(result.usedTools).toEqual([])
       expect(result.text).toContain("# Plan")
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("read-only review build prompts expose a narrow inspection toolset", async () => {
+    const root = await tmpdir()
+    try {
+      let toolNames: string[] = []
+      const events: LogEvent[] = []
+      const provider: Provider = {
+        name: "custom",
+        capabilities: {
+          apiStyle: "local",
+          supportsImages: false,
+          supportsThinking: false,
+          supportsReasoningEffort: false,
+          effortValues: [],
+          supportsJsonObjectResponse: false,
+          supportsMaxOutputTokens: false,
+          promptCacheMode: "none",
+        },
+        async *stream(input): AsyncGenerator<ProviderEvent, void, unknown> {
+          toolNames = input.tools.map((tool) => tool.name)
+          yield { type: "text_delta", text: "Review summary: no findings." }
+          yield { type: "done" }
+        },
+      }
+
+      const runner = new AgentRunner({
+        root,
+        provider,
+        registry: createBuiltinRegistry(),
+        permission: PermissionService.autoApprove(defaultPermissionRules("build")),
+        logger: ((event: LogEvent) => events.push(event)),
+      })
+
+      const result = await runner.run("review 当前代码", "build")
+
+      expect(result.status).toBe("completed")
+      expect(toolNames).toEqual(["rg_search", "read_lines", "repo_map", "git_diff", "git_status"])
+      expect(toolNames).not.toContain("patch")
+      expect(toolNames).not.toContain("edit")
+      expect(toolNames).not.toContain("git_stage")
+      expect(toolNames).not.toContain("git_commit")
+      const toolsetEvent = events.find((event) => event.name === "provider.toolset")
+      expect(toolsetEvent?.detail).toMatchObject({
+        reason: "read_only_review",
+        narrowed: true,
+        requestedToolCount: 5,
+        availableToolCount: 5,
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("coordinator delegation retries do not upgrade when delegate_subagent is already available", async () => {
+    const root = await tmpdir()
+    try {
+      await mkdir(path.join(root, "src"), { recursive: true })
+      await writeFile(path.join(root, "src", "add.ts"), "export const add = (a: number, b: number) => a + b\n")
+      const context = new ContextManager()
+      await PlanTracker.activatePlan(context, root, "default", {
+        id: "plan_review_upgrade",
+        title: "Review current diff",
+        lowRisk: true,
+        steps: [
+          {
+            id: "step_1",
+            goal: "Review current changes for regressions",
+            kind: "inspect",
+            doneWhen: "The review findings are summarized.",
+          },
+        ],
+      }, {
+        currentStepId: "step_1",
+        stepStatuses: { step_1: "running" },
+        status: "running",
+      })
+
+      const toolsets: string[][] = []
+      const events: LogEvent[] = []
+      const provider: Provider = {
+        name: "custom",
+        capabilities: {
+          apiStyle: "local",
+          supportsImages: false,
+          supportsThinking: false,
+          supportsReasoningEffort: false,
+          effortValues: [],
+          supportsJsonObjectResponse: false,
+          supportsMaxOutputTokens: false,
+          promptCacheMode: "none",
+        },
+        async *stream(input): AsyncGenerator<ProviderEvent, void, unknown> {
+          toolsets.push(input.tools.map((tool) => tool.name))
+          if (toolsets.length <= 2) {
+            yield { type: "tool_call", call: { id: `call_rg_${toolsets.length}`, name: "rg_search", input: { query: "add", dir: "src", maxResults: 10 } } }
+            yield { type: "done" }
+            return
+          }
+          yield { type: "text_delta", text: "Review summary: no findings after delegation bypass." }
+          yield { type: "done" }
+        },
+      }
+
+      const result = await new AgentRunner({
+        root,
+        provider,
+        context,
+        registry: createBuiltinRegistry(),
+        permission: PermissionService.autoApprove(defaultPermissionRules("build")),
+        logger: ((event: LogEvent) => events.push(event)),
+      }).run("review 当前代码", "build")
+
+      expect(result.status).toBe("completed")
+      expect(toolsets[0]).toEqual(["rg_search", "read_lines", "repo_map", "git_diff", "git_status", "delegate_subagent", "plan_step_complete", "plan_step_fail"])
+      expect(toolsets[1]).toEqual(toolsets[0])
+      expect(toolsets[2]).toEqual(toolsets[0])
+      expect(toolsets[2]).not.toContain("patch")
+      expect(toolsets[2]).not.toContain("git_commit")
+      expect(events.some((event) => event.name === "provider.toolset_upgrade")).toBe(false)
+      expect(events.filter((event) => event.name === "provider.toolset").at(-1)?.detail).toMatchObject({
+        narrowed: true,
+        reason: "active_plan_read_only_review",
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  test("active read-only review plan steps expose delegate_subagent with the narrow toolset", async () => {
+    const root = await tmpdir()
+    try {
+      const context = new ContextManager()
+      await PlanTracker.activatePlan(context, root, "default", {
+        id: "plan_review_tools",
+        title: "Review current diff",
+        lowRisk: true,
+        steps: [
+          {
+            id: "step_1",
+            goal: "Review current changes for regressions",
+            kind: "inspect",
+            doneWhen: "The review findings are summarized.",
+          },
+        ],
+      }, {
+        currentStepId: "step_1",
+        stepStatuses: { step_1: "running" },
+        status: "running",
+      })
+
+      let toolNames: string[] = []
+      const provider: Provider = {
+        name: "custom",
+        capabilities: {
+          apiStyle: "local",
+          supportsImages: false,
+          supportsThinking: false,
+          supportsReasoningEffort: false,
+          effortValues: [],
+          supportsJsonObjectResponse: false,
+          supportsMaxOutputTokens: false,
+          promptCacheMode: "none",
+        },
+        async *stream(input): AsyncGenerator<ProviderEvent, void, unknown> {
+          toolNames = input.tools.map((tool) => tool.name)
+          yield { type: "text_delta", text: "Review summary: no findings." }
+          yield { type: "done" }
+        },
+      }
+
+      const result = await new AgentRunner({
+        root,
+        provider,
+        context,
+        registry: createBuiltinRegistry(),
+        permission: PermissionService.autoApprove(defaultPermissionRules("build")),
+      }).run("review 当前代码", "build")
+
+      expect(result.status).toBe("completed")
+      expect(toolNames).toEqual(["rg_search", "read_lines", "repo_map", "git_diff", "git_status", "delegate_subagent", "plan_step_complete", "plan_step_fail"])
+      expect(toolNames).not.toContain("patch")
+      expect(toolNames).not.toContain("edit")
+      expect(toolNames).not.toContain("git_stage")
+      expect(toolNames).not.toContain("git_commit")
     } finally {
       await rm(root, { recursive: true, force: true })
     }

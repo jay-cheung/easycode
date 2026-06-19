@@ -830,6 +830,7 @@ function fileRangeCovers(candidate: Extract<ToolResultFeature, { kind: "file_ran
 }
 
 function gitDiffCovers(candidate: Extract<ToolResultFeature, { kind: "git_diff" }>, target: Extract<ToolResultFeature, { kind: "git_diff" }>) {
+  if (candidate.mode === target.mode && candidate.filePath === target.filePath) return true
   if (candidate.mode === "summary" && target.mode !== "file") return true
   if (candidate.mode === "files" && target.mode === "files") return true
   if (candidate.mode === "stat" && target.mode === "stat") return true

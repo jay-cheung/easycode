@@ -29,7 +29,7 @@ export class LineReader {
 
   nextLine(priority: LinePriority = "foreground", signal?: AbortSignal) {
     if (signal?.aborted) return Promise.resolve(eofPrompt)
-    const queued = priority === "foreground" ? this.pending.shift() : undefined
+    const queued = this.pending.shift()
     if (queued !== undefined) return Promise.resolve(queued)
     return new Promise<string>((resolve) => {
       const waiter: LineWaiter = { resolve, signal }
