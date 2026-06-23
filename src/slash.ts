@@ -1,9 +1,30 @@
 import { uiText, type SlashErrorCode, type UiLanguage } from "./i18n"
 
+export const canonicalSlashCommandNames = [
+  "/help",
+  "/settings",
+  "/cancel",
+  "/plan",
+  "/goal",
+  "/sessions",
+  "/session",
+  "/image",
+  "/file",
+  "/skill",
+  "/model",
+  "/provider",
+  "/max-tokens",
+  "/max-steps",
+  "/effort",
+  "/lang",
+  "/thinking",
+] as const
+
 export type SlashCommand =
   | { type: "prompt"; text: string }
   | { type: "help" }
   | { type: "settings" }
+  | { type: "cancel" }
   | { type: "plan"; objective: string }
   | { type: "goal"; action: "start"; objective: string }
   | { type: "goal"; action: "status" | "pause" | "resume" | "clear" }
@@ -11,12 +32,16 @@ export type SlashCommand =
   | { type: "session"; action: "switch" | "delete"; target: string }
   | { type: "image"; action: "add"; value: string }
   | { type: "image"; action: "clear" }
+  | { type: "file"; action: "add"; value: string }
+  | { type: "file"; action: "clear" }
   | { type: "skill"; action: "list" }
   | { type: "skill"; action: "use"; name: string }
   | { type: "skill"; action: "remove"; name: string }
   | { type: "skill"; action: "clear" }
-  | { type: "model"; model: string }
+  | { type: "model"; model?: string }
   | { type: "provider"; name: string }
+  | { type: "maxTokens"; value?: number }
+  | { type: "maxSteps"; value?: number }
   | { type: "effort"; value: string }
   | { type: "lang"; value?: string }
   | { type: "thinking"; value: "on" | "off"; aliasUsed?: boolean }
@@ -32,6 +57,7 @@ export function parseSlashCommand(input: string): SlashCommand {
   if (!name) return { type: "help" }
   if (name === "help") return { type: "help" }
   if (name === "settings") return { type: "settings" }
+  if (name === "cancel" || name === "stop") return { type: "cancel" }
   if (name === "plan") {
     const objective = args.join(" ")
     return objective ? { type: "plan", objective } : { type: "error", code: "plan_requires_objective" }
@@ -62,6 +88,11 @@ export function parseSlashCommand(input: string): SlashCommand {
     const value = args.join(" ")
     return value ? { type: "image", action: "add", value } : { type: "error", code: "image_requires_value" }
   }
+  if (name === "file") {
+    if (args[0]?.toLowerCase() === "clear") return { type: "file", action: "clear" }
+    const value = args.join(" ")
+    return value ? { type: "file", action: "add", value } : { type: "error", code: "file_requires_value" }
+  }
   if (name === "skill") {
     const action = args[0]?.toLowerCase()
     if (!action || action === "list") return { type: "skill", action: "list" }
@@ -77,6 +108,7 @@ export function parseSlashCommand(input: string): SlashCommand {
     return { type: "skill", action: "use", name: args.join(" ") }
   }
   if (name === "model") {
+    if (args[0] && ["reset", "clear", "default"].includes(args[0].toLowerCase()) && args.length === 1) return { type: "model" }
     const model = args.join(" ")
     if (!model) return { type: "error", code: "model_requires_name" }
     return { type: "model", model }
@@ -85,6 +117,16 @@ export function parseSlashCommand(input: string): SlashCommand {
     const provider = args[0]
     if (!provider) return { type: "error", code: "provider_requires_name" }
     return { type: "provider", name: provider }
+  }
+  if (name === "max-tokens" || name === "max_tokens") {
+    const value = parseOptionalPositiveInteger(args[0])
+    if (value === "reset") return { type: "maxTokens" }
+    return value ? { type: "maxTokens", value } : { type: "error", code: "max_tokens_requires_value" }
+  }
+  if (name === "max-steps" || name === "max_steps") {
+    const value = parseOptionalPositiveInteger(args[0])
+    if (value === "reset") return { type: "maxSteps" }
+    return value ? { type: "maxSteps", value } : { type: "error", code: "max_steps_requires_value" }
   }
   if (name === "effort") {
     const value = args[0]?.toLowerCase()
@@ -99,6 +141,12 @@ export function parseSlashCommand(input: string): SlashCommand {
     return { type: "thinking", value, aliasUsed: name === "thingking" }
   }
   return { type: "unknown", name: rawName }
+}
+
+function parseOptionalPositiveInteger(value: string | undefined) {
+  if (value === "reset" || value === "default" || value === "clear") return "reset" as const
+  const parsed = Number(value)
+  return value && Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed) : undefined
 }
 
 export function slashHelpText(language: UiLanguage = "en") {

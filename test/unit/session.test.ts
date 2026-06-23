@@ -39,8 +39,8 @@ describe("session store", () => {
     await Bun.write(path.join(store.dir, "new.json"), JSON.stringify({ id: "new", messages: [textMessage("user", "new"), textMessage("assistant", "ok")], updatedAt: 200 }, null, 2))
 
     expect(await store.list()).toMatchObject([
-      { id: "new", file: "new.json", messageCount: 2, updatedAt: 200 },
-      { id: "old", file: "old.json", messageCount: 1, updatedAt: 100 },
+      { id: "new", file: "new.json", messageCount: 2, title: "new", updatedAt: 200 },
+      { id: "old", file: "old.json", messageCount: 1, title: "old", updatedAt: 100 },
     ])
     await rm(root, { recursive: true, force: true })
   })

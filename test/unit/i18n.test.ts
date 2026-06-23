@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import path from "node:path"
 import ts from "typescript"
+import { uiLanguages, uiText } from "../../src/i18n"
+import { canonicalSlashCommandNames } from "../../src/slash"
 
 const i18nRoot = path.join(import.meta.dir, "..", "..", "src", "i18n")
 
@@ -56,6 +58,16 @@ describe("i18n copy", () => {
       const actualKeys = explicitLanguageKeys(language)
       const missing = expectedKeys.filter((key) => !actualKeys.has(key))
       expect(missing, `${language} is missing explicit translations`).toEqual([])
+    }
+  })
+
+  test("welcome copy exposes every canonical slash command, including file attachments", () => {
+    for (const language of uiLanguages) {
+      const copy = uiText(language)
+      const commandCopy = [copy.welcomeCommands, ...copy.welcomeCommandLines].join("\n")
+      for (const command of canonicalSlashCommandNames) {
+        expect(commandCopy, `${language} welcome copy should include ${command}`).toContain(command)
+      }
     }
   })
 })

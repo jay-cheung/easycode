@@ -25,6 +25,7 @@
     "build:win-x64": "bun build --compile --target bun-windows-x64 ./src/cli.ts --outfile dist/easycode-win-x64.exe",
     "desktop:dev": "cd apps/desktop && bun run dev",
     "desktop:build": "bun run build && cd apps/desktop && bun run build",
+    "desktop:verify": "node scripts/desktop-verify.mjs",
     "desktop:package": "bash scripts/package-desktop.sh",
     "desktop:release": "bash scripts/release-desktop.sh",
     "release": "bash scripts/release.sh"

@@ -1,19 +1,22 @@
-import { app } from "electron"
+import * as electron from "electron"
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process"
 import path from "node:path"
 import { existsSync } from "node:fs"
 import type { DesktopSettings, SidecarFrame } from "../shared/protocol.js"
 
 type Listener = (frame: SidecarFrame) => void
+type SpawnSidecar = typeof spawn
+const { app } = electron
 
 export class SidecarBridge {
   private child?: ChildProcessWithoutNullStreams
+  private lifecycleToken = 0
   private seq = 0
   private buffer = ""
   private readonly pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>()
   private readonly listeners = new Set<Listener>()
 
-  constructor(private settings: DesktopSettings) {}
+  constructor(private settings: DesktopSettings, private readonly spawnSidecar: SpawnSidecar = spawn) {}
 
   onFrame(listener: Listener) {
     this.listeners.add(listener)
@@ -21,32 +24,73 @@ export class SidecarBridge {
   }
 
   configure(settings: DesktopSettings) {
+    const previousPath = this.resolvedPath()
     this.settings = settings
+    const nextPath = this.resolvedPath()
+    if (previousPath !== nextPath) this.stop(new Error("Sidecar path changed."))
+  }
+
+  status() {
+    const sidecarPath = this.resolvedPath()
+    const absolute = path.isAbsolute(sidecarPath)
+    const exists = absolute ? existsSync(sidecarPath) : undefined
+    return {
+      path: sidecarPath,
+      running: this.isRunning(),
+      canReveal: Boolean(absolute && exists),
+      ...(absolute ? { exists } : {}),
+    }
   }
 
   async request(method: string, params: Record<string, unknown> = {}) {
-    this.ensureStarted()
+    const child = this.ensureStarted()
     const id = `desktop_${++this.seq}`
-    this.child?.stdin.write(`${JSON.stringify({ id, method, params })}\n`)
-    return await new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }))
+    const promise = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }))
+    try {
+      child.stdin.write(`${JSON.stringify({ id, method, params })}\n`)
+    } catch (error) {
+      this.pending.delete(id)
+      throw error
+    }
+    return await promise
   }
 
-  stop() {
-    this.child?.kill()
+  stop(reason?: Error) {
+    this.lifecycleToken += 1
+    const child = this.child
+    if (!child) return
     this.child = undefined
+    this.buffer = ""
+    if (reason) this.rejectPending(reason)
+    child.kill()
   }
 
   private ensureStarted() {
-    if (this.child && !this.child.killed) return
-    const command = resolveSidecarPath(this.settings)
-    this.child = spawn(command, ["sidecar", "--stdio"], { stdio: "pipe" })
-    this.child.stdout.on("data", (chunk) => this.consume(String(chunk)))
-    this.child.stderr.on("data", (chunk) => this.emit({ type: "event", event: { type: "fatal", message: String(chunk) } }))
-    this.child.on("error", (error) => {
+    if (this.isRunning() && this.child) return this.child
+    const command = this.resolvedPath()
+    const token = this.lifecycleToken
+    const child = this.spawnSidecar(command, ["sidecar", "--stdio"], { stdio: "pipe", env: { ...process.env } })
+    this.child = child
+    child.stdout.on("data", (chunk) => {
+      if (!this.isCurrentChild(child, token)) return
+      this.consume(String(chunk))
+    })
+    child.stderr.on("data", (chunk) => {
+      if (!this.isCurrentChild(child, token)) return
+      this.emit({ type: "event", event: { type: "fatal", message: String(chunk) } })
+    })
+    child.on("error", (error) => {
+      if (!this.clearChild(child, token)) return
       this.rejectPending(error)
       this.emit({ type: "event", event: { type: "fatal", message: `Sidecar failed to start: ${error.message}` } })
     })
-    this.child.on("exit", (code) => this.emit({ type: "event", event: { type: "fatal", message: `Sidecar exited with code ${code ?? "unknown"}.` } }))
+    child.on("exit", (code) => {
+      if (!this.clearChild(child, token)) return
+      const message = `Sidecar exited with code ${code ?? "unknown"}.`
+      this.rejectPending(new Error(message))
+      this.emit({ type: "event", event: { type: "fatal", message } })
+    })
+    return child
   }
 
   private consume(chunk: string) {
@@ -79,6 +123,25 @@ export class SidecarBridge {
   private rejectPending(error: Error) {
     for (const pending of this.pending.values()) pending.reject(error)
     this.pending.clear()
+  }
+
+  private isRunning() {
+    return Boolean(this.child && !this.child.killed && this.child.exitCode === null && this.child.signalCode === null)
+  }
+
+  private clearChild(child: ChildProcessWithoutNullStreams, token: number) {
+    if (!this.isCurrentChild(child, token)) return false
+    this.child = undefined
+    this.buffer = ""
+    return true
+  }
+
+  private isCurrentChild(child: ChildProcessWithoutNullStreams, token: number) {
+    return this.child === child && this.lifecycleToken === token
+  }
+
+  private resolvedPath() {
+    return resolveSidecarPath(this.settings)
   }
 }
 

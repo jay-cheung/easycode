@@ -1,37 +1,64 @@
 import { app } from "electron"
+import { homedir } from "node:os"
 import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
-import type { DesktopSettings } from "../shared/protocol.js"
+import type { DesktopProviderSetup, DesktopSettings } from "../shared/protocol.js"
+import { mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "./provider-env.js"
+import { normalizeSettings, normalizeSettingsForStorage } from "./settings-normalize.js"
 
 const settingsFile = () => path.join(app.getPath("userData"), "settings.json")
+const globalEnvFile = () => path.join(homedir(), ".easycode", ".env")
 
 export async function loadSettings(): Promise<DesktopSettings> {
+  const envDefaults = await loadGlobalEnvDefaults()
   try {
     const parsed = JSON.parse(await readFile(settingsFile(), "utf8")) as Partial<DesktopSettings>
-    return normalizeSettings(parsed)
+    return normalizeSettings(parsed, envDefaults)
   } catch {
-    return normalizeSettings({})
+    return normalizeSettings({}, envDefaults)
   }
 }
 
 export async function saveSettings(input: Partial<DesktopSettings>) {
-  const next = normalizeSettings(input)
+  const { settings: next, stored } = normalizeSettingsForStorage(input)
   await mkdir(path.dirname(settingsFile()), { recursive: true })
-  await writeFile(settingsFile(), JSON.stringify(next, null, 2))
+  await writeFile(settingsFile(), JSON.stringify(stored, null, 2))
   return next
 }
 
-export function normalizeSettings(input: Partial<DesktopSettings>): DesktopSettings {
-  const workspaceRoot = input.workspaceRoot || process.cwd()
-  return {
-    workspaceRoot,
-    sidecarPath: input.sidecarPath || undefined,
-    provider: input.provider || "fake",
-    session: input.session || "default",
-    recentWorkspaces: unique([workspaceRoot, ...(input.recentWorkspaces ?? [])]).slice(0, 8),
-  }
+export async function configureProviderEnvironment(input: DesktopProviderSetup) {
+  const provider = isDesktopProvider(input.provider) ? input.provider : defaultProvider()
+  const entries = providerEnvEntries({ ...input, provider })
+  const envPath = globalEnvFile()
+  const existing = await readFile(envPath, "utf8").catch(() => "# easycode configuration\n")
+  await mkdir(path.dirname(envPath), { recursive: true })
+  await writeFile(envPath, mergeProviderEnvText(existing, entries))
+  for (const [key, value] of Object.entries(entries)) process.env[key] = value
+  return { envPath, writtenKeys: Object.keys(entries) }
 }
 
-function unique(values: string[]) {
-  return [...new Set(values.filter(Boolean))]
+export async function configureUiLanguageEnvironment(language: DesktopSettings["language"]) {
+  const envPath = globalEnvFile()
+  const existing = await readFile(envPath, "utf8").catch(() => "# easycode configuration\n")
+  await mkdir(path.dirname(envPath), { recursive: true })
+  await writeFile(envPath, mergeProviderEnvText(existing, { EASYCODE_LANG: language }))
+  process.env.EASYCODE_LANG = language
+  return envPath
 }
+
+async function loadGlobalEnvDefaults() {
+  const text = await readFile(globalEnvFile(), "utf8").catch(() => "")
+  return text ? providerDefaultsFromEnvText(text) : {}
+}
+
+function defaultProvider() {
+  const configured = process.env.EASYCODE_PROVIDER
+  if (configured === "deepseek" || configured === "openai" || configured === "openai-compatible") return configured
+  return "deepseek"
+}
+
+function isDesktopProvider(value: unknown) {
+  return value === "deepseek" || value === "openai" || value === "openai-compatible"
+}
+
+export { normalizeSettings }

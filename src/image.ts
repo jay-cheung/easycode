@@ -36,7 +36,7 @@ export async function imagePartFromInput(input: string, root: string): Promise<I
 }
 
 export function imageLabel(source: ImageSource) {
-  return source.type === "url" ? source.url : source.path
+  return source.type === "url" ? source.url : path.basename(source.path)
 }
 
 export function imageSourceToDataURL(source: ImageSource) {
@@ -44,4 +44,3 @@ export function imageSourceToDataURL(source: ImageSource) {
   const bytes = readFileSync(source.path)
   return `data:${source.mimeType};base64,${Buffer.from(bytes).toString("base64")}`
 }
-

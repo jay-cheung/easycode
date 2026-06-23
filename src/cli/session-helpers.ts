@@ -1,4 +1,5 @@
 import { stdout as output } from "node:process"
+import { attachedFileFromInput } from "../attachment"
 import { languageDisplay, parseUiLanguage, supportedLanguageSummary, uiText } from "../i18n"
 import { imageLabel, imagePartFromInput } from "../image"
 import type { AgentMode, ImagePart } from "../message"
@@ -6,7 +7,7 @@ import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionServic
 import { createProvider, defaultProviderCapabilities, hasProvider, listProviders } from "../provider"
 import { hasConfiguredWebSearch, tavilySetupHint } from "../retrieval"
 import { SessionStore } from "../session"
-import { isReasoningEffort, type SessionSettings } from "../settings"
+import { isReasoningEffort, normalizeSessionSettings, type SessionSettings } from "../settings"
 import { parseSlashCommand, slashHelpText, type SlashCommand } from "../slash"
 import { SkillService } from "../skill"
 import { TuiRenderer } from "../ui/tui"
@@ -47,9 +48,10 @@ export async function selectSession(explicitSession: string | undefined, store: 
   }
 }
 
-export async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; skills: SkillService; sessions?: SessionStore; currentSession?: string; tui?: TuiRenderer }) {
+export async function handleSlashCommand(command: Exclude<SlashCommand, { type: "prompt" }>, input: { root: string; settings: SessionSettings; pendingImages: ImagePart[]; pendingFiles: string[]; skills: SkillService; sessions?: SessionStore; currentSession?: string; tui?: TuiRenderer }) {
   const next = { ...input.settings, selectedSkills: [...input.settings.selectedSkills] }
   let pendingImages = input.pendingImages
+  let pendingFiles = input.pendingFiles
   let resetRunner = false
   let goalAction: Extract<SlashCommand, { type: "goal" }> | undefined
   let planAction: Extract<SlashCommand, { type: "plan" }> | undefined
@@ -62,7 +64,10 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
       write(slashHelpText(next.language), uiText(next.language).helpTitle)
       break
     case "settings":
-      write(settingsText(next, pendingImages), uiText(next.language).settingsTitle)
+      write(settingsText(next, pendingImages, pendingFiles), uiText(next.language).settingsTitle)
+      break
+    case "cancel":
+      write(uiText(next.language).cancelledRun, uiText(next.language).commandTitle)
       break
     case "plan":
       planAction = command
@@ -85,7 +90,7 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
     case "model":
       next.model = command.model
       resetRunner = true
-      write(uiText(next.language).modelSet(next.model), uiText(next.language).modelTitle)
+      write(next.model ? uiText(next.language).modelSet(next.model) : uiText(next.language).modelReset, uiText(next.language).modelTitle)
       break
     case "provider":
       if (!hasProvider(command.name)) write(uiText(next.language).providerUnknown(command.name, listProviders().join(", ")), uiText(next.language).providerTitle)
@@ -96,6 +101,20 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
         write(uiText(next.language).providerSet(next.provider), uiText(next.language).providerTitle)
       }
       break
+    case "maxTokens": {
+      const normalized = normalizeSessionSettings({ ...next, maxTokens: command.value }, next.provider)
+      next.maxTokens = normalized.maxTokens
+      resetRunner = true
+      write(uiText(next.language).maxTokensSet(next.maxTokens ?? 0), uiText(next.language).settingsTitle)
+      break
+    }
+    case "maxSteps": {
+      const normalized = normalizeSessionSettings({ ...next, maxSteps: command.value }, next.provider)
+      next.maxSteps = normalized.maxSteps
+      resetRunner = true
+      write(uiText(next.language).maxStepsSet(next.maxSteps ?? 0), uiText(next.language).settingsTitle)
+      break
+    }
     case "lang": {
       if (!command.value) {
         write(uiText(next.language).languageCurrent(languageDisplay(next.language), supportedLanguageSummary()), uiText(next.language).languageTitle)
@@ -154,6 +173,21 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
       }
       break
     }
+    case "file": {
+      if (command.action === "clear") {
+        pendingFiles = []
+        write(uiText(next.language).pendingFilesCleared, uiText(next.language).fileTitle)
+      } else {
+        try {
+          const file = await attachedFileFromInput(input.root, command.value)
+          pendingFiles = [...pendingFiles, file.path]
+          write(uiText(next.language).fileAttached(file.relativePath), uiText(next.language).fileTitle)
+        } catch (error) {
+          write(error instanceof Error ? error.message : String(error), uiText(next.language).fileTitle)
+        }
+      }
+      break
+    }
     case "skill": {
       if (command.action === "list") {
         const skills = await input.skills.available()
@@ -192,7 +226,7 @@ export async function handleSlashCommand(command: Exclude<SlashCommand, { type: 
     }
   }
 
-  return { settings: next, pendingImages, resetRunner, sessionAction, goalAction, planAction }
+  return { settings: next, pendingImages, pendingFiles, resetRunner, sessionAction, goalAction, planAction }
 }
 
 export async function sessionsText(store: SessionStore | undefined, currentSession: string | undefined, language: SessionSettings["language"]) {
@@ -206,7 +240,7 @@ export async function sessionsText(store: SessionStore | undefined, currentSessi
   ].join("\n")
 }
 
-export function settingsText(settings: SessionSettings, images: ImagePart[]) {
+export function settingsText(settings: SessionSettings, images: ImagePart[], files: string[] = []) {
   return uiText(settings.language).settingsText({
     provider: settings.provider,
     model: settings.model,
@@ -216,6 +250,7 @@ export function settingsText(settings: SessionSettings, images: ImagePart[]) {
     skills: settings.selectedSkills.join(", ") || "(none)",
     pendingSkillLoads: settings.pendingSkillLoads.join(", ") || "(none)",
     pendingImages: images.length,
+    pendingFiles: files.length,
     maxTokens: settings.maxTokens,
     maxSteps: settings.maxSteps,
   })

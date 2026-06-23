@@ -2,13 +2,15 @@
 import path from "node:path"
 import { stdout as output } from "node:process"
 import { createRunner, hasProposedPlanText } from "./agent"
+import { promptWithAttachedFiles } from "./attachment"
 import type { ContextManagerLike } from "./context"
+import { currentLedgerValue, currentPlanBlocker, currentPlanID, currentPlanStatus, firstDeniedToolResult, GoalFlowController, latestGoalAcceptanceResult, latestGoalToolResult, shouldCompleteReadOnlyGoalPlanningResult, toolResultsSince, type QueuedControllerPrompt } from "./controller"
 import { createLogger, emitLog } from "./logger"
 import { detectUiLanguage, uiText } from "./i18n"
-import type { AgentMode, ImagePart, Message } from "./message"
+import type { AgentMode, ImagePart } from "./message"
 import { savePlan, loadStructuredPlanState, isPlanApprovalPrompt, isPlanRevisionPrompt } from "./plans"
 import { PlanTracker } from "./agent/planner"
-import { activateGoalPlan, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, clearGoalState, createGoalState, goalHasAcceptance, goalStateFromContext, goalStatusText, writeGoalState, type GoalState } from "./goal"
+import { activateGoalPlan, buildGoalAssessmentPrompt, buildGoalDefinitionPrompt, buildGoalPlanningPrompt, clearGoalState, goalHasAcceptance, goalStateFromContext, goalStatusText, writeGoalState, type GoalState } from "./goal"
 import { defaultPermissionAutoReviewer, defaultPermissionRules, PermissionService } from "./permission"
 import { hasProvider, listProviders } from "./provider"
 import { normalizeSessionTokenUsage, SessionStore, type SessionTokenUsage } from "./session"
@@ -102,25 +104,37 @@ function numericFlag(argv: string[], index: number, name: string) {
 }
 
 function addSubagentMetricsToUsage(usage: SessionTokenUsage, metrics: ProviderRunMetrics): SessionTokenUsage {
+  const nextInputTokens = sumTokenCount(usage.subagentInputTokens, metrics.inputTokens)
+  const nextOutputTokens = sumTokenCount(usage.subagentOutputTokens, metrics.outputTokens)
+  const nextCacheHitTokens = sumTokenCount(usage.subagentCacheHitTokens, metrics.cacheHitTokens)
+  const nextCacheMissTokens = sumTokenCount(usage.subagentCacheMissTokens, metrics.cacheMissTokens)
   return {
     ...usage,
-    subagentInputTokens: usage.subagentInputTokens + metrics.inputTokens,
-    subagentOutputTokens: usage.subagentOutputTokens + metrics.outputTokens,
+    subagentInputTokens: nextInputTokens,
+    subagentOutputTokens: nextOutputTokens,
     subagentCalls: usage.subagentCalls + metrics.calls,
-    subagentCacheHitTokens: usage.subagentCacheHitTokens + metrics.cacheHitTokens,
-    subagentCacheMissTokens: usage.subagentCacheMissTokens + metrics.cacheMissTokens,
+    subagentCacheHitTokens: nextCacheHitTokens,
+    subagentCacheMissTokens: nextCacheMissTokens,
   }
 }
 
 function addSubagentUsageToUsage(usage: SessionTokenUsage, subagentUsage: SessionTokenUsage): SessionTokenUsage {
+  const nextInputTokens = sumTokenCount(usage.subagentInputTokens, subagentUsage.subagentInputTokens)
+  const nextOutputTokens = sumTokenCount(usage.subagentOutputTokens, subagentUsage.subagentOutputTokens)
+  const nextCacheHitTokens = sumTokenCount(usage.subagentCacheHitTokens, subagentUsage.subagentCacheHitTokens)
+  const nextCacheMissTokens = sumTokenCount(usage.subagentCacheMissTokens, subagentUsage.subagentCacheMissTokens)
   return {
     ...usage,
-    subagentInputTokens: usage.subagentInputTokens + subagentUsage.subagentInputTokens,
-    subagentOutputTokens: usage.subagentOutputTokens + subagentUsage.subagentOutputTokens,
+    subagentInputTokens: nextInputTokens,
+    subagentOutputTokens: nextOutputTokens,
     subagentCalls: usage.subagentCalls + subagentUsage.subagentCalls,
-    subagentCacheHitTokens: usage.subagentCacheHitTokens + subagentUsage.subagentCacheHitTokens,
-    subagentCacheMissTokens: usage.subagentCacheMissTokens + subagentUsage.subagentCacheMissTokens,
+    subagentCacheHitTokens: nextCacheHitTokens,
+    subagentCacheMissTokens: nextCacheMissTokens,
   }
+}
+
+function sumTokenCount(current: number, delta: number) {
+  return current + delta
 }
 
 async function main() {
@@ -243,9 +257,10 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     await maybeShowWebSearchSetupHint(args.root, activeSettings.language, tui)
     const skillService = new SkillService(args.root)
     let pendingImages: ImagePart[] = []
-    const queuedPrompts: Array<{ text: string; images: ImagePart[]; mode?: AgentMode }> = []
-    const enqueuePrompt = (text: string, images: ImagePart[] = [], mode?: AgentMode) => {
-      queuedPrompts.push({ text, images, mode })
+    let pendingFiles: string[] = []
+    const queuedPrompts: Array<{ text: string; images: ImagePart[]; files: string[]; mode?: AgentMode }> = []
+    const enqueuePrompt = (text: string, images: ImagePart[] = [], files: string[] = [], mode?: AgentMode) => {
+      queuedPrompts.push({ text, images, files, mode })
     }
     const clearQueuedPrompts = () => {
       queuedPrompts.length = 0
@@ -350,7 +365,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activePlanId: undefined,
       })
       emitGoalLifecycle("goal.definition", goalState, reason ? { reason } : {})
-      enqueuePrompt(buildGoalDefinitionPrompt(goalState ?? goal, reason), [], "build")
+      enqueuePrompt(buildGoalDefinitionPrompt(goalState ?? goal, reason), [], [], "build")
     }
     const beginGoalPlanning = (goal: GoalState, reason?: string, advanceIteration = false) => {
       persistGoal({
@@ -364,7 +379,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         ...(reason ? { reason } : {}),
         advanceIteration,
       })
-      enqueuePrompt(buildGoalPlanningPrompt(goalState ?? goal, reason), [], "plan")
+      enqueuePrompt(buildGoalPlanningPrompt(goalState ?? goal, reason), [], [], "plan")
     }
     const beginGoalReview = (goal: GoalState, reason?: string) => {
       persistGoal({
@@ -374,7 +389,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         activePlanId: undefined,
       })
       emitGoalLifecycle("goal.reviewing", goalState, reason ? { reason } : {})
-      enqueuePrompt(buildGoalAssessmentPrompt(goalState ?? goal, reason), [], "build")
+      enqueuePrompt(buildGoalAssessmentPrompt(goalState ?? goal, reason), [], [], "build")
     }
     const pauseGoal = async (reason: string) => {
       if (!goalState) return
@@ -407,6 +422,8 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       return runner
     }
     const writeSessionMessage = (text: string) => writeCliText(tui, text, uiText(activeSettings.language).sessionTitle)
+    const createGoalController = () => new GoalFlowController({ root: args.root, session, context, logger, onEvent, writeMessage: writeSessionMessage })
+    const enqueueControllerPrompt = (prompt: QueuedControllerPrompt) => enqueuePrompt(prompt.text, [], [], prompt.mode)
     const switchSession = async (nextSession: string) => {
       session = nextSession
       logger = args.logger ? createLogger({ root: args.root, session }) : undefined
@@ -416,6 +433,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       activeSettings = nextState.settings
       sessionTokenUsage = nextState.tokenUsage
       pendingImages = []
+      pendingFiles = []
       runMetrics.current = undefined
       runMetrics.subagent = normalizeSessionTokenUsage(undefined)
       runner = undefined
@@ -431,6 +449,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
     while (true) {
       const queuedPrompt = queuedPrompts.shift()
       const queuedImages = queuedPrompt?.images
+      const queuedFiles = queuedPrompt?.files
       const queuedMode = queuedPrompt?.mode
       const prompt = (queuedPrompt?.text ?? await question(reader, tui)).trim()
       if (prompt === eofPrompt) {
@@ -448,39 +467,32 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       if (!prompt) continue
       const command = parseSlashCommand(prompt)
       if (command.type !== "prompt") {
-        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, skills: skillService, sessions: store, currentSession: session, tui })
+        const changed = await handleSlashCommand(command, { root: args.root, settings: activeSettings, pendingImages, pendingFiles, skills: skillService, sessions: store, currentSession: session, tui })
         activeSettings = changed.settings
         pendingImages = changed.pendingImages
+        pendingFiles = changed.pendingFiles
         if (changed.goalAction) {
+          const goalController = createGoalController()
           if (changed.goalAction.action === "status") {
-            syncGoalFromContext()
-            writeSessionMessage(goalStatusText(goalState))
+            writeSessionMessage(goalController.statusText())
           } else if (changed.goalAction.action === "clear") {
-            await clearActivePlanIfPresent()
-            emitGoalLifecycle("goal.cleared", goalState)
-            persistGoal(undefined)
             clearQueuedPrompts()
-            writeSessionMessage("Goal cleared.")
+            await goalController.clear()
           } else if (changed.goalAction.action === "pause") {
-            if (!goalState) writeSessionMessage("No active goal.")
-            else await pauseGoal(goalState.blocker ?? "Paused by user.")
+            await goalController.pause()
           } else if (changed.goalAction.action === "resume") {
-            if (!goalState) writeSessionMessage("No active goal.")
-            else if (!goalHasAcceptance(goalState)) beginGoalDefinition(goalState, "Goal resumed by user. Define acceptance before planning.")
-            else beginGoalPlanning(goalState, "Goal resumed by user.")
+            const nextPrompt = goalController.resume()
+            if (nextPrompt) enqueueControllerPrompt(nextPrompt)
           } else if (changed.goalAction.action === "start") {
-            await clearActivePlanIfPresent()
-            const nextGoal = createGoalState(changed.goalAction.objective)
             clearQueuedPrompts()
-            emitGoalLifecycle("goal.started", nextGoal)
-            beginGoalDefinition(nextGoal, "Goal started by user. Define acceptance before any plan.")
-            writeSessionMessage(`Goal started.\n${goalStatusText(goalState)}`)
+            enqueueControllerPrompt(await goalController.start(changed.goalAction.objective))
           }
+          syncGoalFromContext()
           await saveSession(runner?.context ?? context)
         } else if (changed.planAction) {
           await clearActivePlanIfPresent()
           clearQueuedPrompts()
-          enqueuePrompt(changed.planAction.objective, [], "plan")
+          enqueuePrompt(changed.planAction.objective, [], [], "plan")
           writeSessionMessage(`Draft planning started.\nRequest: ${changed.planAction.objective}`)
         } else if (changed.sessionAction?.type === "switch") {
           if (changed.sessionAction.target === session) {
@@ -523,12 +535,15 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
       }
       const activeRunner = getRunner()
       const images = queuedImages ?? pendingImages
+      const files = queuedFiles ?? pendingFiles
       if (queuedImages === undefined) pendingImages = []
+      if (queuedFiles === undefined) pendingFiles = []
+      const promptText = files.length ? await promptWithAttachedFiles(args.root, command.text, files) : command.text
       const messageCountBeforeRun = activeRunner.context.state.messages.length
       activeAbort = new AbortController()
       const runInput = collectRunInput(reader, activeAbort, { push: (text) => enqueuePrompt(text) }, tui)
       activeRunInProgress = true
-      const result = await activeRunner.run(command.text, activeMode, { images, signal: activeAbort.signal })
+      const result = await activeRunner.run(promptText, activeMode, { images, signal: activeAbort.signal })
       runInput.stop()
       activeAbort = undefined
       timeline.finish()
@@ -580,7 +595,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
           persistGoal(activateGoalPlan(goalState, planId))
           emitGoalLifecycle("goal.executing", goalState, { planId })
           await saveSession(activeRunner.context)
-          enqueuePrompt("Proceed with the approved plan.", [], "build")
+          enqueuePrompt("Proceed with the approved plan.", [], [], "build")
           continue
         }
 
@@ -645,7 +660,7 @@ async function runSession(args: ReturnType<typeof parseArgs>, loadedEnvVars = 0)
         }
         
         runner = undefined
-        enqueuePrompt(planId ? "Proceed with the approved plan." : command.text, planId ? [] : images, "build")
+        enqueuePrompt(planId ? "Proceed with the approved plan." : command.text, planId ? [] : images, planId ? [] : files, "build")
         continue
       }
       if (goalState) {
@@ -718,76 +733,6 @@ function timelineEventHandler(timeline: { event(event: RunUiEvent): void }) {
   return (event: RunUiEvent) => {
     timeline.event(event)
   }
-}
-
-function currentPlanID(context: ContextManagerLike) {
-  return currentLedgerValue(context, "current_plan_id")
-}
-
-function currentPlanStatus(context: ContextManagerLike) {
-  return currentLedgerValue(context, "plan_lifecycle_status")
-}
-
-function currentPlanBlocker(context: ContextManagerLike) {
-  const blocker = currentLedgerValue(context, "plan_blocker")
-  return blocker && blocker !== "none" ? blocker : undefined
-}
-
-function currentLedgerValue(context: ContextManagerLike, subject: string) {
-  return context.state.ledger?.current.find((record) => record.subject === subject && record.status === "current")?.value
-}
-
-function toolResultsSince(messages: Message[], startIndex: number) {
-  const results: Array<{ toolName: string; output: string; metadata: Record<string, unknown>; status: string }> = []
-  for (const message of messages.slice(startIndex)) {
-    for (const part of message.parts) {
-      if (part.type !== "tool_result") continue
-      results.push({ toolName: part.toolName, output: part.output, metadata: part.metadata, status: part.status })
-    }
-  }
-  return results
-}
-
-function firstDeniedToolResult(results: ReturnType<typeof toolResultsSince>) {
-  return results.find((result) => result.status === "denied")
-}
-
-function latestGoalToolResult(results: ReturnType<typeof toolResultsSince>) {
-  return [...results].reverse().find((result) => result.toolName === "goal_complete" || result.toolName === "goal_blocked")
-}
-
-function latestGoalAcceptanceResult(results: ReturnType<typeof toolResultsSince>) {
-  return [...results].reverse().find((result) => result.toolName === "goal_set_acceptance" && result.status === "succeeded")
-}
-
-function shouldCompleteReadOnlyGoalPlanningResult(goal: GoalState, text: string, results: ReturnType<typeof toolResultsSince>) {
-  if (goal.status !== "planning") return false
-  const summary = text.trim()
-  if (!summary || hasProposedPlanText(summary)) return false
-  if (looksLikePlanningGateFailure(summary)) return false
-  if (results.some((result) => result.status === "failed" || result.status === "denied")) return false
-
-  const taskText = [
-    goal.objective,
-    goal.firstSlice,
-    ...goal.acceptanceCriteria,
-    ...goal.completionChecks,
-  ].filter(Boolean).join("\n")
-  if (!looksLikeReadOnlyGoal(taskText)) return false
-  if (looksLikeMutationOrRuntimeGoal(taskText)) return false
-  return true
-}
-
-function looksLikePlanningGateFailure(text: string) {
-  return /planning mode hard gate failed|must submit a proposal plan|must return a proposal plan|return a proposed plan/i.test(text)
-}
-
-function looksLikeReadOnlyGoal(text: string) {
-  return /\b(review|code review|audit|inspect|explain|analy[sz]e|summari[sz]e|investigat|research)\b|代码评审|代码审查|审查代码|评审代码|复核|审查|评审|检查|查看|分析|解释|说明|调研|排查|当前变更|当前代码/i.test(text)
-}
-
-function looksLikeMutationOrRuntimeGoal(text: string) {
-  return /\b(implement|fix|repair|change|modify|update|edit|write|create|delete|remove|refactor|commit|stage|apply|patch|test|verify|run|execute|lint|typecheck|build|benchmark|ship)\b|实现|修复|修改|更新|新增|创建|删除|移除|重构|提交|暂存|应用补丁|测试|验证|运行|执行|构建|发布|跑一下/i.test(text)
 }
 
 async function clearTransientSessionTaskState(context: ContextManagerLike, root: string) {

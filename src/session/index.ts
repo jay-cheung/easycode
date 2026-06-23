@@ -39,6 +39,7 @@ export type SessionSummary = {
   id: string
   file: string
   messageCount: number
+  title?: string
   updatedAt: number
 }
 
@@ -77,10 +78,12 @@ export class SessionStore {
       try {
         const data = normalizeSessionData(JSON.parse(await Bun.file(path.join(this.dir, entry)).text()) as Partial<SessionData> & { version?: unknown })
         if (!data) continue
+        const title = firstUserMessageTitle(data.messages)
         sessions.push({
           id: data.id,
           file: entry,
           messageCount: data.messages.length,
+          ...(title ? { title } : {}),
           updatedAt: data.updatedAt,
         })
       } catch {
@@ -239,6 +242,19 @@ function latestMessageText(messages: Message[], role: Message["role"]) {
       .replace(/\s+/g, " ")
       .trim()
     if (text) return text.slice(0, 280)
+  }
+  return undefined
+}
+
+function firstUserMessageTitle(messages: Message[]) {
+  for (const message of messages) {
+    if (message.role !== "user") continue
+    const text = message.parts
+      .flatMap((part) => part.type === "text" ? [part.text] : [])
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+    if (text) return text
   }
   return undefined
 }

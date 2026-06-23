@@ -4,11 +4,14 @@ export type UiLanguage = (typeof uiLanguages)[number]
 
 export type SlashErrorCode =
   | "image_requires_value"
+  | "file_requires_value"
   | "skill_remove_requires_name"
   | "skill_use_requires_name"
   | "plan_requires_objective"
   | "model_requires_name"
   | "provider_requires_name"
+  | "max_tokens_requires_value"
+  | "max_steps_requires_value"
   | "effort_requires_value"
   | "session_switch_requires_name"
   | "session_delete_requires_name"
@@ -28,6 +31,7 @@ export type UiCopy = {
   thinkingTitle: string
   effortTitle: string
   imageTitle: string
+  fileTitle: string
   skillsTitle: string
   languageTitle: string
   startingNewSession: (name: string) => string
@@ -46,6 +50,9 @@ export type UiCopy = {
   commandUnknown: (name: string) => string
   slashError: (code: SlashErrorCode) => string
   modelSet: (model: string) => string
+  modelReset: string
+  maxTokensSet: (value: number) => string
+  maxStepsSet: (value: number) => string
   providerUnknown: (provider: string, available: string) => string
   providerSet: (provider: string) => string
   providerThinkingUnsupported: (provider: string) => string
@@ -55,6 +62,8 @@ export type UiCopy = {
   pendingImagesCleared: string
   providerImageUnsupported: (provider: string) => string
   imageAttached: (label: string) => string
+  pendingFilesCleared: string
+  fileAttached: (label: string) => string
   noSkillsFound: string
   skillsCleared: string
   skillNotFound: (name: string) => string
@@ -64,7 +73,7 @@ export type UiCopy = {
   languageCurrent: (current: string, options: string) => string
   languageInvalid: (value: string, options: string) => string
   languageUpdated: (value: string, envPath: string) => string
-  settingsText: (input: { provider: string; model?: string; thinking: boolean; effort: string; language: string; skills: string; pendingSkillLoads: string; pendingImages: number; maxTokens?: number; maxSteps?: number }) => string
+  settingsText: (input: { provider: string; model?: string; thinking: boolean; effort: string; language: string; skills: string; pendingSkillLoads: string; pendingImages: number; pendingFiles: number; maxTokens?: number; maxSteps?: number }) => string
   runInputHint: string
   queuedNextInput: (text: string) => string
   cancellingRun: string

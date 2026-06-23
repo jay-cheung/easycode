@@ -1,18 +1,22 @@
 {
   "name": "@easycode/desktop",
+  "productName": "easycode",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "main": "dist/main/main.js",
   "scripts": {
-    "dev": "cd ../.. && bun run build && cd apps/desktop && bun run build && EASYCODE_DESKTOP_SIDECAR_PATH=../../dist/easycode electron .",
-    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && vite build",
-    "electron": "electron .",
-    "package": "electron-builder"
+    "dev": "cd ../.. && bun run build && cd apps/desktop && bun run build && EASYCODE_DESKTOP_SIDECAR_PATH=../../dist/easycode node scripts/run-electron.mjs",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json && node scripts/bundle-preload.mjs && vite build",
+    "build:icons": "node scripts/make-icon-source.mjs && node scripts/make-mac-icon.mjs",
+    "electron": "bun run build && node scripts/run-electron.mjs",
+    "package": "bun run build:icons && electron-builder"
   },
   "dependencies": {
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^5.0.0",
@@ -25,12 +29,28 @@
   },
   "build": {
     "appId": "dev.easycode.desktop",
-    "productName": "EasyCode",
+    "productName": "easycode",
+    "icon": "build/icon.png",
+    "mac": {
+      "icon": "build/icon.icns",
+      "extendInfo": {
+        "CFBundleDisplayName": "easycode",
+        "CFBundleName": "easycode"
+      }
+    },
+    "win": {
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "icon": "build/icon.png"
+    },
     "directories": {
       "output": "release"
     },
     "files": [
-      "dist/**"
+      "dist/**",
+      "build/icon.png",
+      "build/icon.icns"
     ],
     "extraResources": [
       {
