@@ -252,18 +252,29 @@ kbd {
   color: #d27a16;
 }
 
+.workspace-menu-host {
+  position: relative;
+  width: 31px;
+  height: 31px;
+}
+
 .workspace-menu {
   position: absolute;
   z-index: 20;
-  top: 42px;
-  right: 8px;
-  display: grid;
+  top: 34px;
+  right: 0;
+  display: none;
   width: 190px;
   padding: 7px;
   border: 1px solid #dbe2ed;
   border-radius: 8px;
   background: rgba(252, 253, 255, 0.98);
   box-shadow: 0 18px 42px rgba(55, 65, 85, 0.15);
+}
+
+.workspace-menu-host:hover .workspace-menu,
+.workspace-menu-host:focus-within .workspace-menu {
+  display: grid;
 }
 
 .add-session-button {
@@ -303,39 +314,12 @@ kbd {
 
 .workspace-session-list {
   display: grid;
-  gap: 3px;
+  gap: 2px;
   min-width: 0;
-  padding: 8px 0 0 13px;
+  padding: 6px 0 0 12px;
   border-left: 1px solid rgba(148, 163, 184, 0.3);
   margin-left: 10px;
   overflow: hidden;
-}
-
-.session-subtitle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 2px 5px 4px;
-  color: #9aa4b8;
-  font-size: 11px;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.session-subtitle button {
-  display: grid;
-  place-items: center;
-  width: 23px;
-  height: 23px;
-  color: #3157d8;
-  background: rgba(49, 87, 216, 0.08);
-  border-radius: 7px;
-  font-size: 16px;
-  line-height: 1;
-}
-
-.session-subtitle button:hover {
-  background: rgba(49, 87, 216, 0.08);
 }
 
 .project-row.active {
@@ -384,9 +368,11 @@ kbd {
   align-items: center;
   width: 100%;
   min-width: 0;
-  min-height: 34px;
+  min-height: 32px;
   border-radius: 7px;
   color: #5a647b;
+  font-size: 13px;
+  line-height: 18px;
   background: transparent;
 }
 
@@ -397,7 +383,7 @@ kbd {
 .thread-row.active {
   color: #3157d8;
   background: #e6ebf8;
-  font-weight: 680;
+  font-weight: 600;
 }
 
 .thread-select {
@@ -405,8 +391,8 @@ kbd {
   align-items: center;
   justify-content: space-between;
   min-width: 0;
-  min-height: 34px;
-  padding: 7px 8px;
+  min-height: 32px;
+  padding: 6px 8px;
   color: inherit;
   background: transparent;
   text-align: left;
@@ -423,6 +409,8 @@ kbd {
   flex: 0 0 auto;
   margin-left: 8px;
   color: #9aa4b8;
+  font-size: 12px;
+  line-height: 16px;
   white-space: nowrap;
 }
 
@@ -447,9 +435,10 @@ kbd {
 }
 
 .empty-list {
-  padding: 8px 9px;
+  padding: 6px 8px;
   color: #8d98aa;
-  font-size: 13px;
+  font-size: 12px;
+  line-height: 16px;
 }
 
 .empty-list.compact {
@@ -636,22 +625,24 @@ kbd {
 }
 
 .empty-state {
-  padding: 22px;
+  padding: 20px;
   border: 1px dashed #d8e0ed;
   border-radius: 8px;
   background: #fff;
 }
 
 .empty-state h2 {
-  margin: 0 0 8px;
-  font-size: 18px;
+  margin: 0 0 7px;
+  font-size: 17px;
+  line-height: 24px;
 }
 
 .empty-state p {
   max-width: 620px;
   margin: 0 0 14px;
   color: #6b768d;
-  line-height: 1.55;
+  font-size: 14px;
+  line-height: 21px;
 }
 
 .empty-state div {
@@ -728,6 +719,7 @@ pre {
   min-width: 0;
   overflow-wrap: anywhere;
   color: #253047;
+  font-size: 14px;
   line-height: 1.58;
 }
 
@@ -752,21 +744,21 @@ pre {
 .markdown-body h2,
 .markdown-body h3,
 .markdown-body h4 {
-  margin: 16px 0 8px;
+  margin: 14px 0 7px;
   color: #172033;
-  line-height: 1.25;
+  line-height: 1.35;
 }
 
 .markdown-body h1 {
-  font-size: 22px;
+  font-size: 18px;
 }
 
 .markdown-body h2 {
-  font-size: 19px;
+  font-size: 16px;
 }
 
 .markdown-body h3 {
-  font-size: 16px;
+  font-size: 15px;
 }
 
 .markdown-body ul,

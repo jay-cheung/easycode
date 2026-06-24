@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { DesktopDeleteSessionResult, DesktopFileSelection, DesktopGoalState, DesktopGoalStatusResult, DesktopListSessionsResult, DesktopListSkillsResult, DesktopLoadSessionResult, DesktopMessage, DesktopMessagePart, DesktopPermissionMode, DesktopPlanStatusResult, DesktopProviderListResult, DesktopProviderReadiness, DesktopProviderSetup, DesktopProviderSetupResult, DesktopRunMode, DesktopSessionSummary, DesktopSettings, DesktopSidecarStatus, DesktopSkillInfo, DesktopSlashCommandResult, DesktopWorkspaceStatus, SidecarFrame } from "../shared/protocol.js"
@@ -43,7 +43,6 @@ export function App() {
   const [skills, setSkills] = useState<DesktopSkillInfo[]>([])
   const [goal, setGoal] = useState<DesktopGoalState>()
   const [planStatus, setPlanStatus] = useState<DesktopPlanStatusResult>()
-  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState<string>()
   const [contextRailOpen, setContextRailOpen] = useState(false)
   const [providerSetupDismissed, setProviderSetupDismissed] = useState(false)
   const [workspaceStatus, setWorkspaceStatus] = useState<DesktopWorkspaceStatus>()
@@ -53,6 +52,7 @@ export function App() {
   const [progress, setProgress] = useState<Progress>({ status: "idle", summary: "Ready for a local run.", toolCalls: 0, toolResults: 0 })
   const [now, setNow] = useState(Date.now())
   const streamRef = useRef<HTMLDivElement>(null)
+  const skipNextStreamScrollRef = useRef(false)
   const progressRef = useRef<Progress>(progress)
   const settingsRef = useRef<DesktopSettings | undefined>(undefined)
   const runningRef = useRef(false)
@@ -82,6 +82,10 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    if (skipNextStreamScrollRef.current) {
+      skipNextStreamScrollRef.current = false
+      return
+    }
     streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" })
   }, [items, progress])
 
@@ -455,6 +459,11 @@ export function App() {
     }
   }
 
+  const toggleToolRow = (id: string) => {
+    skipNextStreamScrollRef.current = true
+    setItems((current) => current.map((row) => row.id === id && row.kind === "tool" ? { ...row, open: !row.open } : row))
+  }
+
   const loadSessionIntoUi = async (session: string, summary: string) => {
     const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
     setDraftSession(false)
@@ -548,7 +557,6 @@ export function App() {
         runningRef.current = false
         setQueuedInputs([])
       }
-      setWorkspaceMenuOpen(undefined)
       setDraftSession(false)
       setDraftSessionId(undefined)
       setDraftSessionTitle("")
@@ -578,7 +586,6 @@ export function App() {
     if (running || !settings || !targetWorkspace) return
     try {
       const plan = planWorkspaceRemoval(settings.workspaceRoot, settings.recentWorkspaces, targetWorkspace)
-      setWorkspaceMenuOpen(undefined)
       if (plan.type === "keep_last") return
       if (plan.type === "remove_inactive") {
         const next = await window.easycode.updateSettings({ recentWorkspaces: plan.recentWorkspaces })
@@ -605,7 +612,6 @@ export function App() {
   }
 
   const runWorkspaceAction = async (action: () => Promise<unknown> | unknown) => {
-    setWorkspaceMenuOpen(undefined)
     try {
       await action()
     } catch (error) {
@@ -772,18 +778,19 @@ export function App() {
                     <span className="workspace-title"><strong>{workspaceDisplayName(root)}</strong><small>{root}</small></span>
                   </button>
                   <button className="icon-button add-session-button" onClick={newSession} disabled={running || !active} aria-label={`New session in ${workspaceDisplayName(root)}`}>+</button>
-                  <button className="icon-button workspace-more" onClick={() => setWorkspaceMenuOpen((open) => open === root ? undefined : root)} aria-expanded={workspaceMenuOpen === root} aria-label={`${workspaceDisplayName(root)} menu`}><span>...</span></button>
+                  <div className="workspace-menu-host">
+                    <button className="icon-button workspace-more" aria-label={`${workspaceDisplayName(root)} menu`}><span>...</span></button>
+                    <div className="workspace-menu">
+                      <button onClick={() => void runWorkspaceAction(() => window.easycode.showWorkspace(root))}>Show in Finder</button>
+                      <button onClick={() => void runWorkspaceAction(() => removeWorkspace(root))} disabled={running || visibleWorkspaceRoots.length <= 1} className="danger">Remove Workspace</button>
+                    </div>
+                  </div>
                 </div>
                 {active && <div className="workspace-status-line">
                   <span className={workspaceStatus?.clean ? "ok" : "warn"}>{workspaceStatus?.clean ? "Clean" : `${workspaceStatus?.changedFiles ?? 0} changed`}</span>
                   <span>{workspaceStatus?.branch ?? "unknown"}</span>
                 </div>}
-                {workspaceMenuOpen === root && <div className="workspace-menu">
-                  <button onClick={() => void runWorkspaceAction(() => window.easycode.showWorkspace(root))}>Show in Finder</button>
-                  <button onClick={() => void runWorkspaceAction(() => removeWorkspace(root))} disabled={running || visibleWorkspaceRoots.length <= 1} className="danger">Remove Workspace</button>
-                </div>}
                 {active && <div className="workspace-session-list">
-                  <div className="session-subtitle"><span>Sessions</span><button onClick={newSession} disabled={running} aria-label="New session">+</button></div>
                   {sessions.length === 0 && <div className="empty-list">No saved sessions</div>}
                   {sessions.map((session) => <div className={`thread-row ${(draftSession && session.id === draftSessionId) || (!draftSession && session.id === settings?.session) ? "active" : ""}`} key={session.id}>
                     <button className="thread-select" onClick={() => selectSession(session.id)} disabled={running} title={session.title || session.id}>
@@ -817,7 +824,7 @@ export function App() {
         <div className="stream" ref={streamRef}>
           <ProgressCard progress={progress} running={running} />
           {items.length === 0 && <EmptyState />}
-          {items.map((item) => item.kind === "tool" ? <ToolRow key={item.id} item={item} setItems={setItems} /> : <Message key={item.id} item={item} />)}
+          {items.map((item) => item.kind === "tool" ? <ToolRow key={item.id} item={item} onToggle={toggleToolRow} /> : <Message key={item.id} item={item} />)}
         </div>
 
         <Composer
@@ -1004,8 +1011,8 @@ function ReasoningBlock({ text }: { text: string }) {
   </section>
 }
 
-function ToolRow({ item, setItems }: { item: Extract<ChatItem, { kind: "tool" }>; setItems: Dispatch<SetStateAction<ChatItem[]>> }) {
-  return <article className="tool-row"><button onClick={() => setItems((items) => items.map((row) => row.id === item.id && row.kind === "tool" ? { ...row, open: !row.open } : row))}><span className={`status-dot ${item.status === "done" ? "green" : "blue"}`} />{item.title}<span>{item.status === "done" ? "Completed" : "Running"}</span></button>{item.open && <pre>{item.detail}</pre>}</article>
+function ToolRow({ item, onToggle }: { item: Extract<ChatItem, { kind: "tool" }>; onToggle: (id: string) => void }) {
+  return <article className="tool-row"><button onClick={() => onToggle(item.id)}><span className={`status-dot ${item.status === "done" ? "green" : "blue"}`} />{item.title}<span>{item.status === "done" ? "Completed" : "Running"}</span></button>{item.open && <pre>{item.detail}</pre>}</article>
 }
 
 function Composer({ attachments, onClearAttachments, onPickFiles, onRemoveAttachment, permissionMode, prompt, providerReady, providerReadiness, queuedCount, runMode, running, sendPrompt, setPermissionMode, setPrompt, setRunMode }: {

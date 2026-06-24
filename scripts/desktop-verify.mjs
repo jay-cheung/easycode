@@ -28,6 +28,7 @@ export const desktopCapabilityUnitTests = [
   "test/unit/desktop-sidecar-bridge-env.test.ts",
   "test/unit/desktop-ipc-safe.test.ts",
   "test/unit/desktop-renderer-security.test.ts",
+  "test/unit/desktop-renderer-ui.test.ts",
   "test/unit/desktop-app-identity.test.ts",
   "test/unit/desktop-dev-launcher.test.ts",
   "test/unit/desktop-package-scripts.test.ts",
@@ -73,6 +74,11 @@ export const desktopCapabilityCommands = [
     name: "desktop sidecar integration tests",
     command: "bun",
     args: ["test", "test/integration/sidecar.test.ts", "--test-name-pattern", desktopCapabilityIntegrationPattern],
+  },
+  {
+    name: "desktop renderer integration tests",
+    command: "bun",
+    args: ["test", "test/integration/desktop-renderer-ui.test.ts"],
   },
   {
     name: "typecheck",

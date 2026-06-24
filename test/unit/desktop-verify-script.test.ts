@@ -31,6 +31,7 @@ describe("desktop verify script", () => {
     expect(desktopCapabilityUnitTests).toContain("test/unit/desktop-sidecar-bridge-env.test.ts")
     expect(desktopCapabilityUnitTests).toContain("test/unit/desktop-ipc-safe.test.ts")
     expect(desktopCapabilityUnitTests).toContain("test/unit/desktop-renderer-security.test.ts")
+    expect(desktopCapabilityUnitTests).toContain("test/unit/desktop-renderer-ui.test.ts")
     expect(desktopCapabilityUnitTests).toContain("test/unit/desktop-app-identity.test.ts")
   })
 
@@ -59,6 +60,11 @@ describe("desktop verify script", () => {
   })
 
   test("keeps typecheck and build in the verification chain", () => {
+    expect(desktopCapabilityCommands).toContainEqual(expect.objectContaining({
+      name: "desktop renderer integration tests",
+      command: "bun",
+      args: ["test", "test/integration/desktop-renderer-ui.test.ts"],
+    }))
     expect(desktopCapabilityCommands).toContainEqual(expect.objectContaining({
       name: "typecheck",
       command: "bun",
