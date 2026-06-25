@@ -29,6 +29,8 @@ export function createDesktopApi(ipcRenderer: DesktopIpcRenderer): DesktopApi {
     pickWorkspace: () => invoke<string | undefined>("desktop:pickWorkspace"),
     pickFiles: () => invoke<DesktopFileSelection[]>("desktop:pickFiles"),
     showWorkspace: (workspaceRoot?: string) => invoke<{ opened: boolean }>("desktop:showWorkspace", workspaceRoot),
+    openWorkspaceFile: (filePath: string) => invoke<{ opened: boolean; path: string }>("desktop:openWorkspaceFile", filePath),
+    openWorkspaceChanges: () => invoke<{ opened: boolean; path: string }>("desktop:openWorkspaceChanges"),
     removeWorkspaceSidecar: (workspaceRoot: string) => invoke<{ stopped: boolean }>("desktop:removeWorkspaceSidecar", workspaceRoot),
     showSidecar: () => invoke<{ opened: boolean }>("desktop:showSidecar"),
     sidecarStatus: () => invoke<DesktopSidecarStatus>("desktop:sidecarStatus"),

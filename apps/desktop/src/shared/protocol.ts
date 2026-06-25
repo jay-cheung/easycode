@@ -168,9 +168,17 @@ export type DesktopWorkspaceStatus = {
   added: number
   deleted: number
   changedFiles: number
+  files: DesktopWorkspaceChange[]
   ahead?: number
   behind?: number
   error?: string
+}
+
+export type DesktopWorkspaceChange = {
+  path: string
+  status: string
+  added: number
+  deleted: number
 }
 
 export type DesktopRunMode = "build" | "plan" | "goal"
@@ -225,6 +233,8 @@ export type DesktopApi = {
   pickWorkspace(): Promise<string | undefined>
   pickFiles(): Promise<DesktopFileSelection[]>
   showWorkspace(workspaceRoot?: string): Promise<{ opened: boolean }>
+  openWorkspaceFile(filePath: string): Promise<{ opened: boolean; path: string }>
+  openWorkspaceChanges(): Promise<{ opened: boolean; path: string }>
   removeWorkspaceSidecar(workspaceRoot: string): Promise<{ stopped: boolean }>
   showSidecar(): Promise<{ opened: boolean }>
   sidecarStatus(): Promise<DesktopSidecarStatus>

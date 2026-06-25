@@ -1,13 +1,13 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
-import type { DesktopDeleteSessionResult, DesktopFileSelection, DesktopGoalState, DesktopGoalStatusResult, DesktopListSessionsResult, DesktopListSkillsResult, DesktopLoadSessionResult, DesktopMessage, DesktopMessagePart, DesktopPermissionMode, DesktopPlanStatusResult, DesktopProviderListResult, DesktopProviderReadiness, DesktopProviderSetup, DesktopProviderSetupResult, DesktopRunMode, DesktopSessionSummary, DesktopSettings, DesktopSidecarStatus, DesktopSkillInfo, DesktopSlashCommandResult, DesktopWorkspaceStatus, SidecarFrame } from "../shared/protocol.js"
+import type { DesktopDeleteSessionResult, DesktopFileSelection, DesktopGoalState, DesktopGoalStatusResult, DesktopListSessionsResult, DesktopListSkillsResult, DesktopLoadSessionResult, DesktopMessage, DesktopMessagePart, DesktopPermissionMode, DesktopPlanStatusResult, DesktopProviderListResult, DesktopProviderReadiness, DesktopProviderSetup, DesktopProviderSetupResult, DesktopReasoningEffort, DesktopRunMode, DesktopSessionSummary, DesktopSettings, DesktopSkillInfo, DesktopSlashCommandResult, DesktopWorkspaceStatus, SidecarFrame } from "../shared/protocol.js"
 import { applyAttachmentAction, clearAttachmentSlashCommands, pickedFileSlashCommands, rejectedWorkspaceFileSummary, removeFileRefs, type AttachmentAction, type DesktopAttachment } from "./attachment-state.js"
-import { permissionModeLabel, permissionPromptAfterRunDone, permissionRunSnapshot, permissionUiAfterRequest, sidecarPermissionReply, type PermissionReplyAction, type PermissionRunSnapshot } from "./permission-state.js"
-import { canSubmitPlanDraft, goalAfterControlResult, goalAfterLifecycleEvent, goalFromControlResult, goalLifecycleSummary, planReplyPayload, planStatusAfterControlResult, planStatusFromResult, runStatusForGoalPhase, runStatusFromGoalControlResult, runStatusFromRunDone, shouldClearBlockingPromptsAfterRunDone, shouldReloadSessionAfterGoalControl, shouldReloadSessionAfterGoalLifecycle, shouldReloadSessionAfterPlanControl, shouldReloadSessionAfterRunDone, type PlanReplyAction } from "./plan-goal-state.js"
+import { permissionPromptAfterRunDone, permissionRunSnapshot, permissionUiAfterRequest, sidecarPermissionReply, type PermissionReplyAction, type PermissionRunSnapshot } from "./permission-state.js"
+import { canSubmitPlanDraft, displayPlanMarkdown, goalAfterLifecycleEvent, goalLifecycleSummary, planReplyPayload, planStatusFromResult, runStatusForGoalPhase, runStatusFromGoalControlResult, runStatusFromRunDone, shouldClearBlockingPromptsAfterRunDone, shouldReloadSessionAfterGoalControl, shouldReloadSessionAfterGoalLifecycle, shouldReloadSessionAfterRunDone, type PlanReplyAction } from "./plan-goal-state.js"
 import { composerStateAfterQueuedInput, createQueuedRunInput, dequeueQueuedRunInput, isCancelRunInput, isRunProducingSlashInput, queuedInputLabel, shortQueuedPrompt, shouldDetachActiveRunForWorkspaceSwitch, shouldQueueRunInput, type QueuedRunInput } from "./run-queue.js"
+import { readDesktopSessionSelection, resolveStartupSession, resolveStartupWorkspace, writeDesktopSessionSelection } from "./session-selection-state.js"
 import { draftSessionId as createDraftSessionId, draftSessionPromptPlan, mergeSessionListPreservingOrder, planWorkspaceRemoval, removeSessionPreview, sessionIdFromPrompt, sessionSwitchSlashCommand, titleFromPrompt, truncateSessionTitle, upsertSessionPreview as upsertSessionPreviewState, workspaceRemovalClearsDraft, workspaceRoots, workspaceSwitchPatch } from "./session-workspace-state.js"
-import { canRunDesktopQuickSlashCommand, desktopQuickSlashCommands, type DesktopQuickSlashCommand } from "./slash-coverage.js"
 import { effortSettingsCommand, languageSettingsCommand, maxStepsSettingsCommand, maxTokensSettingsCommand, modelSettingsCommand, providerSettingsCommand, thinkingSettingsCommand } from "./settings-commands.js"
 import { applyDirectDesktopSettings, reconcileDesktopSettingsFromSidecar, restoreLoadedSessionSettings } from "./settings-sync.js"
 
@@ -17,13 +17,30 @@ type ChatItem =
   | { id: string; kind: "tool"; title: string; detail: string; status: "running" | "done"; open: boolean }
   | { id: string; kind: "status"; text: string }
 
+type ToolItem = Extract<ChatItem, { kind: "tool" }>
+type MessageItem = Exclude<ChatItem, ToolItem>
+type AssistantTurnPart =
+  | { id: string; kind: "assistant"; item: Extract<ChatItem, { kind: "assistant" }> }
+  | { id: string; kind: "tools"; tools: ToolItem[] }
+type AssistantRenderPart =
+  | AssistantTurnPart
+  | { id: string; kind: "activity"; parts: AssistantTurnPart[] }
+type StreamEntry =
+  | { id: string; kind: "message"; item: Exclude<MessageItem, { kind: "assistant" }> }
+  | { id: string; kind: "assistantTurn"; time: string; parts: AssistantTurnPart[] }
+
 type PermissionMode = DesktopPermissionMode
 type PermissionPrompt = { requestId: string; title: string; detail: string }
 type PlanPrompt = { runId: string; markdown: string }
 type Attachment = DesktopAttachment
-type RunStatus = "idle" | "running" | "waiting_plan" | "waiting_permission" | "done" | "failed" | "cancelled"
+type MarkdownFileOpenHandler = (filePath: string) => Promise<void>
+type DesktopCopy = ReturnType<typeof desktopCopy>
+type RunStatus = "idle" | "running" | "waiting_plan" | "waiting_permission" | "done" | "failed" | "blocked" | "cancelled"
 type Progress = { status: RunStatus; startedAt?: number; summary: string; provider?: string; model?: string; mode?: string; toolCalls: number; toolResults: number }
 type RunMode = DesktopRunMode
+type SelectOption = { value: string; label: string }
+
+const noopOpenFile: MarkdownFileOpenHandler = async () => undefined
 
 export function App() {
   const [settings, setSettings] = useState<DesktopSettings>()
@@ -48,11 +65,9 @@ export function App() {
   const [workspaceStatus, setWorkspaceStatus] = useState<DesktopWorkspaceStatus>()
   const [providerOptions, setProviderOptions] = useState<string[]>([])
   const [providerReadiness, setProviderReadiness] = useState<DesktopProviderReadiness>()
-  const [sidecarStatus, setSidecarStatus] = useState<DesktopSidecarStatus>()
   const [progress, setProgress] = useState<Progress>({ status: "idle", summary: "Ready for a local run.", toolCalls: 0, toolResults: 0 })
-  const [now, setNow] = useState(Date.now())
   const streamRef = useRef<HTMLDivElement>(null)
-  const skipNextStreamScrollRef = useRef(false)
+  const nextStreamScrollRef = useRef<"instant" | "smooth">("smooth")
   const progressRef = useRef<Progress>(progress)
   const settingsRef = useRef<DesktopSettings | undefined>(undefined)
   const runningRef = useRef(false)
@@ -71,23 +86,28 @@ export function App() {
           ...(initialized.root ? { workspaceRoot: initialized.root } : {}),
           ...(initialized.session ? { session: initialized.session } : {}),
         })
-        setSettings(next)
+        const restored = await restoreStartupSelection(next)
+        setSettings(restored)
+        settingsRef.current = restored
       }
-      await refreshAll(initialized.session)
-    }).catch(async (error) => {
+      await refreshAll(settingsRef.current?.session ?? initialized.session)
+    }).catch((error) => {
       reportUiError(error, "Sidecar initialize failed.")
-      await refreshSidecarStatus().catch(() => undefined)
     })
     return off
   }, [])
 
-  useEffect(() => {
-    if (skipNextStreamScrollRef.current) {
-      skipNextStreamScrollRef.current = false
+  useLayoutEffect(() => {
+    const stream = streamRef.current
+    if (!stream) return
+    const behavior = nextStreamScrollRef.current
+    nextStreamScrollRef.current = "smooth"
+    if (behavior === "instant") {
+      stream.scrollTop = stream.scrollHeight
       return
     }
-    streamRef.current?.scrollTo({ top: streamRef.current.scrollHeight, behavior: "smooth" })
-  }, [items, progress])
+    stream.scrollTo({ top: stream.scrollHeight, behavior: "smooth" })
+  }, [items])
 
   useEffect(() => {
     progressRef.current = progress
@@ -110,12 +130,6 @@ export function App() {
   }, [queuedInputs])
 
   useEffect(() => {
-    if (!progress.startedAt || !running) return
-    const timer = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(timer)
-  }, [progress.startedAt, running])
-
-  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.metaKey && !event.ctrlKey) return
       if (event.key.toLowerCase() === "n") {
@@ -133,7 +147,10 @@ export function App() {
   }, [settings?.workspaceRoot])
   const visibleWorkspaceRoots = workspaceRoots(settings?.workspaceRoot, settings?.recentWorkspaces)
   const currentSession = sessions.find((session) => session.id === settings?.session)
-  const activeSessionTitle = draftSession ? "New Chat" : currentSession ? sessionTitle(currentSession) : draftSessionTitle || settings?.session || "Add desktop sidecar client"
+  const fullPromptTitle = useMemo(() => firstDisplayUserTitle(items), [items])
+  const streamEntries = useMemo(() => groupStreamItems(items), [items])
+  const copy = desktopCopy(settings?.language)
+  const activeSessionTitle = safeSessionTitle(draftSession ? copy.newChat : fullPromptTitle || (currentSession ? fullSessionTitle(currentSession) : draftSessionTitle || settings?.session || copy.defaultSessionTitle))
   const providerSetupVisible = Boolean(settings && providerReadiness && providerReadiness.status !== "ready" && !providerSetupDismissed)
   const canStartProviderRun = !providerReadiness || providerReadiness.status === "ready"
 
@@ -147,9 +164,9 @@ export function App() {
     } else if (event.type === "goal") {
       setGoal((current) => goalAfterLifecycleEvent(current, event))
       updateProgress({ ...progressRef.current, status: runStatusForGoalPhase(event.phase), startedAt: progressRef.current.startedAt ?? Date.now(), mode: "goal", summary: goalLifecycleSummary(event) })
+      void refreshGoalStatus()
       if (shouldReloadSessionAfterGoalLifecycle(event.phase)) {
-        void syncCurrentSessionMessages().catch((error) => reportUiError(error, "Goal session sync failed."))
-        void refreshGoalStatus()
+        void syncCurrentSessionMessages(undefined, { preserveVisible: true }).catch((error) => reportUiError(error, "Goal session sync failed."))
         void refreshPlanStatus()
         void refreshSessions()
       }
@@ -159,7 +176,9 @@ export function App() {
       appendTool(event.call.name, JSON.stringify(event.call.input, null, 2), "running")
     } else if (event.type === "tool_result") {
       updateProgress({ ...progressRef.current, status: "running", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.title || event.toolName} completed.`, toolResults: progressRef.current.toolResults + 1 })
-      appendTool(event.title || event.toolName, event.output, "done")
+      if (isPlanControlTool(event.toolName)) void refreshPlanStatus()
+      else if (isGoalControlTool(event.toolName)) void refreshGoalStatus()
+      else appendTool(event.title || event.toolName, event.output, "done")
     } else if (event.type === "permission_request") {
       const nextPermission = permissionUiAfterRequest(activePermissionRef.current.effectiveMode, event.request)
       if (nextPermission.prompt) {
@@ -184,19 +203,17 @@ export function App() {
         setPlan(undefined)
       }
       updateProgress({ ...progressRef.current, status: runStatusFromRunDone(event.status), startedAt: progressRef.current.startedAt, summary: `Run ${event.status}.` })
-      if (shouldReloadSessionAfterRunDone(event.status)) void syncCurrentSessionMessages().catch((error) => reportUiError(error, "Session message sync failed."))
+      if (shouldReloadSessionAfterRunDone(event.status)) void syncCurrentSessionMessages(undefined, { preserveVisible: true }).catch((error) => reportUiError(error, "Session message sync failed."))
       void refreshWorkspaceStatus()
       void refreshSessions()
       void refreshGoalStatus()
       void refreshPlanStatus()
       void refreshProviderReadiness()
-      void refreshSidecarStatus()
       window.setTimeout(() => flushQueuedInput(), 0)
     } else if (event.type === "fatal") {
       setRunning(false)
       runningRef.current = false
       reportUiError(event.message)
-      void refreshSidecarStatus()
     } else if (event.type === "session_changed") {
       void syncSidecarSession(event.session).catch((error) => reportUiError(error, "Session sync failed."))
     }
@@ -294,6 +311,13 @@ export function App() {
   const pendingFileCount = () => attachments.filter((file) => file.kind === "file").length
 
   const applySlashResult = async (commandText: string, result: Extract<DesktopSlashCommandResult, { handled: true }>) => {
+    if (result.settings) {
+      const next = await reconcileDesktopSettingsFromSidecar(window.easycode, result.settings)
+      setSettings(next)
+      await refreshSettingsSurfaces()
+      updateProgress({ ...progressRef.current, status: "idle", summary: result.title, toolCalls: progressRef.current.toolCalls, toolResults: progressRef.current.toolResults })
+      return
+    }
     setItems((current) => [
       ...current,
       { id: crypto.randomUUID(), kind: "user", text: commandText, time: currentTime() },
@@ -310,10 +334,6 @@ export function App() {
       await selectSession(result.session)
       return
     }
-    if (result.settings) {
-      const next = await reconcileDesktopSettingsFromSidecar(window.easycode, result.settings)
-      setSettings(next)
-    }
     await refreshAll()
     updateProgress({ ...progressRef.current, status: "idle", summary: result.title, toolCalls: progressRef.current.toolCalls, toolResults: progressRef.current.toolResults })
   }
@@ -325,26 +345,14 @@ export function App() {
         if (fallback) await updateSettings(fallback)
         return
       }
-      appendStatus(`${result.title}\n${result.text}`)
       if (result.settings) {
         const next = await reconcileDesktopSettingsFromSidecar(window.easycode, result.settings)
         setSettings(next)
       }
-      await refreshAll()
+      await refreshSettingsSurfaces()
       updateProgress({ ...progressRef.current, status: "idle", summary: result.title, toolCalls: progressRef.current.toolCalls, toolResults: progressRef.current.toolResults })
     } catch (error) {
       reportUiError(error)
-    }
-  }
-
-  const runLocalSlashCommand = async (command: DesktopQuickSlashCommand) => {
-    if (!canRunDesktopQuickSlashCommand(command, running)) return
-    try {
-      const result = await window.easycode.executeSlashCommand(command.command, pendingImageCount(), pendingFileCount()) as DesktopSlashCommandResult
-      if (result.handled) await applySlashResult(command.command, result)
-      else setPrompt(command.command)
-    } catch (error) {
-      reportUiError(error, "Command failed.")
     }
   }
 
@@ -352,10 +360,9 @@ export function App() {
     try {
       const next = await applyDirectDesktopSettings(window.easycode, patch)
       setSettings(next)
-      await refreshAll()
+      await refreshSettingsSurfaces()
     } catch (error) {
       reportUiError(error, "Settings update failed.")
-      await refreshSidecarStatus()
     }
   }
 
@@ -369,7 +376,6 @@ export function App() {
     if (readiness.status !== "ready") {
       throw new Error(`Provider configuration saved locally in ${result.envPath}, but EasyCode is still not ready. ${providerReadinessError(readiness)}`)
     }
-    appendStatus(`Provider configuration saved locally in ${result.envPath}.`)
     return result
   }
 
@@ -392,7 +398,6 @@ export function App() {
       ["goal", () => refreshGoalStatus(session)],
       ["plan", () => refreshPlanStatus(session)],
       ["workspace", refreshWorkspaceStatus],
-      ["sidecar", refreshSidecarStatus],
     ]
     const results = await Promise.allSettled(steps.map(([, step]) => step()))
     const failures = results.flatMap((result, index) => result.status === "rejected" ? [`${steps[index][0]}: ${errorMessage(result.reason)}`] : [])
@@ -428,6 +433,29 @@ export function App() {
     await syncSidecarSession(result.currentSession)
   }
 
+  const restoreStartupSelection = async (settings: DesktopSettings) => {
+    const roots = workspaceRoots(settings.workspaceRoot, settings.recentWorkspaces)
+    const remembered = readDesktopSessionSelection()
+    const workspaceRoot = resolveStartupWorkspace(roots, remembered)
+    let next = settings
+    if (workspaceRoot && workspaceRoot !== settings.workspaceRoot) {
+      next = await window.easycode.updateSettings({ ...settings, workspaceRoot, session: "default" })
+      await window.easycode.initialize()
+    }
+
+    const listed = await window.easycode.listSessions() as DesktopListSessionsResult
+    const session = resolveStartupSession(listed.sessions, remembered, next.workspaceRoot, listed.currentSession || next.session)
+    setSessions((current) => mergeSessionListPreservingOrder(current, listed.sessions))
+    if (!session) return next
+
+    const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
+    const restored = await restoreLoadedSessionSettings(window.easycode, session, loaded.settings)
+    setSessionItems(messagesToItems(loaded.messages))
+    rememberSessionSelection(restored.workspaceRoot, session)
+    updateProgress({ status: "idle", summary: `Loaded session ${session}.`, toolCalls: 0, toolResults: 0 })
+    return restored
+  }
+
   const refreshGoalStatus = async (session = settings?.session) => {
     const result = await window.easycode.getGoalStatus(session) as DesktopGoalStatusResult
     setGoal(result.goal)
@@ -442,8 +470,12 @@ export function App() {
     setWorkspaceStatus(await window.easycode.workspaceStatus())
   }
 
-  const refreshSidecarStatus = async () => {
-    setSidecarStatus(await window.easycode.sidecarStatus())
+  const refreshSettingsSurfaces = async () => {
+    await Promise.allSettled([
+      refreshProviderReadiness(),
+      refreshWorkspaceStatus(),
+      refreshSkills(),
+    ])
   }
 
   const selectSession = async (session: string) => {
@@ -459,11 +491,6 @@ export function App() {
     }
   }
 
-  const toggleToolRow = (id: string) => {
-    skipNextStreamScrollRef.current = true
-    setItems((current) => current.map((row) => row.id === id && row.kind === "tool" ? { ...row, open: !row.open } : row))
-  }
-
   const loadSessionIntoUi = async (session: string, summary: string) => {
     const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
     setDraftSession(false)
@@ -471,7 +498,9 @@ export function App() {
     setDraftSessionTitle("")
     const restored = await restoreLoadedSessionSettings(window.easycode, session, loaded.settings)
     setSettings(restored)
-    setItems(messagesToItems(loaded.messages))
+    settingsRef.current = restored
+    setSessionItems(messagesToItems(loaded.messages))
+    rememberSessionSelection(restored.workspaceRoot, session)
     updateProgress({ status: "idle", summary, toolCalls: 0, toolResults: 0 })
     await refreshAll(session)
   }
@@ -482,19 +511,26 @@ export function App() {
     const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
     const next = await window.easycode.updateSettings({ ...loaded.settings, session })
     setSettings(next)
+    settingsRef.current = next
     setDraftSession(false)
     setDraftSessionId(undefined)
     setDraftSessionTitle("")
+    rememberSessionSelection(next.workspaceRoot, session)
     if (!runningRef.current && !draftSessionRef.current) {
-      setItems(messagesToItems(loaded.messages))
+      setSessionItems(messagesToItems(loaded.messages))
       updateProgress({ status: "idle", summary: `Loaded session ${session}.`, toolCalls: 0, toolResults: 0 })
     }
   }
 
-  const syncCurrentSessionMessages = async (session = settingsRef.current?.session) => {
+  const syncCurrentSessionMessages = async (session = settingsRef.current?.session, options: { preserveVisible?: boolean } = {}) => {
     if (!session) return
     const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
-    setItems(messagesToItems(loaded.messages))
+    const restored = messagesToItems(loaded.messages)
+    if (options.preserveVisible) {
+      setItems((current) => current.length > 0 ? current : restored)
+      return
+    }
+    setSessionItems(restored)
   }
 
   const newSession = async () => {
@@ -512,8 +548,9 @@ export function App() {
       draftSessionRef.current = true
       setDraftSessionId(createdSession)
       setDraftSessionTitle("")
+      rememberSessionSelection(restored.workspaceRoot, createdSession)
       setSessions((current) => upsertSessionPreviewState(draftSessionId ? removeSessionPreview(current, draftSessionId) : current, createdSession, "New Chat"))
-      setItems([])
+      setSessionItems([])
       setAttachments([])
       updateProgress({ status: "idle", summary: "New chat ready.", toolCalls: 0, toolResults: 0 })
       await refreshSessions()
@@ -530,7 +567,7 @@ export function App() {
       setDraftSession(false)
       setDraftSessionId(undefined)
       setDraftSessionTitle("")
-      setItems([])
+      setSessionItems([])
       updateProgress({ status: "idle", summary: "Draft session removed.", toolCalls: 0, toolResults: 0 })
       return
     }
@@ -567,7 +604,6 @@ export function App() {
       await loadSessionIntoUi(patch.session, `Opened workspace ${workspaceRoot}.`)
     } catch (error) {
       reportUiError(error, "Workspace open failed.")
-      await refreshSidecarStatus()
     }
   }
 
@@ -607,7 +643,6 @@ export function App() {
       await window.easycode.removeWorkspaceSidecar(targetWorkspace)
     } catch (error) {
       reportUiError(error, "Workspace remove failed.")
-      await refreshSidecarStatus()
     }
   }
 
@@ -648,7 +683,6 @@ export function App() {
   }
 
   const applyAttachmentSlashResult = (result: Extract<DesktopSlashCommandResult, { handled: true }>) => {
-    appendStatus(`${result.title}\n${result.text}`)
     const action = result.action
     if (isAttachmentAction(action)) setAttachments((current) => applyAttachmentAction(current, action, crypto.randomUUID()))
     updateProgress({ ...progressRef.current, status: "idle", summary: result.title })
@@ -684,32 +718,6 @@ export function App() {
     await applySettingsCommand("/skill clear")
   }
 
-  const clearGoal = async () => {
-    if (running) return
-    try {
-      const result = await window.easycode.clearGoal(settings?.session) as { cleared?: boolean; text?: string }
-      setGoal((current) => goalAfterControlResult(current, result))
-      if (shouldReloadSessionAfterGoalControl(result)) await syncCurrentSessionMessages()
-      await refreshGoalStatus()
-      updateProgress({ ...progressRef.current, status: "idle", summary: result.text ?? (result.cleared ? "Goal cleared." : "No active goal."), toolCalls: progressRef.current.toolCalls, toolResults: progressRef.current.toolResults })
-    } catch (error) {
-      reportUiError(error, "Goal clear failed.")
-    }
-  }
-
-  const pauseGoal = async () => {
-    if (running) return
-    try {
-      const result = await window.easycode.pauseGoal(settings?.session) as { goal?: DesktopGoalState; text?: string }
-      setGoal(goalFromControlResult(result))
-      if (shouldReloadSessionAfterGoalControl(result)) await syncCurrentSessionMessages()
-      await refreshGoalStatus()
-      updateProgress({ ...progressRef.current, status: "idle", summary: result.text ?? "Goal paused.", toolCalls: progressRef.current.toolCalls, toolResults: progressRef.current.toolResults })
-    } catch (error) {
-      reportUiError(error, "Goal pause failed.")
-    }
-  }
-
   const resumeGoal = async () => {
     if (running) return
     setRunning(true)
@@ -735,19 +743,6 @@ export function App() {
     }
   }
 
-  const clearPlan = async () => {
-    if (running) return
-    try {
-      const result = await window.easycode.clearPlan(settings?.session) as { cleared?: boolean; text?: string }
-      setPlanStatus((current) => planStatusAfterControlResult(current, result))
-      if (shouldReloadSessionAfterPlanControl(result)) await syncCurrentSessionMessages()
-      await refreshPlanStatus()
-      updateProgress({ ...progressRef.current, status: "idle", summary: result.text ?? (result.cleared ? "Plan cleared." : "No active plan."), toolCalls: progressRef.current.toolCalls, toolResults: progressRef.current.toolResults })
-    } catch (error) {
-      reportUiError(error, "Plan clear failed.")
-    }
-  }
-
   const prepareSessionForPrompt = async (text: string) => {
     if (!draftSession) return
     const { session, title } = draftSessionPromptPlan(text, draftSessionId)
@@ -761,41 +756,36 @@ export function App() {
     await window.easycode.initialize()
     await refreshSessions()
     upsertSessionPreview(session, title)
+    rememberSessionSelection(next.workspaceRoot, session)
   }
 
   return (
     <main className={`shell ${contextRailOpen ? "" : "rail-collapsed"}`}>
       <aside className="sidebar">
-        <div className="brand-row"><div className="brand-mark">EC</div><strong>EasyCode</strong></div>
-        <SidebarGroup title="Workspaces" action="+" onAction={addWorkspace}>
+        <div className="brand-row"><div className="brand-mark">EC</div></div>
+        <SidebarGroup title={copy.workspaces} action="+" onAction={addWorkspace}>
           <div className="workspace-list">
             {visibleWorkspaceRoots.map((root) => {
               const active = root === settings?.workspaceRoot
               return <div className={`workspace-card ${active ? "active" : ""}`} key={root}>
                 <div className="workspace-head">
                   <button className="workspace-select" onClick={() => selectWorkspace(root)} disabled={active} title={root}>
-                    <span className="folder-icon" />
-                    <span className="workspace-title"><strong>{workspaceDisplayName(root)}</strong><small>{root}</small></span>
+                    <span className="workspace-title"><strong>{workspaceDisplayName(root)}</strong></span>
                   </button>
-                  <button className="icon-button add-session-button" onClick={newSession} disabled={running || !active} aria-label={`New session in ${workspaceDisplayName(root)}`}>+</button>
+                  <button className="icon-button add-session-button" onClick={newSession} disabled={running || !active} aria-label={`${copy.newSession}: ${workspaceDisplayName(root)}`}>+</button>
                   <div className="workspace-menu-host">
                     <button className="icon-button workspace-more" aria-label={`${workspaceDisplayName(root)} menu`}><span>...</span></button>
                     <div className="workspace-menu">
-                      <button onClick={() => void runWorkspaceAction(() => window.easycode.showWorkspace(root))}>Show in Finder</button>
-                      <button onClick={() => void runWorkspaceAction(() => removeWorkspace(root))} disabled={running || visibleWorkspaceRoots.length <= 1} className="danger">Remove Workspace</button>
+                      <button onClick={() => void runWorkspaceAction(() => window.easycode.showWorkspace(root))}>{copy.showInFinder}</button>
+                      <button onClick={() => void runWorkspaceAction(() => removeWorkspace(root))} disabled={running || visibleWorkspaceRoots.length <= 1} className="danger">{copy.removeWorkspace}</button>
                     </div>
                   </div>
                 </div>
-                {active && <div className="workspace-status-line">
-                  <span className={workspaceStatus?.clean ? "ok" : "warn"}>{workspaceStatus?.clean ? "Clean" : `${workspaceStatus?.changedFiles ?? 0} changed`}</span>
-                  <span>{workspaceStatus?.branch ?? "unknown"}</span>
-                </div>}
                 {active && <div className="workspace-session-list">
-                  {sessions.length === 0 && <div className="empty-list">No saved sessions</div>}
+                  {sessions.length === 0 && <div className="empty-list">{copy.noSavedSessions}</div>}
                   {sessions.map((session) => <div className={`thread-row ${(draftSession && session.id === draftSessionId) || (!draftSession && session.id === settings?.session) ? "active" : ""}`} key={session.id}>
                     <button className="thread-select" onClick={() => selectSession(session.id)} disabled={running} title={session.title || session.id}>
                       <span>{sessionTitle(session)}</span>
-                      <time>{relativeTime(session.updatedAt)}</time>
                     </button>
                     <button className="session-delete" onClick={() => deleteSession(session.id)} disabled={running} aria-label={`Delete ${sessionTitle(session)}`}>×</button>
                   </div>)}
@@ -805,31 +795,36 @@ export function App() {
           </div>
         </SidebarGroup>
         <div className="sidebar-footer">
-          <div><span className="status-dot green" />Local only</div>
+          <div><span className="status-dot green" />{copy.localOnly}</div>
         </div>
       </aside>
 
       <section className="workbench">
         <header className="topbar">
-          <div>
-            <h1>{activeSessionTitle}</h1>
-            <div className="chips"><span>{workspaceStatus?.branch ?? "unknown"}</span><span className={workspaceStatus?.clean ? "success" : "warn"}>{workspaceStatus?.clean ? "Clean" : `${workspaceStatus?.changedFiles ?? 0} changed`}</span><span>Local</span></div>
+          <div className="topbar-title">
+            <h1 title={activeSessionTitle}>{activeSessionTitle}</h1>
           </div>
           <div className="top-actions">
-            <button className="ghost" onClick={() => { void refreshAll() }}>Refresh</button>
-            <button className="ghost" onClick={() => { void cancelRun() }} disabled={!running}>Cancel</button>
+            <button className="topbar-settings" onClick={() => setContextRailOpen(true)} aria-label={copy.showSettings} title={copy.showSettings}>⚙</button>
           </div>
         </header>
 
+        <div className="progress-dock">
+          <ProgressCard copy={copy} goal={goal} planStatus={planStatus} progress={progress} running={running} />
+        </div>
+
         <div className="stream" ref={streamRef}>
-          <ProgressCard progress={progress} running={running} />
-          {items.length === 0 && <EmptyState />}
-          {items.map((item) => item.kind === "tool" ? <ToolRow key={item.id} item={item} onToggle={toggleToolRow} /> : <Message key={item.id} item={item} />)}
+          {streamEntries.length === 0 && <EmptyState copy={copy} />}
+          {streamEntries.map((entry) => entry.kind === "assistantTurn"
+            ? <AssistantTurn copy={copy} key={entry.id} entry={entry} onOpenFile={openWorkspaceFileFromMessage} />
+            : <Message copy={copy} key={entry.id} item={entry.item} onOpenFile={openWorkspaceFileFromMessage} />)}
+          <WorkspaceChangesBar copy={copy} planStatus={planStatus} status={workspaceStatus} onOpen={openWorkspaceChanges} />
         </div>
 
         <Composer
           attachments={attachments}
           onClearAttachments={clearAttachments}
+          copy={copy}
           onPickFiles={pickFiles}
           onRemoveAttachment={removeAttachment}
           permissionMode={permissionMode}
@@ -838,6 +833,10 @@ export function App() {
           providerReadiness={providerReadiness}
           runMode={runMode}
           running={running}
+          settings={settings}
+          onCancelRun={cancelRun}
+          onChangeEffort={(effort) => applySettingsCommand(effortSettingsCommand(effort))}
+          onChangeModel={(model) => applySettingsCommand(modelSettingsCommand(model))}
           setPermissionMode={setPermissionMode}
           setPrompt={setPrompt}
           setRunMode={setRunMode}
@@ -847,45 +846,21 @@ export function App() {
       </section>
 
       <aside className={`context-rail ${contextRailOpen ? "open" : "collapsed"}`}>
-        {!contextRailOpen && <button className="rail-expand" onClick={() => setContextRailOpen(true)} aria-label="Show settings">
-          <span>Settings</span>
-          <span className={`status-dot ${sidecarStatus?.running ? "green" : "red"}`} />
-        </button>}
         {contextRailOpen && <>
-          <div className="rail-header"><strong>Settings</strong><button onClick={() => setContextRailOpen(false)}>Hide</button></div>
-          <Panel title="Environment">
-            <InfoRow label="Workspace" value={workspaceName} detail={settings?.workspaceRoot || "Not selected"} status="ok" />
-            <EditableRow label="Sidecar" value={settings?.sidecarPath ?? ""} placeholder={sidecarStatus?.path ?? "Bundled or PATH easycode"} onCommit={(value) => updateSettings({ sidecarPath: value.trim() || undefined })} />
-            <InfoRow label="Sidecar Status" value={sidecarStatusLabel(sidecarStatus)} detail={sidecarStatusDetail(sidecarStatus)} status={sidecarStatusTone(sidecarStatus)} />
-            <SelectRow label="Provider" value={settings?.provider ?? "deepseek"} options={providerOptions} onChange={(provider) => applySettingsCommand(providerSettingsCommand(provider))} />
-            <InfoRow label="Provider Status" value={providerReadinessLabel(providerReadiness)} detail={providerReadinessDetail(providerReadiness)} status={providerReadiness?.status === "ready" ? "ok" : "warn"} />
-            <EditableRow label="Model" value={settings?.model ?? ""} placeholder="Provider default" onCommit={(model) => {
-              return applySettingsCommand(modelSettingsCommand(model))
-            }} />
-            <ToggleRow label="Thinking" value={settings?.thinking ?? true} onChange={(thinking) => applySettingsCommand(thinkingSettingsCommand(thinking))} />
-            <SelectRow label="Effort" value={settings?.effort ?? "high"} options={["low", "medium", "high", "max"]} onChange={(effort) => applySettingsCommand(effortSettingsCommand(effort))} />
-            <SelectRow label="Language" value={settings?.language ?? "en"} options={["en", "zh", "ja", "fr", "ko", "de"]} onChange={(language) => applySettingsCommand(languageSettingsCommand(language))} />
-            <InfoRow label="Git Branch" value={workspaceStatus?.branch ?? "unknown"} detail={aheadBehind(workspaceStatus)} />
-            <InfoRow label="Working Tree" value={workspaceStatus?.clean ? "Clean" : "Modified"} status={workspaceStatus?.clean ? "ok" : "warn"} />
-            <InfoRow label="Changes" value={`+${workspaceStatus?.added ?? 0} -${workspaceStatus?.deleted ?? 0}`} status={workspaceStatus?.clean ? "ok" : "warn"} />
+          <div className="rail-header"><strong>{copy.settings}</strong><button onClick={() => setContextRailOpen(false)}>{copy.hide}</button></div>
+          <Panel title={copy.environment}>
+            <InfoRow label={copy.workspace} value={workspaceName} detail={settings?.workspaceRoot || copy.notSelected} status="ok" />
+            <SelectRow label={copy.provider} value={settings?.provider ?? "deepseek"} options={providerOptions} onChange={(provider) => applySettingsCommand(providerSettingsCommand(provider))} />
+            <InfoRow label={copy.providerStatus} value={providerReadinessLabel(providerReadiness)} detail={providerReadinessDetail(providerReadiness)} status={providerReadiness?.status === "ready" ? "ok" : "warn"} />
+            <ToggleRow copy={copy} label={copy.thinking} value={settings?.thinking ?? true} onChange={(thinking) => applySettingsCommand(thinkingSettingsCommand(thinking))} />
+            <SelectRow label={copy.language} value={settings?.language ?? "en"} options={languageSelectOptions(copy)} onChange={(language) => applySettingsCommand(languageSettingsCommand(language))} />
           </Panel>
-          <CommandPanel commands={desktopQuickSlashCommands} running={running} onRun={runLocalSlashCommand} />
-          <Panel title="Run">
-            <InfoRow label="Duration" value={progress.startedAt ? elapsed(progress.startedAt, now) : "0m"} />
-            <InfoRow label="Permission" value={permissionModeLabel(permissionRunSnapshot(runMode, permissionMode).effectiveMode)} />
-            <NumberRow label="Max Tokens" value={settings?.maxTokens} fallback={32000} onCommit={(maxTokens) => applySettingsCommand(maxTokensSettingsCommand(maxTokens))} />
-            <NumberRow label="Max Steps" value={settings?.maxSteps} fallback={66} onCommit={(maxSteps) => applySettingsCommand(maxStepsSettingsCommand(maxSteps))} />
-            <InfoRow label="Run State" value={displayRunStatus(progress.status)} status={running ? "warn" : progress.status === "done" ? "ok" : progress.status === "failed" ? "warn" : undefined} />
+          <GitChangesPanel copy={copy} status={workspaceStatus} />
+          <Panel title={copy.run}>
+            <NumberRow label={copy.maxTokens} value={settings?.maxTokens} fallback={32000} onCommit={(maxTokens) => applySettingsCommand(maxTokensSettingsCommand(maxTokens))} />
+            <NumberRow label={copy.maxSteps} value={settings?.maxSteps} fallback={66} onCommit={(maxSteps) => applySettingsCommand(maxStepsSettingsCommand(maxSteps))} />
           </Panel>
-          <PlanPanel planStatus={planStatus} running={running} onClear={clearPlan} />
-          <GoalPanel goal={goal} running={running} onClear={clearGoal} onPause={pauseGoal} onResume={resumeGoal} />
-          <Panel title="Prompt Context">
-            <InfoRow label="workspace" value={workspaceName} detail="Local repository" />
-            <InfoRow label="attached images" value={String(attachments.filter((file) => file.kind === "image").length)} />
-            <InfoRow label="referenced files" value={String(attachments.filter((file) => file.kind === "file").length)} />
-          </Panel>
-          <SkillsPanel skills={skills} selected={settings?.selectedSkills ?? []} running={running} onClear={clearSkills} onToggle={toggleSkill} />
-          <div className="rail-footer"><span className={`status-dot ${sidecarStatusDot(sidecarStatus)}`} />Sidecar <span>{sidecarStatusLabel(sidecarStatus)}</span></div>
+          <SkillsPanel copy={copy} skills={skills} selected={settings?.selectedSkills ?? []} running={running} onClear={clearSkills} onToggle={toggleSkill} />
         </>}
       </aside>
 
@@ -910,11 +885,24 @@ export function App() {
   }
 
   function appendTool(title: string, detail: string, status: "running" | "done") {
+    if (isPlanControlTool(title) || isGoalControlTool(title)) return
     setItems((current) => [...current, { id: crypto.randomUUID(), kind: "tool", title, detail, status, open: false }])
   }
 
   function appendStatus(text: string) {
     setItems((current) => [...current, { id: crypto.randomUUID(), kind: "status", text }])
+  }
+
+  async function openWorkspaceFileFromMessage(filePath: string) {
+    try {
+      await window.easycode.openWorkspaceFile(filePath)
+    } catch (error) {
+      appendStatus(copy.cannotOpenFile(filePath, errorMessage(error)))
+    }
+  }
+
+  function openWorkspaceChanges() {
+    setContextRailOpen(true)
   }
 
   function enqueueQueuedInput(text: string) {
@@ -957,66 +945,603 @@ export function App() {
   function upsertSessionPreview(session: string, title: string) {
     setSessions((current) => upsertSessionPreviewState(current, session, title))
   }
+
+  function rememberSessionSelection(workspaceRoot: string | undefined, session: string | undefined) {
+    if (!workspaceRoot || !session) return
+    writeDesktopSessionSelection({ workspaceRoot, session })
+  }
+
+  function setSessionItems(next: ChatItem[]) {
+    nextStreamScrollRef.current = "instant"
+    setItems(next)
+  }
 }
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : String(error)
 }
 
+function desktopCopy(language: string | undefined) {
+  if (language === "zh") {
+    return {
+      addFiles: "添加文件",
+      acceptance: "验收标准",
+      activity: "活动",
+      activeCount: (count: number) => `${count} 个启用`,
+      ask: "询问",
+      attachedCount: (count: number) => `已附加 ${count} 个`,
+      attachedImages: "附加图片",
+      autoReview: "自动审核",
+      binary: "二进制",
+      build: "执行",
+      callCount: (count: number) => `${count} 次调用`,
+      cancel: "取消",
+      changedFiles: (count: number) => `${count} 个变更`,
+      changes: "变更",
+      checks: "检查项",
+      clean: "干净",
+      clear: "清除",
+      clearAll: "全部清除",
+      clearPlan: "清除计划",
+      clearSkills: "清除技能",
+      commands: "命令",
+      composerPlaceholder: "让 EasyCode 检查、解释、规划或修改这个仓库。",
+      configured: "已配置",
+      completed: "已完成",
+      cannotOpenFile: (filePath: string, message: string) => `无法打开 ${filePath}：${message}`,
+      cannotOpenChanges: (message: string) => `无法打开 Git 变更：${message}`,
+      copyOutput: "复制回复",
+      defaultSessionTitle: "添加桌面 sidecar 客户端",
+      details: "详情",
+      duration: "时长",
+      effort: "推理强度",
+      effortHigh: "高",
+      effortLow: "低",
+      effortMax: "超高",
+      effortMedium: "中",
+      environment: "环境",
+      gitBranch: "Git 分支",
+      goal: "目标",
+      goalIteration: (status: string, iteration: number) => `${status} · 第 ${iteration} 轮`,
+      goalRestricted: "目标受限",
+      goalRestrictedTitle: "Goal 模式使用与 CLI 目标自动化一致的受限权限策略。",
+      hide: "收起",
+      iteration: (iteration: number) => `第 ${iteration} 轮`,
+      language: "语言",
+      languageName: (code: string) => ({ en: "英文", zh: "中文", ja: "日文", fr: "法文", ko: "韩文", de: "德文" })[code] ?? code,
+      localOnly: "仅本地",
+      localRepository: "本地仓库",
+      maxSteps: "最大步数",
+      maxTokens: "最大 Token",
+      missing: "缺失",
+      model: "模型",
+      modified: "已修改",
+      newChat: "新对话",
+      newSession: "新建会话",
+      noActiveGoal: "没有活动目标",
+      noActivePlan: "没有活动计划",
+      noMessages: "还没有消息。",
+      noPathResolved: "未解析到路径",
+      noSavedSessions: "没有已保存会话",
+      noSkillsFound: "没有找到技能",
+      notSelected: "未选择",
+      off: "关",
+      on: "开",
+      openGitChangesInVscode: "在 VS Code 源代码管理中查看",
+      openWorkspaceInVscode: "在 VS Code 中打开工作区",
+      pause: "暂停",
+      permission: "权限",
+      plan: "计划",
+      planProgress: (completed: number, total: number) => `计划 ${completed}/${total}`,
+      promptContext: "上下文",
+      provider: "Provider",
+      providerDefault: "Provider 默认",
+      providerFact: (provider: string) => `provider: ${provider}`,
+      providerNotReady: "Provider 未就绪",
+      providerStatus: "Provider 状态",
+      queue: "排队",
+      referencedFiles: "引用文件",
+      reasoning: "推理",
+      reasoningCount: (count: number) => `${count} 条推理`,
+      refresh: "刷新",
+      refreshTitle: "重新同步会话、工作区和 sidecar 状态",
+      removeWorkspace: "移除工作区",
+      resume: "继续",
+      run: "运行",
+      running: "运行中",
+      runStatus: (status: RunStatus) => {
+        if (status === "waiting_plan") return "等待计划"
+        if (status === "waiting_permission") return "等待权限"
+        if (status === "idle") return "空闲"
+        if (status === "running") return "运行中"
+        if (status === "done") return "完成"
+        if (status === "failed") return "失败"
+        if (status === "blocked") return "受阻"
+        return "已取消"
+      },
+      runState: "运行状态",
+      send: "发送",
+      settings: "设置",
+      show: "展开",
+      showAllSkills: (count: number) => `显示全部 ${count} 个技能`,
+      showInFinder: "在 Finder 中显示",
+      showGitChanges: "查看 Git 变更",
+      showLess: "收起",
+      showSettings: "显示设置",
+      sidecar: "Sidecar",
+      sidecarPlaceholder: "内置或 PATH 中的 easycode",
+      sidecarStatus: "Sidecar 状态",
+      skills: "技能",
+      startSession: "在这个工作区开始一个本地 EasyCode 会话。",
+      state: "状态",
+      stepProgress: (current: number, total: number) => `步骤 ${current}/${total}`,
+      stopped: "已停止",
+      thinking: "思考",
+      toolCallCount: (count: number) => `${count} 次工具调用`,
+      tools: "工具",
+      toolsFact: (done: number, total: number) => `工具: ${done}/${total}`,
+      modeFact: (mode: string) => `模式: ${mode}`,
+      workspace: "工作区",
+      workspaceLower: "工作区",
+      workingTree: "工作区状态",
+      workspaces: "工作区",
+      you: "你",
+    }
+  }
+  return {
+    addFiles: "Add files",
+    acceptance: "Acceptance",
+    activity: "Activity",
+    activeCount: (count: number) => `${count} active`,
+    ask: "Ask",
+    attachedCount: (count: number) => `${count} attached`,
+    attachedImages: "attached images",
+    autoReview: "Auto-review",
+    binary: "binary",
+    build: "Build",
+    callCount: (count: number) => `${count} call${count === 1 ? "" : "s"}`,
+    cancel: "Cancel",
+    changedFiles: (count: number) => `${count} changed`,
+    changes: "Changes",
+    checks: "Checks",
+    clean: "Clean",
+    clear: "Clear",
+    clearAll: "Clear all",
+    clearPlan: "Clear Plan",
+    clearSkills: "Clear Skills",
+    commands: "Commands",
+    composerPlaceholder: "Ask EasyCode to inspect, explain, plan, or change this repository.",
+    configured: "Configured",
+    completed: "Completed",
+    cannotOpenFile: (filePath: string, message: string) => `Cannot open ${filePath}: ${message}`,
+    cannotOpenChanges: (message: string) => `Cannot open Git changes: ${message}`,
+    copyOutput: "Copy response",
+    defaultSessionTitle: "Add desktop sidecar client",
+    details: "details",
+    duration: "Duration",
+    effort: "Effort",
+    effortHigh: "High",
+    effortLow: "Low",
+    effortMax: "Max",
+    effortMedium: "Medium",
+    environment: "Environment",
+    gitBranch: "Git Branch",
+    goal: "Goal",
+    goalIteration: (status: string, iteration: number) => `${status} · iter ${iteration}`,
+    goalRestricted: "Goal restricted",
+    goalRestrictedTitle: "Goal mode uses the same restricted permission policy as the CLI goal automation.",
+    hide: "Hide",
+    iteration: (iteration: number) => `iteration ${iteration}`,
+    language: "Language",
+    languageName: (code: string) => ({ en: "English", zh: "Chinese", ja: "Japanese", fr: "French", ko: "Korean", de: "German" })[code] ?? code,
+    localOnly: "Local only",
+    localRepository: "Local repository",
+    maxSteps: "Max Steps",
+    maxTokens: "Max Tokens",
+    missing: "Missing",
+    model: "Model",
+    modified: "Modified",
+    newChat: "New Chat",
+    newSession: "New session",
+    noActiveGoal: "No active goal",
+    noActivePlan: "No active plan",
+    noMessages: "No messages yet.",
+    noPathResolved: "No path resolved",
+      noSavedSessions: "No saved sessions",
+      noSkillsFound: "No skills found",
+      notSelected: "Not selected",
+    off: "Off",
+    on: "On",
+    openGitChangesInVscode: "Open Source Control in VS Code",
+    openWorkspaceInVscode: "Open workspace in VS Code",
+      pause: "Pause",
+      permission: "Permission",
+    plan: "Plan",
+    planProgress: (completed: number, total: number) => `Plan ${completed}/${total}`,
+    promptContext: "Prompt Context",
+    provider: "Provider",
+    providerDefault: "Provider default",
+    providerFact: (provider: string) => `provider: ${provider}`,
+    providerNotReady: "Provider not ready",
+    providerStatus: "Provider Status",
+    queue: "Queue",
+    referencedFiles: "referenced files",
+      reasoning: "Reasoning",
+      reasoningCount: (count: number) => `${count} reasoning`,
+      refresh: "Refresh",
+      refreshTitle: "Sync session, workspace, and sidecar status again",
+      removeWorkspace: "Remove Workspace",
+    resume: "Resume",
+    run: "Run",
+    running: "Running",
+    runStatus: displayRunStatus,
+    runState: "Run State",
+    send: "Send",
+    settings: "Settings",
+    show: "Show",
+    showAllSkills: (count: number) => `Show all ${count} skills`,
+    showInFinder: "Show in Finder",
+    showGitChanges: "View Git changes",
+    showLess: "Show less",
+    showSettings: "Show settings",
+    sidecar: "Sidecar",
+    sidecarPlaceholder: "Bundled or PATH easycode",
+    sidecarStatus: "Sidecar Status",
+    skills: "Skills",
+    startSession: "Start a local EasyCode session in this workspace.",
+    state: "state",
+    stepProgress: (current: number, total: number) => `Step ${current}/${total}`,
+    stopped: "Stopped",
+    thinking: "Thinking",
+    toolCallCount: (count: number) => `${count} tool call${count === 1 ? "" : "s"}`,
+    tools: "Tools",
+    toolsFact: (done: number, total: number) => `tools: ${done}/${total}`,
+    modeFact: (mode: string) => `mode: ${mode}`,
+    workspace: "Workspace",
+    workspaceLower: "workspace",
+    workingTree: "Working Tree",
+    workspaces: "Workspaces",
+    you: "You",
+  }
+}
+
+function groupStreamItems(items: ChatItem[]): StreamEntry[] {
+  const entries: StreamEntry[] = []
+  let pendingTools: ToolItem[] = []
+  let pendingAssistantParts: AssistantTurnPart[] = []
+
+  const flushTools = () => {
+    if (pendingTools.length === 0) return
+    pendingAssistantParts.push({ id: `tools-${pendingTools[0].id}-${pendingTools[pendingTools.length - 1].id}`, kind: "tools", tools: pendingTools })
+    pendingTools = []
+  }
+
+  const flushAssistantTurn = () => {
+    flushTools()
+    if (pendingAssistantParts.length === 0) return
+    const first = pendingAssistantParts[0]
+    const last = pendingAssistantParts[pendingAssistantParts.length - 1]
+    const firstAssistant = pendingAssistantParts.find((part) => part.kind === "assistant")
+    entries.push({
+      id: `assistant-turn-${first.id}-${last.id}`,
+      kind: "assistantTurn",
+      time: firstAssistant?.item.time ?? "",
+      parts: pendingAssistantParts,
+    })
+    pendingAssistantParts = []
+  }
+
+  for (const item of items) {
+    if (item.kind === "tool") {
+      if (isPlanControlTool(item.title) || isGoalControlTool(item.title)) continue
+      pendingTools.push(item)
+      continue
+    }
+    if (item.kind === "user" && isInternalGoalPrompt(item.text)) {
+      flushAssistantTurn()
+      entries.push({ id: item.id, kind: "message", item: { ...item, text: safeSessionTitle(item.text) } })
+      continue
+    }
+    if (item.kind === "assistant") {
+      flushTools()
+      if (item.text.trim()) pendingAssistantParts.push({ id: item.id, kind: "assistant", item })
+      continue
+    }
+    flushAssistantTurn()
+    entries.push({ id: item.id, kind: "message", item })
+  }
+  flushAssistantTurn()
+  return entries
+}
+
+function isPlanControlTool(name: string) {
+  return name === "plan_step_complete" || name === "plan_step_fail"
+}
+
+function isGoalControlTool(name: string) {
+  return name === "goal_set_acceptance" || name === "goal_complete" || name === "goal_blocked"
+}
+
+function groupAssistantActivity(parts: AssistantTurnPart[]): AssistantRenderPart[] {
+  const grouped: AssistantRenderPart[] = []
+  let pendingActivity: AssistantTurnPart[] = []
+
+  const flushActivity = () => {
+    if (pendingActivity.length === 0) return
+    const first = pendingActivity[0]
+    grouped.push({ id: `activity-${first.id}`, kind: "activity", parts: pendingActivity })
+    pendingActivity = []
+  }
+
+  for (const part of parts.flatMap(splitAssistantMessagePart)) {
+    if (isAssistantActivityPart(part)) {
+      pendingActivity.push(part)
+      continue
+    }
+    flushActivity()
+    grouped.push(part)
+  }
+  flushActivity()
+  return grouped
+}
+
+function splitAssistantMessagePart(part: AssistantTurnPart): AssistantTurnPart[] {
+  if (part.kind === "tools") return [part]
+  const blocks = splitReasoningBlocks(part.item.text)
+  if (blocks.length <= 1) return [part]
+  return blocks.map((block, index) => {
+    const text = block.kind === "reasoning" ? `<reasoning>${block.text}</reasoning>` : block.text
+    return {
+      id: `${part.id}-${block.kind}-${index}`,
+      kind: "assistant",
+      item: { ...part.item, id: `${part.item.id}-${block.kind}-${index}`, text },
+    }
+  })
+}
+
+function isAssistantActivityPart(part: AssistantTurnPart) {
+  if (part.kind === "tools") return true
+  return !splitReasoningBlocks(part.item.text).some((block) => block.kind === "markdown")
+}
+
 function SidebarGroup({ action, children, onAction, title }: { action?: string; children: React.ReactNode; onAction?: () => void; title: string }) {
   return <section className="sidebar-group"><div className="group-title"><span>{title}</span>{action && <button onClick={onAction}>{action}</button>}</div>{children}</section>
 }
 
-function ProgressCard({ progress, running }: { progress: Progress; running: boolean }) {
+function ProgressCard({ copy, goal, planStatus, progress, running }: { copy: DesktopCopy; goal?: DesktopGoalState; planStatus?: DesktopPlanStatusResult; progress: Progress; running: boolean }) {
   return <section className="progress-card">
-    <div className="progress-meta"><span><span className={`status-dot ${running ? "blue" : progress.status === "failed" ? "red" : "green"}`} />{displayRunStatus(progress.status)}</span><span>{progress.startedAt ? elapsed(progress.startedAt) : "00:00"}</span></div>
+    <div className="progress-meta"><span><span className={`status-dot ${progressDot(progress.status, running)}`} />{copy.runStatus(progress.status)}</span><span>{progress.startedAt ? elapsed(progress.startedAt) : "00:00"}</span></div>
     <div className="run-facts">
-      <span>provider: {progress.provider ?? "-"}</span>
-      <span>mode: {progress.mode ?? "-"}</span>
-      <span>tools: {progress.toolResults}/{progress.toolCalls}</span>
+      <span>{copy.providerFact(progress.provider ?? "-")}</span>
+      <span>{copy.modeFact(progress.mode ?? "-")}</span>
+      <span>{copy.toolsFact(progress.toolResults, progress.toolCalls)}</span>
     </div>
+    {goal && <GoalProgress copy={copy} goal={goal} planStatus={planStatus} />}
+    {!goal && planStatus?.planId && <PlanProgress copy={copy} planStatus={planStatus} />}
     <div className="progress-summary">{progress.summary}</div>
   </section>
 }
 
-function EmptyState() {
-  return <section className="empty-state"><h2>No messages yet.</h2><p>Start a local EasyCode session in this workspace.</p></section>
-}
-
-function Message({ item }: { item: Exclude<ChatItem, { kind: "tool" }> }) {
-  if (item.kind === "status") return <article className="message status"><MarkdownText text={item.text} /></article>
-  return <article className={`message ${item.kind}`}><div className="message-head"><strong>{item.kind === "user" ? "You" : "EasyCode"}</strong><time>{item.time}</time></div><MessageText text={item.text || "..."} /></article>
-}
-
-function MessageText({ text }: { text: string }) {
-  return <div className="message-body">
-    {splitReasoningBlocks(text).map((part, index) => part.kind === "reasoning"
-      ? <ReasoningBlock key={`${part.kind}-${index}`} text={part.text} />
-      : <MarkdownText key={`${part.kind}-${index}`} text={part.text} />)}
+function GoalProgress({ copy, goal, planStatus }: { copy: DesktopCopy; goal: DesktopGoalState; planStatus?: DesktopPlanStatusResult }) {
+  return <div className="goal-progress">
+    <div className="goal-progress-summary">
+      <strong>{copy.goal}</strong>
+      <span>{goal.objective}</span>
+      <em>{copy.goalIteration(goal.status, goal.iteration)}</em>
+    </div>
+    <div className="goal-popover">
+      <strong>{goal.objective}</strong>
+      <div className="goal-meta-line">
+        <span>{goal.status}</span>
+        <span>{copy.iteration(goal.iteration)}</span>
+        {goal.complexity && <span>{goal.complexity}</span>}
+        {goal.activePlanId && <span>{goal.activePlanId}</span>}
+      </div>
+      {goal.firstSlice && <p>{goal.firstSlice}</p>}
+      <GoalList title={copy.acceptance} items={goal.acceptanceCriteria ?? []} />
+      <GoalList title={copy.checks} items={goal.completionChecks ?? []} />
+      {planStatus?.planId && <PlanProgress copy={copy} planStatus={planStatus} embedded />}
+      {goal.blocker && <p className="plan-blocker">{goal.blocker}</p>}
+    </div>
   </div>
 }
 
-function MarkdownText({ text }: { text: string }) {
-  return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown></div>
+function GoalList({ items, title }: { items: string[]; title: string }) {
+  if (items.length === 0) return null
+  return <div className="goal-list"><small>{title}</small>{items.map((item, index) => <p key={`${title}-${index}`}>{item}</p>)}</div>
 }
 
-function ReasoningBlock({ text }: { text: string }) {
+function PlanProgress({ copy, embedded = false, planStatus }: { copy: DesktopCopy; embedded?: boolean; planStatus: DesktopPlanStatusResult }) {
+  const snapshot = planProgressSnapshot(planStatus)
+
+  return <div className={`plan-progress ${embedded ? "embedded" : ""}`}>
+    <div className="plan-progress-summary">
+      <strong>{snapshot.currentIndex >= 0 ? copy.stepProgress(snapshot.currentIndex + 1, snapshot.total) : copy.planProgress(snapshot.completed, snapshot.total)}</strong>
+      <span>{snapshot.current?.goal ?? snapshot.title}</span>
+      <em>{snapshot.status}</em>
+    </div>
+    <div className="plan-popover">
+      <strong>{snapshot.title}</strong>
+      {snapshot.steps.map((step, index) => {
+        const status = snapshot.stepStatuses[step.id] ?? "pending"
+        return <div className={`plan-step ${status}`} key={step.id}>
+          <span>{index + 1}</span>
+          <p>{step.goal}</p>
+          <small>{status}</small>
+        </div>
+      })}
+      {planStatus.blocker && <p className="plan-blocker">{planStatus.blocker}</p>}
+    </div>
+  </div>
+}
+
+function planProgressSnapshot(planStatus: DesktopPlanStatusResult) {
+  const plan = planStatus.plan?.plan
+  const checkpoint = planStatus.plan?.checkpoint
+  const steps = plan?.steps ?? []
+  const stepStatuses = checkpoint?.stepStatuses ?? {}
+  const currentIndex = steps.findIndex((step) => step.id === (planStatus.currentStepId ?? checkpoint?.currentStepId))
+  const completed = Object.values(stepStatuses).filter((status) => status === "completed").length
+  const current = currentIndex >= 0 ? steps[currentIndex] : undefined
+  return {
+    completed,
+    current,
+    currentIndex,
+    status: planStatus.status ?? checkpoint?.status ?? "active",
+    stepStatuses,
+    steps,
+    title: plan?.title ?? planStatus.planId ?? "Plan",
+    total: steps.length,
+  }
+}
+
+function EmptyState({ copy }: { copy: DesktopCopy }) {
+  return <section className="empty-state"><h2>{copy.noMessages}</h2><p>{copy.startSession}</p></section>
+}
+
+function WorkspaceChangesBar({ copy, onOpen, planStatus, status }: { copy: DesktopCopy; onOpen: () => void; planStatus?: DesktopPlanStatusResult; status?: DesktopWorkspaceStatus }) {
+  const plan = planStatus?.planId ? planProgressSnapshot(planStatus) : undefined
+  if (!status && !plan) return null
+  const changedStatus = status && !status.clean ? status : undefined
+  const stepNumber = plan ? Math.max(1, Math.min(plan.total || 1, plan.currentIndex >= 0 ? plan.currentIndex + 1 : plan.completed || 1)) : 0
+  return <div className="workspace-changes-bar">
+    <button className={changedStatus ? "changed" : "clean"} onClick={onOpen} title={copy.showGitChanges}>
+      {plan && <><span className={`plan-inline-dot ${plan.status}`} /><span>{copy.stepProgress(stepNumber, plan.total || stepNumber)}</span><span className="status-separator">·</span></>}
+      {status && <span>{status.clean ? copy.clean : copy.changedFiles(status.changedFiles)}</span>}
+      {changedStatus && <><strong>+{changedStatus.added}</strong><em>-{changedStatus.deleted}</em></>}
+    </button>
+    {plan && <div className="workspace-plan-popover">
+      {plan.steps.map((step, index) => {
+        const status = plan.stepStatuses[step.id] ?? "pending"
+        return <div className={`status-plan-step ${status}`} key={step.id}>
+          <span>{status === "completed" ? "✓" : index === plan.currentIndex ? "" : index + 1}</span>
+          <p>{step.goal}</p>
+        </div>
+      })}
+    </div>}
+  </div>
+}
+
+function Message({ copy, item, onOpenFile }: { copy: DesktopCopy; item: Exclude<MessageItem, { kind: "assistant" }>; onOpenFile: MarkdownFileOpenHandler }) {
+  if (item.kind === "status") return <article className="message status"><MarkdownText onOpenFile={onOpenFile} text={item.text} /></article>
+  return <article className={`message ${item.kind}`}><div className="message-head"><strong>{item.kind === "user" ? copy.you : "EasyCode"}</strong><time>{item.time}</time></div><MessageText copy={copy} onOpenFile={onOpenFile} text={item.text || "..."} /></article>
+}
+
+function AssistantTurn({ copy, entry, onOpenFile }: { copy: DesktopCopy; entry: Extract<StreamEntry, { kind: "assistantTurn" }>; onOpenFile: MarkdownFileOpenHandler }) {
+  const parts = groupAssistantActivity(entry.parts)
+  const outputText = assistantOutputText(parts)
+  return <article className="message assistant assistant-turn">
+    <div className="message-head">
+      <strong>EasyCode</strong>
+      <div className="message-actions">
+        {entry.time && <time>{entry.time}</time>}
+        {outputText && <button className="copy-output" onClick={() => { void copyToClipboard(outputText) }} aria-label={copy.copyOutput} title={copy.copyOutput}><span className="copy-icon" /></button>}
+      </div>
+    </div>
+    <div className="message-body">
+      {parts.map((part) => part.kind === "activity"
+        ? <ActivityGroup copy={copy} key={part.id} onOpenFile={onOpenFile} parts={part.parts} />
+        : part.kind === "tools"
+          ? <ToolGroup copy={copy} key={part.id} tools={part.tools} />
+          : <MessageText copy={copy} key={part.id} onOpenFile={onOpenFile} text={part.item.text || "..."} />)}
+    </div>
+  </article>
+}
+
+function ActivityGroup({ copy, onOpenFile, parts }: { copy: DesktopCopy; onOpenFile: MarkdownFileOpenHandler; parts: AssistantTurnPart[] }) {
+  const [open, setOpen] = useState(false)
+  const reasoningCount = parts.reduce((count, part) => count + (part.kind === "assistant" ? reasoningBlockCount(part.item.text) : 0), 0)
+  const toolCallCount = parts.reduce((count, part) => count + (part.kind === "tools" ? part.tools.length : 0), 0)
+  const latest = activityLatestLabel(parts)
+  const summary = activitySummary(copy, reasoningCount, toolCallCount)
+
+  return <article className={`activity-group ${open ? "open" : ""}`}>
+    <button className="activity-toggle" onClick={() => setOpen((value) => !value)}>
+      <span className="status-dot green" />
+      <strong>{copy.activity}</strong>
+      <span>{summary}</span>
+      <small>{latest}</small>
+      <em>{open ? copy.hide : copy.show}</em>
+    </button>
+    {open && <div className="activity-list">
+      {parts.map((part) => part.kind === "tools"
+        ? <ToolGroup copy={copy} key={part.id} tools={part.tools} />
+        : <MessageText copy={copy} key={part.id} onOpenFile={onOpenFile} text={part.item.text || "..."} />)}
+    </div>}
+  </article>
+}
+
+function MessageText({ copy, onOpenFile, text }: { copy: DesktopCopy; onOpenFile: MarkdownFileOpenHandler; text: string }) {
+  return <div className="message-body">
+    {splitReasoningBlocks(text).map((part, index) => part.kind === "reasoning"
+      ? <ReasoningBlock copy={copy} key={`${part.kind}-${index}`} onOpenFile={onOpenFile} text={part.text} />
+      : <MarkdownText key={`${part.kind}-${index}`} onOpenFile={onOpenFile} text={part.text} />)}
+  </div>
+}
+
+function MarkdownText({ onOpenFile, text }: { onOpenFile: MarkdownFileOpenHandler; text: string }) {
+  return <div className="markdown-body"><ReactMarkdown remarkPlugins={[remarkGfm]} components={{ code: (props) => <InlineCode {...props} onOpenFile={onOpenFile} /> }}>{text}</ReactMarkdown></div>
+}
+
+function InlineCode(props: { children?: React.ReactNode; className?: string; onOpenFile: MarkdownFileOpenHandler }) {
+  const text = String(props.children ?? "").trim()
+  const target = workspaceFileTarget(text)
+  if (!props.className && target) {
+    return <button className="file-link" onClick={() => {
+      void props.onOpenFile(target)
+    }}>{text}</button>
+  }
+  return <code className={props.className}>{props.children}</code>
+}
+
+function ReasoningBlock({ copy, onOpenFile, text }: { copy: DesktopCopy; onOpenFile: MarkdownFileOpenHandler; text: string }) {
   const [open, setOpen] = useState(false)
   return <section className={`reasoning-fold ${open ? "open" : ""}`}>
     <button onClick={() => setOpen((value) => !value)}>
-      <span>Reasoning</span>
-      <small>{open ? "Hide" : reasoningPreview(text)}</small>
+      <span>{copy.reasoning}</span>
+      <small>{open ? copy.hide : reasoningPreview(text)}</small>
     </button>
-    {open && <MarkdownText text={text} />}
+    {open && <MarkdownText onOpenFile={onOpenFile} text={text} />}
   </section>
 }
 
-function ToolRow({ item, onToggle }: { item: Extract<ChatItem, { kind: "tool" }>; onToggle: (id: string) => void }) {
-  return <article className="tool-row"><button onClick={() => onToggle(item.id)}><span className={`status-dot ${item.status === "done" ? "green" : "blue"}`} />{item.title}<span>{item.status === "done" ? "Completed" : "Running"}</span></button>{item.open && <pre>{item.detail}</pre>}</article>
+function ToolGroup({ copy, tools }: { copy: DesktopCopy; tools: ToolItem[] }) {
+  const [open, setOpen] = useState(false)
+  const [openToolId, setOpenToolId] = useState<string>()
+  const runningCount = tools.filter((tool) => tool.status === "running").length
+  const status = runningCount > 0 ? copy.running : copy.completed
+  const latest = tools[tools.length - 1]
+
+  return <article className={`tool-group ${open ? "open" : ""}`}>
+    <button className="tool-group-toggle" onClick={() => setOpen((value) => !value)}>
+      <span className={`status-dot ${runningCount > 0 ? "blue" : "green"}`} />
+      <strong>{copy.tools}</strong>
+      <span>{copy.callCount(tools.length)}</span>
+      <small>{latest?.title ?? status}</small>
+      <em>{open ? copy.hide : status}</em>
+    </button>
+    {open && <div className="tool-list">
+      {tools.map((tool) => {
+        const detailOpen = openToolId === tool.id
+        return <section className={`tool-entry ${detailOpen ? "open" : ""}`} key={tool.id}>
+          <button onClick={() => setOpenToolId((id) => id === tool.id ? undefined : tool.id)}>
+            <span className={`status-dot ${tool.status === "done" ? "green" : "blue"}`} />
+            <span>{tool.title}</span>
+            <small>{tool.status === "done" ? copy.completed : copy.running}</small>
+          </button>
+          {detailOpen && <pre>{tool.detail}</pre>}
+        </section>
+      })}
+    </div>}
+  </article>
 }
 
-function Composer({ attachments, onClearAttachments, onPickFiles, onRemoveAttachment, permissionMode, prompt, providerReady, providerReadiness, queuedCount, runMode, running, sendPrompt, setPermissionMode, setPrompt, setRunMode }: {
+function Composer({ attachments, copy, onCancelRun, onChangeEffort, onChangeModel, onClearAttachments, onPickFiles, onRemoveAttachment, permissionMode, prompt, providerReady, providerReadiness, queuedCount, runMode, running, sendPrompt, setPermissionMode, setPrompt, setRunMode, settings }: {
   attachments: Attachment[]
+  copy: DesktopCopy
+  onCancelRun: () => Promise<void>
+  onChangeEffort: (effort: DesktopReasoningEffort) => void
+  onChangeModel: (model: string) => void
   onClearAttachments: () => Promise<void>
   onPickFiles: () => void
   onRemoveAttachment: (id: string) => void
@@ -1031,36 +1556,58 @@ function Composer({ attachments, onClearAttachments, onPickFiles, onRemoveAttach
   setPermissionMode: (mode: PermissionMode) => void
   setPrompt: (value: string) => void
   setRunMode: (mode: RunMode) => void
+  settings?: DesktopSettings
 }) {
   const trimmedPrompt = prompt.trim()
   const isLocalSlash = trimmedPrompt.startsWith("/") && !trimmedPrompt.startsWith("//") && !isRunProducingSlashInput(trimmedPrompt)
-  const isCancelInput = isCancelRunInput(prompt)
-  const willQueue = shouldQueueRunInput(prompt, running)
   const blockedByProvider = !running && !providerReady && !isLocalSlash
+  const provider = settings?.provider ?? "deepseek"
+  const model = settings?.model ?? defaultSetupModel(provider)
+  const effort = settings?.effort ?? "high"
   return <footer className="composer">
     {attachments.length > 0 && <div className="attachments-wrap">
-      <div className="attachments-head"><span>{attachments.length} attached</span><button onClick={() => { void onClearAttachments() }} disabled={running}>Clear all</button></div>
+      <div className="attachments-head"><span>{copy.attachedCount(attachments.length)}</span><button onClick={() => { void onClearAttachments() }} disabled={running}>{copy.clearAll}</button></div>
       <div className="attachments">{attachments.map((file) => <button key={file.id} onClick={() => onRemoveAttachment(file.id)} disabled={running}><span>{file.name}</span><small>{file.kind} - {file.size}</small></button>)}</div>
     </div>}
     <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => {
       if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void sendPrompt()
-    }} placeholder="Ask EasyCode to inspect, explain, plan, or change this repository." />
+    }} placeholder={copy.composerPlaceholder} />
     <div className="composer-bar">
-      <button className="file-button" onClick={onPickFiles} disabled={running}>Add files</button>
+      <button className="file-button" onClick={onPickFiles} disabled={running}>{copy.addFiles}</button>
       <div className="mode-toggle" role="group" aria-label="Run mode">
-        <button className={runMode === "build" ? "selected" : ""} onClick={() => setRunMode("build")} disabled={running}>Build</button>
-        <button className={runMode === "plan" ? "selected" : ""} onClick={() => setRunMode("plan")} disabled={running}>Plan</button>
-        <button className={runMode === "goal" ? "selected" : ""} onClick={() => setRunMode("goal")} disabled={running}>Goal</button>
+        <button className={runMode === "build" ? "selected" : ""} onClick={() => setRunMode("build")} disabled={running}>{copy.build}</button>
+        <button className={runMode === "plan" ? "selected" : ""} onClick={() => setRunMode("plan")} disabled={running}>{copy.plan}</button>
+        <button className={runMode === "goal" ? "selected" : ""} onClick={() => setRunMode("goal")} disabled={running}>{copy.goal}</button>
       </div>
       {runMode === "goal"
-        ? <div className="permission-static" title="Goal mode uses the same restricted permission policy as the CLI goal automation.">Goal restricted</div>
-        : <div className="permission-toggle" role="group" aria-label="Permission mode">
-          <button className={permissionMode === "ask" ? "selected" : ""} onClick={() => setPermissionMode("ask")} disabled={running}>Ask</button>
-          <button className={permissionMode === "auto-review" ? "selected" : ""} onClick={() => setPermissionMode("auto-review")} disabled={running}>Auto-review</button>
-        </div>}
-      {blockedByProvider && <span className="composer-warning">{providerReadiness ? providerReadinessLabel(providerReadiness) : "Provider not ready"}</span>}
+        ? <div className="permission-static" title={copy.goalRestrictedTitle}>{copy.goalRestricted}</div>
+        : <label className="composer-select-wrap permission-select">
+          <span>{copy.permission}</span>
+          <select value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)} disabled={running}>
+            <option value="ask">{copy.ask}</option>
+            <option value="auto-review">{copy.autoReview}</option>
+          </select>
+        </label>}
+      <label className="composer-select-wrap model-select">
+        <span>{copy.model}</span>
+        <select value={model} onChange={(event) => onChangeModel(event.target.value)} disabled={running}>
+          {modelSelectOptions(provider, model).map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+      <label className="composer-select-wrap effort-select">
+        <span>{copy.effort}</span>
+        <select value={effort} onChange={(event) => onChangeEffort(event.target.value as DesktopReasoningEffort)} disabled={running}>
+          {effortSelectOptions(copy).map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+        </select>
+      </label>
+      {blockedByProvider && <span className="composer-warning">{providerReadiness ? providerReadinessLabel(providerReadiness) : copy.providerNotReady}</span>}
       {queuedCount > 0 && <span className="queue-chip">{queuedInputLabel(queuedCount)}</span>}
-      <button className="send-button" onClick={sendPrompt} disabled={!prompt.trim() || blockedByProvider}>{running ? isCancelInput ? "Cancel" : willQueue ? "Queue" : "Send" : "Send"}</button>
+      <button className={`send-button ${running ? "running" : ""}`} onClick={() => {
+        if (running) void onCancelRun()
+        else void sendPrompt()
+      }} disabled={running ? false : !prompt.trim() || blockedByProvider} aria-label={running ? copy.cancel : copy.send}>
+        {running ? <span className="stop-icon" aria-hidden="true" /> : <span className="send-icon" aria-hidden="true" />}
+      </button>
     </div>
   </footer>
 }
@@ -1069,76 +1616,45 @@ function Panel({ children, title }: { children: React.ReactNode; title: string }
   return <section className="rail-panel"><div className="panel-title"><h2>{title}</h2></div>{children}</section>
 }
 
-function CommandPanel({ commands, onRun, running }: { commands: DesktopQuickSlashCommand[]; onRun: (command: DesktopQuickSlashCommand) => void; running: boolean }) {
-  return <Panel title="Commands">
-    <div className="command-grid">
-      {commands.map((command) => <button key={command.command} onClick={() => onRun(command)} disabled={!canRunDesktopQuickSlashCommand(command, running)}>{command.label}</button>)}
+function GitChangesPanel({ copy, status }: { copy: DesktopCopy; status?: DesktopWorkspaceStatus }) {
+  const files = status?.files ?? []
+  return <Panel title={copy.changes}>
+    <InfoRow label={copy.gitBranch} value={status?.branch ?? "unknown"} detail={aheadBehind(status)} />
+    <InfoRow label={copy.workingTree} value={status?.clean ? copy.clean : copy.modified} status={status?.clean ? "ok" : "warn"} />
+    <div className="git-change-summary">
+      <span>{status?.clean ? copy.clean : copy.changedFiles(status?.changedFiles ?? 0)}</span>
+      {!status?.clean && <><strong>+{status?.added ?? 0}</strong><em>-{status?.deleted ?? 0}</em></>}
     </div>
-  </Panel>
-}
-
-function PlanPanel({ onClear, planStatus, running }: { onClear: () => void; planStatus?: DesktopPlanStatusResult; running: boolean }) {
-  const plan = planStatus?.plan?.plan
-  const checkpoint = planStatus?.plan?.checkpoint
-  const completed = checkpoint ? Object.values(checkpoint.stepStatuses).filter((status) => status === "completed").length : 0
-  const total = plan?.steps.length ?? 0
-  const current = plan?.steps.find((step) => step.id === planStatus?.currentStepId)
-  return <Panel title="Plan">
-    {!planStatus?.planId && <div className="empty-list compact">No active plan</div>}
-    {planStatus?.planId && <div className="plan-box">
-      <strong>{plan?.title ?? planStatus.planId}</strong>
-      <div className="goal-meta">
-        <span>{planStatus.status ?? checkpoint?.status ?? "unknown"}</span>
-        <span>{completed}/{total} steps</span>
-        {plan?.lowRisk && <span>low risk</span>}
-      </div>
-      {current && <small>{current.goal}</small>}
-      {planStatus.blocker && <p>{planStatus.blocker}</p>}
-      <button onClick={onClear} disabled={running}>Clear Plan</button>
+    {status?.error && <div className="empty-list compact">{status.error}</div>}
+    {!status?.error && files.length === 0 && <div className="empty-list compact">{status?.clean ? copy.clean : copy.noPathResolved}</div>}
+    {files.length > 0 && <div className="git-change-list">
+      {files.map((file) => <div className="git-change-row" key={`${file.status}-${file.path}`}>
+        <span>{file.status}</span>
+        <strong title={file.path}>{file.path}</strong>
+        <small><b>+{file.added}</b><i>-{file.deleted}</i></small>
+      </div>)}
     </div>}
   </Panel>
 }
 
-function GoalPanel({ goal, onClear, onPause, onResume, running }: { goal?: DesktopGoalState; onClear: () => void; onPause: () => void; onResume: () => void; running: boolean }) {
-  const canPause = Boolean(goal && goal.status !== "paused" && goal.status !== "completed")
-  const canResume = Boolean(goal && (goal.status === "paused" || goal.status === "blocked"))
-  return <Panel title="Goal">
-    {!goal && <div className="empty-list compact">No active goal</div>}
-    {goal && <div className="goal-box">
-      <strong>{goal.objective}</strong>
-      <div className="goal-meta">
-        <span>{goal.status}</span>
-        <span>iteration {goal.iteration}</span>
-      </div>
-      {goal.firstSlice && <small>{goal.firstSlice}</small>}
-      {goal.blocker && <p>{goal.blocker}</p>}
-      <div className="goal-actions">
-        <button onClick={onPause} disabled={running || !canPause}>Pause</button>
-        <button onClick={onResume} disabled={running || !canResume}>Resume</button>
-        <button onClick={onClear} disabled={running}>Clear</button>
-      </div>
-    </div>}
-  </Panel>
-}
-
-function SkillsPanel({ onClear, onToggle, running, selected, skills }: { onClear: () => void; onToggle: (skill: DesktopSkillInfo) => void; running: boolean; selected: string[]; skills: DesktopSkillInfo[] }) {
+function SkillsPanel({ copy, onClear, onToggle, running, selected, skills }: { copy: DesktopCopy; onClear: () => void; onToggle: (skill: DesktopSkillInfo) => void; running: boolean; selected: string[]; skills: DesktopSkillInfo[] }) {
   const [expanded, setExpanded] = useState(false)
   const selectedSet = new Set(selected)
   const visible = expanded ? skills : skills.slice(0, 8)
-  return <Panel title="Skills">
-    <div className="panel-inline-actions"><span>{selected.length} active</span><button onClick={onClear} disabled={running || selected.length === 0}>Clear Skills</button></div>
-    {skills.length === 0 && <div className="empty-list compact">No skills found</div>}
+  return <Panel title={copy.skills}>
+    <div className="panel-inline-actions"><span>{copy.activeCount(selected.length)}</span><button onClick={onClear} disabled={running || selected.length === 0}>{copy.clearSkills}</button></div>
+    {skills.length === 0 && <div className="empty-list compact">{copy.noSkillsFound}</div>}
     {visible.length > 0 && <div className="skill-list">
       {visible.map((skill) => {
         const active = selectedSet.has(skill.id) || selectedSet.has(skill.name)
         return <button key={skill.id} className={`skill-row ${active ? "active" : ""}`} onClick={() => onToggle(skill)} disabled={running}>
-          <span>{active ? "On" : "Off"}</span>
+          <span>{active ? copy.on : copy.off}</span>
           <strong>{skill.name}</strong>
           <small>{skill.description}</small>
         </button>
       })}
     </div>}
-    {skills.length > 8 && <button className="more-row" onClick={() => setExpanded((value) => !value)}>{expanded ? "Show less" : `Show all ${skills.length} skills`}</button>}
+    {skills.length > 8 && <button className="more-row" onClick={() => setExpanded((value) => !value)}>{expanded ? copy.showLess : copy.showAllSkills(skills.length)}</button>}
   </Panel>
 }
 
@@ -1146,19 +1662,13 @@ function InfoRow({ detail, label, status, value }: { detail?: string; label: str
   return <div className="info-row"><div><span>{label}</span>{detail && <small>{detail}</small>}</div><strong className={status}>{value}</strong></div>
 }
 
-function EditableRow({ label, onCommit, placeholder, value }: { label: string; onCommit: (value: string) => void; placeholder: string; value: string }) {
-  const [draft, setDraft] = useState(value)
-  useEffect(() => setDraft(value), [value])
-  return <label className="editable-row"><span>{label}</span><input value={draft} placeholder={placeholder} onChange={(event) => setDraft(event.target.value)} onBlur={() => onCommit(draft)} /></label>
+function SelectRow({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: Array<string | SelectOption>; value: string }) {
+  const normalized = normalizeSelectOptions(options, value)
+  return <label className="editable-row"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{normalized.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
 }
 
-function SelectRow({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: string[]; value: string }) {
-  const values = options.includes(value) ? options : [value, ...options].filter(Boolean)
-  return <label className="editable-row"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{values.map((option) => <option value={option} key={option}>{option}</option>)}</select></label>
-}
-
-function ToggleRow({ label, onChange, value }: { label: string; onChange: (value: boolean) => void; value: boolean }) {
-  return <div className="editable-row"><span>{label}</span><button className={`toggle-button ${value ? "on" : ""}`} onClick={() => onChange(!value)}>{value ? "On" : "Off"}</button></div>
+function ToggleRow({ copy, label, onChange, value }: { copy: DesktopCopy; label: string; onChange: (value: boolean) => void; value: boolean }) {
+  return <div className="editable-row"><span>{label}</span><button className={`toggle-button ${value ? "on" : ""}`} onClick={() => onChange(!value)}>{value ? copy.on : copy.off}</button></div>
 }
 
 function NumberRow({ fallback, label, onCommit, value }: { fallback: number; label: string; onCommit: (value: number | undefined) => void; value?: number }) {
@@ -1181,7 +1691,7 @@ function ProviderSetupModal({ onClose, onConfigured, providerOptions, readiness,
   const [provider, setProvider] = useState(options.includes(settings.provider) ? settings.provider : options[0])
   const [apiKey, setApiKey] = useState("")
   const [baseUrl, setBaseUrl] = useState("")
-  const [model, setModel] = useState(settings.model ?? "")
+  const [model, setModel] = useState(settings.model ?? defaultSetupModel(provider))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState("")
   const requirements = providerSetupRequirements(provider, readiness)
@@ -1237,7 +1747,9 @@ function ProviderSetupModal({ onClose, onConfigured, providerOptions, readiness,
       </label>}
       <label className="setup-field">
         <span>Model</span>
-        <input value={model} onChange={(event) => setModel(event.target.value)} placeholder={defaultSetupModel(provider)} />
+        <select value={model} onChange={(event) => setModel(event.target.value)}>
+          {modelSelectOptions(provider, model).map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
+        </select>
       </label>
       <small>Saved locally to ~/.easycode/.env and reused by the CLI.</small>
       {error && <p className="setup-error">{error}</p>}
@@ -1286,7 +1798,7 @@ function PlanModal({ onClose, onError, prompt }: { prompt: PlanPrompt; onClose: 
       setSubmitting(false)
     }
   }
-  return <div className="modal"><section><h2>Approve plan</h2><div className="plan-preview"><MarkdownText text={prompt.markdown} /></div><textarea className="plan-reply" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Describe plan changes, or enter a new prompt." />{error && <p className="setup-error">{error}</p>}<div className="modal-actions"><button onClick={() => reply("reject")} className="secondary" disabled={submitting}>Reject</button><button onClick={() => reply("new_prompt")} className="secondary" disabled={!hasDraft || submitting}>New prompt</button><button onClick={() => reply("edit")} className="secondary" disabled={!hasDraft || submitting}>Edit plan</button><button onClick={() => reply("approve")} disabled={submitting}>Approve</button></div></section></div>
+  return <div className="modal"><section><h2>Approve plan</h2><div className="plan-preview"><MarkdownText onOpenFile={noopOpenFile} text={displayPlanMarkdown(prompt.markdown)} /></div><textarea className="plan-reply" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Describe plan changes, or enter a new prompt." />{error && <p className="setup-error">{error}</p>}<div className="modal-actions"><button onClick={() => reply("reject")} className="secondary" disabled={submitting}>Reject</button><button onClick={() => reply("new_prompt")} className="secondary" disabled={!hasDraft || submitting}>New prompt</button><button onClick={() => reply("edit")} className="secondary" disabled={!hasDraft || submitting}>Edit plan</button><button onClick={() => reply("approve")} disabled={submitting}>Approve</button></div></section></div>
 }
 
 function currentTime() {
@@ -1302,7 +1814,15 @@ function elapsed(startedAt: number, now = Date.now()) {
 function displayRunStatus(status: RunStatus) {
   if (status === "waiting_plan") return "Waiting for plan"
   if (status === "waiting_permission") return "Waiting for permission"
+  if (status === "blocked") return "Blocked"
   return status[0].toUpperCase() + status.slice(1)
+}
+
+function progressDot(status: RunStatus, running: boolean) {
+  if (running) return "blue"
+  if (status === "failed") return "red"
+  if (status === "blocked") return "orange"
+  return "green"
 }
 
 function providerReadinessLabel(readiness: DesktopProviderReadiness | undefined) {
@@ -1317,33 +1837,6 @@ function providerReadinessDetail(readiness: DesktopProviderReadiness | undefined
   if (!readiness) return "Not checked yet"
   if (readiness.missingEnv.length > 0) return `Missing ${readiness.missingEnv.join(", ")}`
   return readiness.reason ?? readiness.model
-}
-
-function sidecarStatusLabel(status: DesktopSidecarStatus | undefined) {
-  if (!status) return "Unknown"
-  if (status.running) return "Running"
-  if (status.exists === false) return "Missing"
-  if (status.exists === undefined) return "PATH"
-  return "Ready"
-}
-
-function sidecarStatusDetail(status: DesktopSidecarStatus | undefined) {
-  if (!status) return "Not checked yet"
-  if (status.exists === false) return status.path
-  if (status.exists === undefined) return `Command lookup: ${status.path}`
-  return status.path
-}
-
-function sidecarStatusTone(status: DesktopSidecarStatus | undefined) {
-  if (!status) return undefined
-  if (status.running || status.exists === true || status.exists === undefined) return "ok"
-  return "warn"
-}
-
-function sidecarStatusDot(status: DesktopSidecarStatus | undefined) {
-  if (status?.running) return "green"
-  if (status?.exists === false) return "red"
-  return "blue"
 }
 
 function providerReadinessError(readiness: DesktopProviderReadiness) {
@@ -1381,10 +1874,38 @@ function providerSetupStatus(provider: string, readiness: DesktopProviderReadine
   }
 }
 
+function normalizeSelectOptions(options: Array<string | SelectOption>, value: string) {
+  const normalized = options.map((option) => typeof option === "string" ? { value: option, label: option } : option).filter((option) => option.value)
+  if (value && !normalized.some((option) => option.value === value)) return [{ value, label: value }, ...normalized]
+  return normalized
+}
+
+function languageSelectOptions(copy: DesktopCopy): SelectOption[] {
+  const languages = ["en", "zh", "ja", "fr", "ko", "de"]
+  return languages.map((value) => ({ value, label: copy.languageName(value) }))
+}
+
+function effortSelectOptions(copy: DesktopCopy): SelectOption[] {
+  return [
+    { value: "low", label: copy.effortLow },
+    { value: "medium", label: copy.effortMedium },
+    { value: "high", label: copy.effortHigh },
+    { value: "max", label: copy.effortMax },
+  ]
+}
+
+function modelSelectOptions(provider: string, selected?: string): SelectOption[] {
+  return normalizeSelectOptions(providerModelOptions(provider), selected ?? defaultSetupModel(provider))
+}
+
+function providerModelOptions(provider: string) {
+  if (provider === "openai") return ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+  if (provider === "openai-compatible") return ["openai-compatible"]
+  return ["deepseek-v4-pro", "deepseek-v4-flash"]
+}
+
 function defaultSetupModel(provider: string) {
-  if (provider === "openai") return "gpt-5.5"
-  if (provider === "openai-compatible") return "openai-compatible"
-  return "deepseek-v4-pro"
+  return providerModelOptions(provider)[0] ?? "deepseek-v4-pro"
 }
 
 function isAttachmentAction(action: Extract<DesktopSlashCommandResult, { handled: true }>["action"]): action is AttachmentAction {
@@ -1399,23 +1920,45 @@ function aheadBehind(status: DesktopWorkspaceStatus | undefined) {
   return parts.join(", ") || undefined
 }
 
-function relativeTime(timestamp: number) {
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
-  if (seconds < 60) return `${seconds}s`
-  const minutes = Math.floor(seconds / 60)
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 24) return `${hours}h`
-  return `${Math.floor(hours / 24)}d`
-}
-
 function workspaceDisplayName(root: string) {
   return root.split(/[\\/]/).filter(Boolean).at(-1) || root
 }
 
 function sessionTitle(session: DesktopSessionSummary) {
-  const title = (session.title || session.id).trim()
-  return truncateSessionTitle(title)
+  return truncateSessionTitle(safeSessionTitle(session.title || session.id))
+}
+
+function fullSessionTitle(session: DesktopSessionSummary) {
+  return safeSessionTitle(session.title || session.id)
+}
+
+function firstDisplayUserTitle(items: ChatItem[]) {
+  for (const item of items) {
+    if (item.kind !== "user") continue
+    if (isInternalGoalPrompt(item.text)) continue
+    const text = item.text.replace(/\s+/g, " ").trim()
+    if (text) return text
+  }
+  return undefined
+}
+
+function isInternalGoalPrompt(text: string) {
+  return Boolean(internalGoalObjective(text))
+}
+
+function internalGoalObjective(text: string) {
+  const compact = text.replace(/\s+/g, " ").trim()
+  if (!compact.startsWith("Goal objective:")) return undefined
+  const match = compact.match(/^Goal objective:\s*(.*?)\s+Goal iteration:\s*\d+\s+Definition reason:/i)
+  if (match?.[1]) return match[1].trim()
+  const fallback = compact.slice("Goal objective:".length).split("Goal iteration:")[0]?.trim()
+  return fallback || undefined
+}
+
+function safeSessionTitle(title: string) {
+  const text = title.replace(/\s+/g, " ").trim()
+  if (!isInternalGoalPrompt(text)) return text
+  return internalGoalObjective(text) || "Goal"
 }
 
 function splitReasoningBlocks(text: string) {
@@ -1455,17 +1998,78 @@ function reasoningPreview(text: string) {
   return Array.from(compact).length > 54 ? `${Array.from(compact).slice(0, 54).join("")}...` : compact
 }
 
+function reasoningBlockCount(text: string) {
+  return splitReasoningBlocks(text).filter((part) => part.kind === "reasoning").length
+}
+
+function activitySummary(copy: DesktopCopy, reasoningCount: number, toolCallCount: number) {
+  const parts = []
+  if (reasoningCount > 0) parts.push(copy.reasoningCount(reasoningCount))
+  if (toolCallCount > 0) parts.push(copy.toolCallCount(toolCallCount))
+  return parts.join(" · ") || copy.details
+}
+
+function activityLatestLabel(parts: AssistantTurnPart[]) {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index]
+    if (part.kind === "tools") return part.tools[part.tools.length - 1]?.title ?? "tools"
+    const preview = reasoningPreview(part.item.text)
+    if (preview) return preview
+  }
+  return "details"
+}
+
+function assistantOutputText(parts: AssistantRenderPart[]) {
+  return parts.flatMap((part) => {
+    if (part.kind === "activity" || part.kind === "tools") return []
+    return splitReasoningBlocks(part.item.text)
+      .filter((block) => block.kind === "markdown")
+      .map((block) => block.text.trim())
+      .filter(Boolean)
+  }).join("\n\n").trim()
+}
+
+async function copyToClipboard(text: string) {
+  const value = text.trim()
+  if (!value) return
+  await navigator.clipboard.writeText(value)
+}
+
+function workspaceFileTarget(text: string) {
+  const clean = text.trim().replace(/^["']|["']$/g, "")
+  if (!clean || clean.includes("\n") || clean.includes("://") || clean.startsWith("~")) return undefined
+  if (pathLooksUnsafe(clean)) return undefined
+  return /\.[A-Za-z0-9]{1,8}$/.test(clean) ? clean : undefined
+}
+
+function pathLooksUnsafe(text: string) {
+  return text.startsWith("/") || text.split(/[\\/]/).some((part) => part === "..")
+}
+
 function messagesToItems(messages: DesktopMessage[]): ChatItem[] {
   return messages.flatMap((message): ChatItem[] => {
     if (message.role === "tool") return message.parts.flatMap((part) => toolPartToItem(message, part))
     if (message.role !== "user" && message.role !== "assistant") return []
+    const text = message.parts.map(partToText).filter(Boolean).join("\n")
+    if (message.role === "assistant" && isSettingsStatusMessage(text)) return []
+    const displayText = message.role === "user" && isInternalGoalPrompt(text) ? safeSessionTitle(text) : text
     return [{
       id: message.id,
       kind: message.role,
-      text: message.parts.map(partToText).filter(Boolean).join("\n"),
+      text: displayText,
       time: new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     }]
   })
+}
+
+function isSettingsStatusMessage(text: string) {
+  const compact = text.replace(/\s+/g, " ").trim()
+  return /^(语言|Language)\s+/.test(compact)
+    || /^(模型|Model)\s+/.test(compact)
+    || /^(思考|Thinking)\s+/.test(compact)
+    || /^(推理强度|Effort)\s+/.test(compact)
+    || /^(Provider|提供商)\s+/.test(compact)
+    || /^(最大 Token|Max Tokens|最大步数|Max Steps)\s+/.test(compact)
 }
 
 function toolPartToItem(message: DesktopMessage, part: DesktopMessagePart): ChatItem[] {

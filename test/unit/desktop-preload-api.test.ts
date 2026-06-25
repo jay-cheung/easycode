@@ -42,6 +42,8 @@ const expectedInvokeCalls = [
   { method: "pickWorkspace", args: [], channel: "desktop:pickWorkspace", ipcArgs: [] },
   { method: "pickFiles", args: [], channel: "desktop:pickFiles", ipcArgs: [] },
   { method: "showWorkspace", args: ["/repo"], channel: "desktop:showWorkspace", ipcArgs: ["/repo"] },
+  { method: "openWorkspaceFile", args: ["report.md"], channel: "desktop:openWorkspaceFile", ipcArgs: ["report.md"] },
+  { method: "openWorkspaceChanges", args: [], channel: "desktop:openWorkspaceChanges", ipcArgs: [] },
   { method: "removeWorkspaceSidecar", args: ["/repo/old"], channel: "desktop:removeWorkspaceSidecar", ipcArgs: ["/repo/old"] },
   { method: "showSidecar", args: [], channel: "desktop:showSidecar", ipcArgs: [] },
   { method: "sidecarStatus", args: [], channel: "desktop:sidecarStatus", ipcArgs: [] },

@@ -9,9 +9,9 @@ import { configureProviderEnvironment, configureUiLanguageEnvironment, loadSetti
 import { withIpcErrorBoundary } from "./ipc-safe.js"
 import { SidecarBridge } from "./sidecar.js"
 import { WorkspaceSidecarRegistry } from "./sidecar-registry.js"
-import { workspacePathInfo } from "./workspace-path.js"
+import { resolveWorkspaceFilePath, workspacePathInfo } from "./workspace-path.js"
 import { configureDesktopAppIdentity } from "./app-identity.js"
-import type { DesktopPermissionMode, DesktopProviderSetup, DesktopRunMode, DesktopSettings } from "../shared/protocol.js"
+import type { DesktopPermissionMode, DesktopProviderSetup, DesktopRunMode, DesktopSettings, DesktopWorkspaceChange } from "../shared/protocol.js"
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url))
 const execFileAsync = promisify(execFile)
@@ -155,6 +155,21 @@ desktopHandle("desktop:showWorkspace", async (_event, workspaceRoot?: string) =>
   return { opened: !error }
 })
 
+desktopHandle("desktop:openWorkspaceFile", async (_event, filePath: string) => {
+  const settings = await loadSettings()
+  const absolutePath = await resolveWorkspaceFilePath(settings.workspaceRoot, filePath)
+  await shell.openExternal(vscodeFileUri(absolutePath))
+  return { opened: true, path: absolutePath }
+})
+
+desktopHandle("desktop:openWorkspaceChanges", async () => {
+  const settings = await loadSettings()
+  const workspaceRoot = path.resolve(settings.workspaceRoot)
+  await shell.openExternal(vscodeFileUri(workspaceRoot))
+  await shell.openExternal("vscode://command/workbench.view.scm")
+  return { opened: true, path: workspaceRoot }
+})
+
 desktopHandle("desktop:removeWorkspaceSidecar", (_event, workspaceRoot: string) => {
   return { stopped: activeSidecars().stopWorkspace(workspaceRoot, new Error("Workspace removed from desktop.")) }
 })
@@ -173,8 +188,12 @@ desktopHandle("desktop:sidecarStatus", () => activeSidecars().status())
 desktopHandle("desktop:workspaceStatus", async () => {
   const settings = await loadSettings()
   try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd: settings.workspaceRoot })
-    return parseGitStatus(stdout)
+    const [{ stdout }, diff, cachedDiff] = await Promise.all([
+      execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd: settings.workspaceRoot }),
+      execFileAsync("git", ["diff", "--numstat"], { cwd: settings.workspaceRoot }).catch(() => ({ stdout: "" })),
+      execFileAsync("git", ["diff", "--cached", "--numstat"], { cwd: settings.workspaceRoot }).catch(() => ({ stdout: "" })),
+    ])
+    return parseGitStatus(stdout, `${diff.stdout}\n${cachedDiff.stdout}`)
   } catch (error) {
     return {
       branch: "unknown",
@@ -182,6 +201,7 @@ desktopHandle("desktop:workspaceStatus", async () => {
       added: 0,
       deleted: 0,
       changedFiles: 0,
+      files: [],
       error: error instanceof Error ? error.message : String(error),
     }
   }
@@ -204,10 +224,12 @@ function activeSidecars() {
   return sidecars
 }
 
-function parseGitStatus(output: string) {
+function parseGitStatus(output: string, numstat = "") {
   const lines = output.trim().split("\n").filter(Boolean)
   const branchLine = lines.find((line) => line.startsWith("## "))
   const branchInfo = parseBranchLine(branchLine)
+  const stats = parseGitNumstat(numstat)
+  const files: DesktopWorkspaceChange[] = []
   let added = 0
   let deleted = 0
   let changedFiles = 0
@@ -215,6 +237,14 @@ function parseGitStatus(output: string) {
     if (line.startsWith("## ")) continue
     changedFiles += 1
     const status = line.slice(0, 2)
+    const filePath = normalizeGitStatusPath(line.slice(3).trim())
+    const fileStats = stats.get(filePath)
+    files.push({
+      path: filePath,
+      status: status.trim() || "M",
+      added: fileStats?.added ?? 0,
+      deleted: fileStats?.deleted ?? 0,
+    })
     if (status.includes("A") || status.includes("?")) added += 1
     if (status.includes("D")) deleted += 1
   }
@@ -224,9 +254,36 @@ function parseGitStatus(output: string) {
     added,
     deleted,
     changedFiles,
+    files,
     ahead: branchInfo.ahead,
     behind: branchInfo.behind,
   }
+}
+
+function parseGitNumstat(output: string) {
+  const stats = new Map<string, { added: number; deleted: number }>()
+  for (const line of output.trim().split("\n").filter(Boolean)) {
+    const [addedText, deletedText, ...pathParts] = line.split("\t")
+    const filePath = normalizeGitStatusPath(pathParts.join("\t").trim())
+    if (!filePath) continue
+    const previous = stats.get(filePath)
+    stats.set(filePath, {
+      added: (previous?.added ?? 0) + parseNumstatValue(addedText),
+      deleted: (previous?.deleted ?? 0) + parseNumstatValue(deletedText),
+    })
+  }
+  return stats
+}
+
+function parseNumstatValue(value: string | undefined) {
+  if (!value || value === "-") return 0
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : 0
+}
+
+function normalizeGitStatusPath(filePath: string) {
+  const renamed = filePath.split(" -> ").at(-1) ?? filePath
+  return renamed.replace(/^"|"$/g, "")
 }
 
 function parseBranchLine(line: string | undefined) {
@@ -241,4 +298,8 @@ function parseBranchLine(line: string | undefined) {
     ...(ahead ? { ahead: Number(ahead) } : {}),
     ...(behind ? { behind: Number(behind) } : {}),
   }
+}
+
+function vscodeFileUri(filePath: string) {
+  return `vscode://file${path.resolve(filePath).split(path.sep).map(encodeURIComponent).join("/")}`
 }

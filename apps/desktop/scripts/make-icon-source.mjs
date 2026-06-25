@@ -15,19 +15,10 @@ writeFileSync(output, encodeRgbaPng(size, size, resizeRgba({ width: canvasSize, 
 
 function drawIcon() {
   const s = scale
-  drawRoundedRect(116 * s, 110 * s, 792 * s, 792 * s, 188 * s, gradientFill("#16243f", "#3453b3"), 1)
-  drawRoundedRectStroke(138 * s, 132 * s, 748 * s, 748 * s, 166 * s, 8 * s, [184, 200, 255, 60])
-  drawRoundedRectStroke(166 * s, 160 * s, 692 * s, 692 * s, 140 * s, 4 * s, [255, 255, 255, 34])
-
-  drawLine(237 * s, 446 * s, 158 * s, 512 * s, 44 * s, [110, 224, 255, 255])
-  drawLine(158 * s, 512 * s, 237 * s, 578 * s, 44 * s, [110, 224, 255, 255])
-  drawLine(787 * s, 446 * s, 866 * s, 512 * s, 44 * s, [156, 166, 255, 255])
-  drawLine(866 * s, 512 * s, 787 * s, 578 * s, 44 * s, [156, 166, 255, 255])
-
-  drawGlyphE(342 * s, 346 * s, s)
-  drawGlyphC(565 * s, 346 * s, s)
-  drawRoundedRect(682 * s, 702 * s, 154 * s, 34 * s, 17 * s, [154, 166, 255, 245], 1)
-  drawRoundedRect(750 * s, 650 * s, 54 * s, 54 * s, 14 * s, [255, 255, 255, 240], 1)
+  drawRoundedRect(142 * s, 142 * s, 740 * s, 740 * s, 150 * s, gradientFill("#3157d8", "#2448c6"), 1)
+  drawRoundedRectStroke(164 * s, 164 * s, 696 * s, 696 * s, 130 * s, 5 * s, [255, 255, 255, 42])
+  drawGlyphE(286 * s, 342 * s, 1.08 * s)
+  drawGlyphC(540 * s, 342 * s, 1.08 * s)
 }
 
 function drawGlyphE(x, y, s) {

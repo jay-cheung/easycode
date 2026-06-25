@@ -1,6 +1,6 @@
 import type { DesktopGoalState, DesktopPlanStatusResult } from "../shared/protocol.js"
 
-export type DesktopRunStatus = "idle" | "running" | "waiting_plan" | "waiting_permission" | "done" | "failed" | "cancelled"
+export type DesktopRunStatus = "idle" | "running" | "waiting_plan" | "waiting_permission" | "done" | "failed" | "blocked" | "cancelled"
 
 export type GoalLifecycleEvent = {
   type: "goal"
@@ -38,13 +38,19 @@ export function planReplyPayload(action: PlanReplyAction, draft = ""): { action:
   return action === "edit" ? { action, text: `Revise the plan: ${text}` } : { action, text }
 }
 
+export function displayPlanMarkdown(markdown: string) {
+  const match = markdown.match(/<\s*proposed_plan\s*>([\s\S]*?)<\s*\/\s*proposed_plan\s*>/i)
+  if (match) return match[1].trim()
+  return markdown.replace(/<\s*\/?\s*proposed_plan\s*>/gi, "").trim()
+}
+
 export function goalAfterLifecycleEvent(current: DesktopGoalState | undefined, event: GoalLifecycleEvent) {
   if (event.phase === "cleared") return undefined
   return event.goal ?? current
 }
 
 export function runStatusForGoalPhase(phase: string): DesktopRunStatus {
-  if (phase === "blocked") return "failed"
+  if (phase === "blocked") return "blocked"
   if (phase === "paused") return "cancelled"
   if (phase === "completed") return "done"
   if (phase === "cleared") return "idle"
@@ -80,13 +86,15 @@ export function planStatusAfterControlResult(current: DesktopPlanStatusResult | 
 export function runStatusFromGoalControlResult(result: GoalControlResult, fallback: DesktopRunStatus): DesktopRunStatus {
   if (result.status === "cancelled") return "cancelled"
   if (result.status === "completed") return "done"
-  if (result.status === "failed" || result.status === "blocked") return "failed"
+  if (result.status === "blocked") return "blocked"
+  if (result.status === "failed") return "failed"
   return fallback
 }
 
 export function runStatusFromRunDone(status: string): DesktopRunStatus {
   if (status === "cancelled") return "cancelled"
-  if (status === "failed" || status === "blocked") return "failed"
+  if (status === "blocked") return "blocked"
+  if (status === "failed") return "failed"
   return "done"
 }
 

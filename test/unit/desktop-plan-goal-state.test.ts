@@ -9,7 +9,7 @@ describe("desktop plan and goal state", () => {
     expect(goalAfterLifecycleEvent(goal, { type: "goal", phase: "cleared" })).toBeUndefined()
     expect(runStatusForGoalPhase("planning")).toBe("running")
     expect(runStatusForGoalPhase("paused")).toBe("cancelled")
-    expect(runStatusForGoalPhase("blocked")).toBe("failed")
+    expect(runStatusForGoalPhase("blocked")).toBe("blocked")
     expect(runStatusForGoalPhase("completed")).toBe("done")
     expect(goalLifecycleSummary({ type: "goal", phase: "planning", goal })).toBe("Goal planning: ship goal UI")
   })
@@ -31,7 +31,7 @@ describe("desktop plan and goal state", () => {
     expect(goalAfterControlResult(goal, { text: "No active goal." })).toBeUndefined()
     expect(goalAfterControlResult(goal, { text: "Goal paused." })).toBe(goal)
     expect(runStatusFromGoalControlResult({ status: "completed" }, "running")).toBe("done")
-    expect(runStatusFromGoalControlResult({ status: "blocked" }, "running")).toBe("failed")
+    expect(runStatusFromGoalControlResult({ status: "blocked" }, "running")).toBe("blocked")
     expect(runStatusFromGoalControlResult({ status: "planning" }, "running")).toBe("running")
     expect(shouldReloadSessionAfterGoalControl({ status: "completed" })).toBe(true)
     expect(shouldReloadSessionAfterGoalControl({ text: "Goal paused." })).toBe(true)
@@ -82,7 +82,7 @@ describe("desktop plan and goal state", () => {
     expect(runStatusFromRunDone("completed")).toBe("done")
     expect(runStatusFromRunDone("cancelled")).toBe("cancelled")
     expect(runStatusFromRunDone("failed")).toBe("failed")
-    expect(runStatusFromRunDone("blocked")).toBe("failed")
+    expect(runStatusFromRunDone("blocked")).toBe("blocked")
   })
 
   test("clears blocking approval prompts after terminal run completion", () => {
