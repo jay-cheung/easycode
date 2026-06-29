@@ -53,7 +53,7 @@ export class SidecarService {
     switch (request.method) {
       case "initialize": return await this.initialize(request.params)
       case "listProviders": return { providers: listProviders(), currentProvider: this.settings.provider }
-      case "getProviderReadiness": return this.providerReadiness()
+      case "getProviderReadiness": return await this.providerReadiness()
       case "listSkills": return await this.listSkills()
       case "listSessions": return { sessions: await this.store().list(), currentSession: this.session }
       case "loadSession": return await this.loadSession(request.params)
@@ -114,7 +114,8 @@ export class SidecarService {
     return { ...deleted, currentSession: next }
   }
 
-  private providerReadiness() {
+  private async providerReadiness() {
+    await loadEnvFile(this.root)
     return diagnoseProviderReadiness(this.settings.provider, process.env, {
       model: this.settings.model,
       thinking: this.settings.thinking,

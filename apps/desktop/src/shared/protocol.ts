@@ -220,9 +220,9 @@ export type DesktopApi = {
   getProviderReadiness(): Promise<DesktopProviderReadiness>
   configureProvider(input: DesktopProviderSetup): Promise<DesktopProviderSetupResult>
   listSkills(): Promise<DesktopListSkillsResult>
-  listSessions(): Promise<DesktopListSessionsResult>
-  loadSession(session: string): Promise<DesktopLoadSessionResult>
-  deleteSession(session: string): Promise<DesktopDeleteSessionResult>
+  listSessions(workspaceRoot?: string): Promise<DesktopListSessionsResult>
+  loadSession(session: string, workspaceRoot?: string): Promise<DesktopLoadSessionResult>
+  deleteSession(session: string, workspaceRoot?: string): Promise<DesktopDeleteSessionResult>
   getGoalStatus(session?: string): Promise<DesktopGoalStatusResult>
   pauseGoal(session?: string): Promise<any>
   resumeGoal(session?: string): Promise<any>
@@ -239,11 +239,11 @@ export type DesktopApi = {
   showSidecar(): Promise<{ opened: boolean }>
   sidecarStatus(): Promise<DesktopSidecarStatus>
   workspaceStatus(): Promise<DesktopWorkspaceStatus>
-  executeSlashCommand(text: string, pendingImages?: number, pendingFiles?: number): Promise<DesktopSlashCommandResult>
-  runPrompt(text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[]): Promise<any>
-  cancelRun(): Promise<any>
-  replyPermission(requestId: string, reply: "once" | "always" | "reject"): Promise<any>
-  replyPlan(runId: string, action: "approve" | "reject" | "edit" | "new_prompt", text?: string): Promise<any>
+  executeSlashCommand(text: string, pendingImages?: number, pendingFiles?: number, workspaceRoot?: string): Promise<DesktopSlashCommandResult>
+  runPrompt(text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[], workspaceRoot?: string): Promise<any>
+  cancelRun(workspaceRoot?: string): Promise<any>
+  replyPermission(requestId: string, reply: "once" | "always" | "reject", workspaceRoot?: string): Promise<any>
+  replyPlan(runId: string, action: "approve" | "reject" | "edit" | "new_prompt", text?: string, workspaceRoot?: string): Promise<any>
   onSidecarEvent(listener: (frame: SidecarFrame) => void): () => void
 }
 

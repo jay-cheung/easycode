@@ -16,9 +16,9 @@ export function createDesktopApi(ipcRenderer: DesktopIpcRenderer): DesktopApi {
     getProviderReadiness: () => invoke<DesktopProviderReadiness>("sidecar:getProviderReadiness"),
     configureProvider: (input: DesktopProviderSetup) => invoke<DesktopProviderSetupResult>("desktop:configureProvider", input),
     listSkills: () => invoke<DesktopListSkillsResult>("sidecar:listSkills"),
-    listSessions: () => invoke<DesktopListSessionsResult>("sidecar:listSessions"),
-    loadSession: (session: string) => invoke("sidecar:loadSession", session),
-    deleteSession: (session: string) => invoke<DesktopDeleteSessionResult>("sidecar:deleteSession", session),
+    listSessions: (workspaceRoot?: string) => invoke<DesktopListSessionsResult>("sidecar:listSessions", ...optionalArg(workspaceRoot)),
+    loadSession: (session: string, workspaceRoot?: string) => invoke("sidecar:loadSession", session, ...optionalArg(workspaceRoot)),
+    deleteSession: (session: string, workspaceRoot?: string) => invoke<DesktopDeleteSessionResult>("sidecar:deleteSession", session, ...optionalArg(workspaceRoot)),
     getGoalStatus: (session?: string) => invoke<DesktopGoalStatusResult>("sidecar:getGoalStatus", session),
     pauseGoal: (session?: string) => invoke("sidecar:pauseGoal", session),
     resumeGoal: (session?: string) => invoke("sidecar:resumeGoal", session),
@@ -35,15 +35,19 @@ export function createDesktopApi(ipcRenderer: DesktopIpcRenderer): DesktopApi {
     showSidecar: () => invoke<{ opened: boolean }>("desktop:showSidecar"),
     sidecarStatus: () => invoke<DesktopSidecarStatus>("desktop:sidecarStatus"),
     workspaceStatus: () => invoke<DesktopWorkspaceStatus>("desktop:workspaceStatus"),
-    executeSlashCommand: (text: string, pendingImages?: number, pendingFiles?: number) => invoke<DesktopSlashCommandResult>("sidecar:executeSlashCommand", text, pendingImages, pendingFiles),
-    runPrompt: (text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[]) => invoke("sidecar:runPrompt", text, mode, images, permissionMode, files),
-    cancelRun: () => invoke("sidecar:cancelRun"),
-    replyPermission: (requestId: string, reply: "once" | "always" | "reject") => invoke("sidecar:replyPermission", requestId, reply),
-    replyPlan: (runId: string, action: "approve" | "reject" | "edit" | "new_prompt", text?: string) => invoke("sidecar:replyPlan", runId, action, text),
+    executeSlashCommand: (text: string, pendingImages?: number, pendingFiles?: number, workspaceRoot?: string) => invoke<DesktopSlashCommandResult>("sidecar:executeSlashCommand", text, pendingImages, pendingFiles, ...optionalArg(workspaceRoot)),
+    runPrompt: (text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[], workspaceRoot?: string) => invoke("sidecar:runPrompt", text, mode, images, permissionMode, files, ...optionalArg(workspaceRoot)),
+    cancelRun: (workspaceRoot?: string) => invoke("sidecar:cancelRun", ...optionalArg(workspaceRoot)),
+    replyPermission: (requestId: string, reply: "once" | "always" | "reject", workspaceRoot?: string) => invoke("sidecar:replyPermission", requestId, reply, ...optionalArg(workspaceRoot)),
+    replyPlan: (runId: string, action: "approve" | "reject" | "edit" | "new_prompt", text?: string, workspaceRoot?: string) => invoke("sidecar:replyPlan", runId, action, text, ...optionalArg(workspaceRoot)),
     onSidecarEvent: (listener: (frame: SidecarFrame) => void) => {
       const wrapped = (_event: unknown, frame: SidecarFrame) => listener(frame)
       ipcRenderer.on("sidecar:event", wrapped)
       return () => ipcRenderer.off("sidecar:event", wrapped)
     },
   }
+}
+
+function optionalArg<T>(value: T | undefined): [] | [T] {
+  return value === undefined ? [] : [value]
 }

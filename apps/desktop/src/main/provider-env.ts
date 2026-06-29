@@ -36,6 +36,10 @@ export function providerDefaultsFromEnvText(text: string): ProviderEnvDefaults {
   }
 }
 
+export function envEntriesFromText(text: string) {
+  return parseEnvText(text)
+}
+
 export function mergeProviderEnvText(existing: string, entries: Record<string, string>) {
   const lines = existing.trim() ? existing.replace(/\s*$/, "").split(/\n/) : ["# easycode configuration"]
   const seen = new Set<string>()

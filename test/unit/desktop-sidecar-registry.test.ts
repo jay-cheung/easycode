@@ -87,6 +87,23 @@ describe("workspace sidecar registry", () => {
     expect(registry.activeWorkspaceKey()).toBe(workspaceKey("/repo/b"))
   })
 
+  test("can route requests to an inactive workspace bridge explicitly", async () => {
+    const created: FakeBridge[] = []
+    const registry = new WorkspaceSidecarRegistry<TestSettings>((settings) => {
+      const bridge = new FakeBridge(settings)
+      created.push(bridge)
+      return bridge
+    })
+
+    registry.configure({ workspaceRoot: "/repo/a", session: "default" })
+    registry.configure({ workspaceRoot: "/repo/b", session: "default" })
+
+    expect(await registry.requestWorkspace("/repo/a", "cancelRun")).toEqual({ workspaceRoot: "/repo/a", method: "cancelRun" })
+    expect(await registry.request("listSessions")).toEqual({ workspaceRoot: "/repo/b", method: "listSessions" })
+    expect(created[0].requests.map((request) => request.method)).toEqual(["cancelRun"])
+    expect(created[1].requests.map((request) => request.method)).toEqual(["listSessions"])
+  })
+
   test("stops existing workspace bridges when the configured sidecar path changes", () => {
     const created: FakeBridge[] = []
     const registry = new WorkspaceSidecarRegistry<TestSettings>((settings) => {

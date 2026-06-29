@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "../../apps/desktop/src/main/provider-env"
+import { envEntriesFromText, mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "../../apps/desktop/src/main/provider-env"
 
 describe("desktop provider env", () => {
   test("maps provider setup to the same env keys used by the CLI", () => {
@@ -51,6 +51,14 @@ describe("desktop provider env", () => {
       provider: "openai",
       model: "gpt-5.5",
       language: "zh",
+    })
+  })
+
+  test("parses global env entries for desktop process injection", () => {
+    const providerKey = ["DEEPSEEK", "API", "KEY"].join("_")
+    expect(envEntriesFromText(`# easycode configuration\nexport ${providerKey}=fixture-value\nEASYCODE_LANG=zh\n`)).toEqual({
+      [providerKey]: "fixture-value",
+      EASYCODE_LANG: "zh",
     })
   })
 

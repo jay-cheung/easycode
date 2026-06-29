@@ -13,7 +13,7 @@ import { applyDirectDesktopSettings, reconcileDesktopSettingsFromSidecar, restor
 
 type ChatItem =
   | { id: string; kind: "user"; text: string; time: string }
-  | { id: string; kind: "assistant"; text: string; time: string }
+  | { id: string; kind: "assistant"; text: string; time: string; pending?: boolean }
   | { id: string; kind: "tool"; title: string; detail: string; status: "running" | "done"; open: boolean }
   | { id: string; kind: "status"; text: string }
 
@@ -30,8 +30,8 @@ type StreamEntry =
   | { id: string; kind: "assistantTurn"; time: string; parts: AssistantTurnPart[] }
 
 type PermissionMode = DesktopPermissionMode
-type PermissionPrompt = { requestId: string; title: string; detail: string }
-type PlanPrompt = { runId: string; markdown: string }
+type PermissionPrompt = { requestId: string; title: string; detail: string; workspaceRoot?: string }
+type PlanPrompt = { runId: string; markdown: string; workspaceRoot?: string }
 type Attachment = DesktopAttachment
 type MarkdownFileOpenHandler = (filePath: string) => Promise<void>
 type DesktopCopy = ReturnType<typeof desktopCopy>
@@ -53,7 +53,7 @@ export function App() {
   const [permission, setPermission] = useState<PermissionPrompt>()
   const [plan, setPlan] = useState<PlanPrompt>()
   const [attachments, setAttachments] = useState<Attachment[]>([])
-  const [sessions, setSessions] = useState<DesktopSessionSummary[]>([])
+  const [sessionsByWorkspace, setSessionsByWorkspace] = useState<Record<string, DesktopSessionSummary[]>>({})
   const [draftSession, setDraftSession] = useState(false)
   const [draftSessionId, setDraftSessionId] = useState<string>()
   const [draftSessionTitle, setDraftSessionTitle] = useState("")
@@ -73,6 +73,8 @@ export function App() {
   const runningRef = useRef(false)
   const draftSessionRef = useRef(false)
   const queuedInputsRef = useRef<QueuedRunInput[]>([])
+  const activeRunWorkspaceRef = useRef<string | undefined>(undefined)
+  const workspaceSwitchingRef = useRef(false)
   const activePermissionRef = useRef<PermissionRunSnapshot>(permissionRunSnapshot(runMode, permissionMode))
 
   useEffect(() => {
@@ -146,6 +148,7 @@ export function App() {
     return workspaceDisplayName(root)
   }, [settings?.workspaceRoot])
   const visibleWorkspaceRoots = workspaceRoots(settings?.workspaceRoot, settings?.recentWorkspaces)
+  const sessions = settings?.workspaceRoot ? sessionsByWorkspace[settings.workspaceRoot] ?? [] : []
   const currentSession = sessions.find((session) => session.id === settings?.session)
   const fullPromptTitle = useMemo(() => firstDisplayUserTitle(items), [items])
   const streamEntries = useMemo(() => groupStreamItems(items), [items])
@@ -183,14 +186,14 @@ export function App() {
       const nextPermission = permissionUiAfterRequest(activePermissionRef.current.effectiveMode, event.request)
       if (nextPermission.prompt) {
         updateProgress({ ...progressRef.current, status: nextPermission.progressStatus, summary: nextPermission.progressSummary })
-        setPermission(nextPermission.prompt)
+        setPermission(nextPermission.prompt ? { ...nextPermission.prompt, workspaceRoot: settingsRef.current?.workspaceRoot } : undefined)
       } else {
         appendStatus(nextPermission.statusText)
-        void window.easycode.replyPermission(event.request.id, nextPermission.autoReply).catch((error) => reportUiError(error, "Permission auto-reply failed."))
+        void window.easycode.replyPermission(event.request.id, nextPermission.autoReply, settingsRef.current?.workspaceRoot).catch((error) => reportUiError(error, "Permission auto-reply failed."))
       }
     } else if (event.type === "plan_approval_request") {
       updateProgress({ ...progressRef.current, status: "waiting_plan", startedAt: progressRef.current.startedAt ?? Date.now(), summary: "Plan is waiting for approval." })
-      setPlan({ runId: frame.runId!, markdown: event.markdown })
+      setPlan({ runId: frame.runId!, markdown: event.markdown, workspaceRoot: settingsRef.current?.workspaceRoot })
     } else if (event.type === "provider_metrics") {
       updateProgress({ ...progressRef.current, status: "running", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.metrics.provider} metrics received.`, provider: event.metrics.provider, model: event.metrics.model })
     } else if (event.type === "failure") {
@@ -198,6 +201,7 @@ export function App() {
     } else if (event.type === "run_done") {
       setRunning(false)
       runningRef.current = false
+      activeRunWorkspaceRef.current = undefined
       if (shouldClearBlockingPromptsAfterRunDone(event.status)) {
         setPermission((current) => permissionPromptAfterRunDone(current, event.status))
         setPlan(undefined)
@@ -213,8 +217,10 @@ export function App() {
     } else if (event.type === "fatal") {
       setRunning(false)
       runningRef.current = false
+      activeRunWorkspaceRef.current = undefined
       reportUiError(event.message)
     } else if (event.type === "session_changed") {
+      if (workspaceSwitchingRef.current) return
       void syncSidecarSession(event.session).catch((error) => reportUiError(error, "Session sync failed."))
     }
   }
@@ -241,8 +247,9 @@ export function App() {
       return
     }
     if (text.startsWith("/")) {
+      const workspaceRoot = settingsRef.current?.workspaceRoot
       try {
-        const slash = await window.easycode.executeSlashCommand(text, queuedRunInput?.images.length ?? pendingImageCount(), queuedRunInput?.files.length ?? pendingFileCount()) as DesktopSlashCommandResult
+        const slash = await window.easycode.executeSlashCommand(text, queuedRunInput?.images.length ?? pendingImageCount(), queuedRunInput?.files.length ?? pendingFileCount(), workspaceRoot) as DesktopSlashCommandResult
         if (slash.handled) {
           if (source === "composer") setPrompt("")
           await applySlashResult(text, slash)
@@ -274,21 +281,25 @@ export function App() {
       updateProgress({ ...progressRef.current, status: "failed", summary: message })
       return
     }
+    const runWorkspaceRoot = settingsRef.current?.workspaceRoot
     setPrompt("")
     setAttachments([])
     setRunning(true)
     runningRef.current = true
+    activeRunWorkspaceRef.current = runWorkspaceRoot
     updateProgress({ status: "running", startedAt: Date.now(), summary: "Preparing run context.", toolCalls: 0, toolResults: 0 })
-    setItems((current) => [...current, { id: crypto.randomUUID(), kind: "user", text, time: currentTime() }, { id: crypto.randomUUID(), kind: "assistant", text: "", time: currentTime() }])
+    setItems((current) => [...current, { id: crypto.randomUUID(), kind: "user", text, time: currentTime() }, { id: crypto.randomUUID(), kind: "assistant", text: copy.waitingForModel, time: currentTime(), pending: true }])
     try {
       const effectiveRunMode = modeOverride ?? runMode
       const permissionSnapshot = permissionRunSnapshot(effectiveRunMode, queuedRunInput?.permissionMode ?? permissionMode)
       activePermissionRef.current = permissionSnapshot
-      await window.easycode.runPrompt(text, effectiveRunMode, images, permissionSnapshot.sidecarMode, files)
+      await window.easycode.runPrompt(text, effectiveRunMode, images, permissionSnapshot.sidecarMode, files, runWorkspaceRoot)
     } catch (error) {
+      if (settingsRef.current?.workspaceRoot !== runWorkspaceRoot) return
       appendStatus(error instanceof Error ? error.message : String(error))
       setRunning(false)
       runningRef.current = false
+      activeRunWorkspaceRef.current = undefined
       updateProgress({ ...progressRef.current, status: "failed", summary: error instanceof Error ? error.message : String(error) })
       window.setTimeout(() => flushQueuedInput(), 0)
     }
@@ -298,7 +309,7 @@ export function App() {
     if (!running) return
     updateProgress({ ...progressRef.current, status: "cancelled", summary: "Cancelling run..." })
     try {
-      const result = await window.easycode.cancelRun() as { cancelled?: boolean }
+      const result = await window.easycode.cancelRun(activeRunWorkspaceRef.current ?? settingsRef.current?.workspaceRoot) as { cancelled?: boolean }
       if (!result.cancelled) updateProgress({ ...progressRef.current, status: "idle", summary: "No active run to cancel." })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -340,7 +351,7 @@ export function App() {
 
   const applySettingsCommand = async (commandText: string, fallback?: Partial<DesktopSettings>) => {
     try {
-      const result = await window.easycode.executeSlashCommand(commandText, pendingImageCount(), pendingFileCount()) as DesktopSlashCommandResult
+      const result = await window.easycode.executeSlashCommand(commandText, pendingImageCount(), pendingFileCount(), settingsRef.current?.workspaceRoot) as DesktopSlashCommandResult
       if (!result.handled) {
         if (fallback) await updateSettings(fallback)
         return
@@ -428,9 +439,9 @@ export function App() {
   }
 
   const refreshSessions = async () => {
-    const result = await window.easycode.listSessions() as DesktopListSessionsResult
-    setSessions((current) => mergeSessionListPreservingOrder(current, result.sessions))
-    await syncSidecarSession(result.currentSession)
+    const workspaceRoot = settingsRef.current?.workspaceRoot
+    const result = await window.easycode.listSessions(workspaceRoot) as DesktopListSessionsResult
+    setWorkspaceSessions(workspaceRoot, (current) => mergeSessionListPreservingOrder(current, result.sessions))
   }
 
   const restoreStartupSelection = async (settings: DesktopSettings) => {
@@ -443,12 +454,12 @@ export function App() {
       await window.easycode.initialize()
     }
 
-    const listed = await window.easycode.listSessions() as DesktopListSessionsResult
+    const listed = await window.easycode.listSessions(next.workspaceRoot) as DesktopListSessionsResult
     const session = resolveStartupSession(listed.sessions, remembered, next.workspaceRoot, listed.currentSession || next.session)
-    setSessions((current) => mergeSessionListPreservingOrder(current, listed.sessions))
+    setWorkspaceSessions(next.workspaceRoot, (current) => mergeSessionListPreservingOrder(current, listed.sessions))
     if (!session) return next
 
-    const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
+    const loaded = await window.easycode.loadSession(session, next.workspaceRoot) as DesktopLoadSessionResult
     const restored = await restoreLoadedSessionSettings(window.easycode, session, loaded.settings)
     setSessionItems(messagesToItems(loaded.messages))
     rememberSessionSelection(restored.workspaceRoot, session)
@@ -482,7 +493,7 @@ export function App() {
     if (running) return
     if (draftSession && session === draftSessionId) return
     try {
-      const switched = await window.easycode.executeSlashCommand(sessionSwitchSlashCommand(session), pendingImageCount(), pendingFileCount()) as DesktopSlashCommandResult
+      const switched = await window.easycode.executeSlashCommand(sessionSwitchSlashCommand(session), pendingImageCount(), pendingFileCount(), settingsRef.current?.workspaceRoot) as DesktopSlashCommandResult
       if (!switched.handled) throw new Error(`Session switch was not handled: ${session}`)
       await loadSessionIntoUi(switched.session ?? session, `Loaded session ${switched.session ?? session}.`)
     } catch (error) {
@@ -492,7 +503,7 @@ export function App() {
   }
 
   const loadSessionIntoUi = async (session: string, summary: string) => {
-    const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
+    const loaded = await window.easycode.loadSession(session, settingsRef.current?.workspaceRoot) as DesktopLoadSessionResult
     setDraftSession(false)
     setDraftSessionId(undefined)
     setDraftSessionTitle("")
@@ -508,7 +519,7 @@ export function App() {
   const syncSidecarSession = async (session: string) => {
     const current = settingsRef.current
     if (!current || current.session === session) return
-    const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
+    const loaded = await window.easycode.loadSession(session, current.workspaceRoot) as DesktopLoadSessionResult
     const next = await window.easycode.updateSettings({ ...loaded.settings, session })
     setSettings(next)
     settingsRef.current = next
@@ -524,7 +535,7 @@ export function App() {
 
   const syncCurrentSessionMessages = async (session = settingsRef.current?.session, options: { preserveVisible?: boolean } = {}) => {
     if (!session) return
-    const loaded = await window.easycode.loadSession(session) as DesktopLoadSessionResult
+    const loaded = await window.easycode.loadSession(session, settingsRef.current?.workspaceRoot) as DesktopLoadSessionResult
     const restored = messagesToItems(loaded.messages)
     if (options.preserveVisible) {
       setItems((current) => current.length > 0 ? current : restored)
@@ -537,10 +548,10 @@ export function App() {
     if (running) return
     const session = createDraftSessionId()
     try {
-      const switched = await window.easycode.executeSlashCommand(sessionSwitchSlashCommand(session), 0, 0) as DesktopSlashCommandResult
+      const switched = await window.easycode.executeSlashCommand(sessionSwitchSlashCommand(session), 0, 0, settingsRef.current?.workspaceRoot) as DesktopSlashCommandResult
       if (!switched.handled) throw new Error(`Session create was not handled: ${session}`)
       const createdSession = switched.session ?? session
-      const loaded = await window.easycode.loadSession(createdSession) as DesktopLoadSessionResult
+      const loaded = await window.easycode.loadSession(createdSession, settingsRef.current?.workspaceRoot) as DesktopLoadSessionResult
       const restored = await restoreLoadedSessionSettings(window.easycode, createdSession, loaded.settings)
       setSettings(restored)
       settingsRef.current = restored
@@ -549,7 +560,7 @@ export function App() {
       setDraftSessionId(createdSession)
       setDraftSessionTitle("")
       rememberSessionSelection(restored.workspaceRoot, createdSession)
-      setSessions((current) => upsertSessionPreviewState(draftSessionId ? removeSessionPreview(current, draftSessionId) : current, createdSession, "New Chat"))
+      setWorkspaceSessions(restored.workspaceRoot, (current) => upsertSessionPreviewState(draftSessionId ? removeSessionPreview(current, draftSessionId) : current, createdSession, "New Chat"))
       setSessionItems([])
       setAttachments([])
       updateProgress({ status: "idle", summary: "New chat ready.", toolCalls: 0, toolResults: 0 })
@@ -563,7 +574,7 @@ export function App() {
   const deleteSession = async (session: string) => {
     if (running) return
     if (draftSession && session === draftSessionId) {
-      setSessions((current) => removeSessionPreview(current, session))
+      setWorkspaceSessions(settings?.workspaceRoot, (current) => removeSessionPreview(current, session))
       setDraftSession(false)
       setDraftSessionId(undefined)
       setDraftSessionTitle("")
@@ -572,7 +583,7 @@ export function App() {
       return
     }
     try {
-      const result = await window.easycode.deleteSession(session) as DesktopDeleteSessionResult
+      const result = await window.easycode.deleteSession(session, settingsRef.current?.workspaceRoot) as DesktopDeleteSessionResult
       if (session === settings?.session) {
         if (result.currentSession) await selectSession(result.currentSession)
         else await newSession()
@@ -587,23 +598,33 @@ export function App() {
 
   const selectWorkspace = async (workspaceRoot: string) => {
     if (workspaceRoot === settings?.workspaceRoot) return
+    workspaceSwitchingRef.current = true
     try {
       const patch = workspaceSwitchPatch(workspaceRoot)
       if (shouldDetachActiveRunForWorkspaceSwitch(settings?.workspaceRoot, workspaceRoot, runningRef.current)) {
         setRunning(false)
         runningRef.current = false
+        activeRunWorkspaceRef.current = undefined
         setQueuedInputs([])
+        setPermission(undefined)
+        setPlan(undefined)
       }
       setDraftSession(false)
       setDraftSessionId(undefined)
       setDraftSessionTitle("")
       const next = await window.easycode.updateSettings(patch)
       setSettings(next)
+      settingsRef.current = next
       await window.easycode.initialize()
       setAttachments([])
-      await loadSessionIntoUi(patch.session, `Opened workspace ${workspaceRoot}.`)
+      const listed = await window.easycode.listSessions(next.workspaceRoot) as DesktopListSessionsResult
+      setWorkspaceSessions(next.workspaceRoot, (current) => mergeSessionListPreservingOrder(current, listed.sessions))
+      const session = resolveStartupSession(listed.sessions, readDesktopSessionSelection(), next.workspaceRoot, listed.sessions[0]?.id ?? listed.currentSession ?? patch.session)
+      await loadSessionIntoUi(session, `Opened workspace ${workspaceRoot}.`)
     } catch (error) {
       reportUiError(error, "Workspace open failed.")
+    } finally {
+      workspaceSwitchingRef.current = false
     }
   }
 
@@ -666,7 +687,7 @@ export function App() {
         updateProgress({ ...progressRef.current, status: "idle", summary: text })
       }
       for (const command of planned.commands) {
-        const result = await window.easycode.executeSlashCommand(command, pendingImageCount(), pendingFileCount()) as DesktopSlashCommandResult
+        const result = await window.easycode.executeSlashCommand(command, pendingImageCount(), pendingFileCount(), settingsRef.current?.workspaceRoot) as DesktopSlashCommandResult
         if (result.handled) applyAttachmentSlashResult(result)
       }
     } catch (error) {
@@ -695,7 +716,7 @@ export function App() {
     const filePaths = attachments.filter((file) => file.kind === "file").map((file) => file.path)
     try {
       for (const command of commands) {
-        const result = await window.easycode.executeSlashCommand(command, pendingImageCount(), pendingFileCount()) as DesktopSlashCommandResult
+        const result = await window.easycode.executeSlashCommand(command, pendingImageCount(), pendingFileCount(), settingsRef.current?.workspaceRoot) as DesktopSlashCommandResult
         if (result.handled) applyAttachmentSlashResult(result)
       }
       if (filePaths.length > 0) setPrompt((text) => removeFileRefs(text, filePaths))
@@ -762,7 +783,6 @@ export function App() {
   return (
     <main className={`shell ${contextRailOpen ? "" : "rail-collapsed"}`}>
       <aside className="sidebar">
-        <div className="brand-row"><div className="brand-mark">EC</div></div>
         <SidebarGroup title={copy.workspaces} action="+" onAction={addWorkspace}>
           <div className="workspace-list">
             {visibleWorkspaceRoots.map((root) => {
@@ -805,49 +825,46 @@ export function App() {
             <h1 title={activeSessionTitle}>{activeSessionTitle}</h1>
           </div>
           <div className="top-actions">
-            <button className="topbar-settings" onClick={() => setContextRailOpen(true)} aria-label={copy.showSettings} title={copy.showSettings}>⚙</button>
+            <button className="topbar-settings" onClick={() => setContextRailOpen((open) => !open)} aria-label={copy.showSettings} title={copy.showSettings}>⚙</button>
           </div>
         </header>
-
-        <div className="progress-dock">
-          <ProgressCard copy={copy} goal={goal} planStatus={planStatus} progress={progress} running={running} />
-        </div>
 
         <div className="stream" ref={streamRef}>
           {streamEntries.length === 0 && <EmptyState copy={copy} />}
           {streamEntries.map((entry) => entry.kind === "assistantTurn"
             ? <AssistantTurn copy={copy} key={entry.id} entry={entry} onOpenFile={openWorkspaceFileFromMessage} />
             : <Message copy={copy} key={entry.id} item={entry.item} onOpenFile={openWorkspaceFileFromMessage} />)}
-          <WorkspaceChangesBar copy={copy} planStatus={planStatus} status={workspaceStatus} onOpen={openWorkspaceChanges} />
         </div>
 
-        <Composer
-          attachments={attachments}
-          onClearAttachments={clearAttachments}
-          copy={copy}
-          onPickFiles={pickFiles}
-          onRemoveAttachment={removeAttachment}
-          permissionMode={permissionMode}
-          prompt={prompt}
-          providerReady={canStartProviderRun}
-          providerReadiness={providerReadiness}
-          runMode={runMode}
-          running={running}
-          settings={settings}
-          onCancelRun={cancelRun}
-          onChangeEffort={(effort) => applySettingsCommand(effortSettingsCommand(effort))}
-          onChangeModel={(model) => applySettingsCommand(modelSettingsCommand(model))}
-          setPermissionMode={setPermissionMode}
-          setPrompt={setPrompt}
-          setRunMode={setRunMode}
-          sendPrompt={sendPrompt}
-          queuedCount={queuedInputs.length}
-        />
+        <div className="composer-stack">
+          <WorkspaceChangesBar copy={copy} goal={goal} planStatus={planStatus} status={workspaceStatus} onOpen={openWorkspaceChanges} />
+          <Composer
+            attachments={attachments}
+            onClearAttachments={clearAttachments}
+            copy={copy}
+            onPickFiles={pickFiles}
+            onRemoveAttachment={removeAttachment}
+            permissionMode={permissionMode}
+            prompt={prompt}
+            providerReady={canStartProviderRun}
+            providerReadiness={providerReadiness}
+            runMode={runMode}
+            running={running}
+            settings={settings}
+            onCancelRun={cancelRun}
+            onChangeEffort={(effort) => applySettingsCommand(effortSettingsCommand(effort))}
+            onChangeModel={(model) => applySettingsCommand(modelSettingsCommand(model))}
+            setPermissionMode={setPermissionMode}
+            setPrompt={setPrompt}
+            setRunMode={setRunMode}
+            sendPrompt={sendPrompt}
+            queuedCount={queuedInputs.length}
+          />
+        </div>
       </section>
 
       <aside className={`context-rail ${contextRailOpen ? "open" : "collapsed"}`}>
         {contextRailOpen && <>
-          <div className="rail-header"><strong>{copy.settings}</strong><button onClick={() => setContextRailOpen(false)}>{copy.hide}</button></div>
           <Panel title={copy.environment}>
             <InfoRow label={copy.workspace} value={workspaceName} detail={settings?.workspaceRoot || copy.notSelected} status="ok" />
             <SelectRow label={copy.provider} value={settings?.provider ?? "deepseek"} options={providerOptions} onChange={(provider) => applySettingsCommand(providerSettingsCommand(provider))} />
@@ -879,7 +896,11 @@ export function App() {
   function appendAssistant(text: string) {
     setItems((current) => {
       const last = current.at(-1)
-      if (last?.kind === "assistant") return current.map((item) => item.id === last.id && item.kind === "assistant" ? { ...item, text: item.text + text } : item)
+      if (last?.kind === "assistant") return current.map((item) => {
+        if (item.id !== last.id || item.kind !== "assistant") return item
+        if (item.pending) return { ...item, text, pending: false }
+        return { ...item, text: item.text + text }
+      })
       return [...current, { id: crypto.randomUUID(), kind: "assistant", text, time: currentTime() }]
     })
   }
@@ -943,12 +964,20 @@ export function App() {
   }
 
   function upsertSessionPreview(session: string, title: string) {
-    setSessions((current) => upsertSessionPreviewState(current, session, title))
+    setWorkspaceSessions(settingsRef.current?.workspaceRoot, (current) => upsertSessionPreviewState(current, session, title))
   }
 
   function rememberSessionSelection(workspaceRoot: string | undefined, session: string | undefined) {
     if (!workspaceRoot || !session) return
     writeDesktopSessionSelection({ workspaceRoot, session })
+  }
+
+  function setWorkspaceSessions(workspaceRoot: string | undefined, update: (current: DesktopSessionSummary[]) => DesktopSessionSummary[]) {
+    if (!workspaceRoot) return
+    setSessionsByWorkspace((current) => ({
+      ...current,
+      [workspaceRoot]: update(current[workspaceRoot] ?? []),
+    }))
   }
 
   function setSessionItems(next: ChatItem[]) {
@@ -1061,7 +1090,6 @@ function desktopCopy(language: string | undefined) {
       },
       runState: "运行状态",
       send: "发送",
-      settings: "设置",
       show: "展开",
       showAllSkills: (count: number) => `显示全部 ${count} 个技能`,
       showInFinder: "在 Finder 中显示",
@@ -1085,6 +1113,7 @@ function desktopCopy(language: string | undefined) {
       workspaceLower: "工作区",
       workingTree: "工作区状态",
       workspaces: "工作区",
+      waitingForModel: "正在准备上下文，等待模型响应...",
       you: "你",
     }
   }
@@ -1177,7 +1206,6 @@ function desktopCopy(language: string | undefined) {
     runStatus: displayRunStatus,
     runState: "Run State",
     send: "Send",
-    settings: "Settings",
     show: "Show",
     showAllSkills: (count: number) => `Show all ${count} skills`,
     showInFinder: "Show in Finder",
@@ -1201,6 +1229,7 @@ function desktopCopy(language: string | undefined) {
     workspaceLower: "workspace",
     workingTree: "Working Tree",
     workspaces: "Workspaces",
+    waitingForModel: "Preparing context and waiting for the model...",
     you: "You",
   }
 }
@@ -1308,73 +1337,6 @@ function SidebarGroup({ action, children, onAction, title }: { action?: string; 
   return <section className="sidebar-group"><div className="group-title"><span>{title}</span>{action && <button onClick={onAction}>{action}</button>}</div>{children}</section>
 }
 
-function ProgressCard({ copy, goal, planStatus, progress, running }: { copy: DesktopCopy; goal?: DesktopGoalState; planStatus?: DesktopPlanStatusResult; progress: Progress; running: boolean }) {
-  return <section className="progress-card">
-    <div className="progress-meta"><span><span className={`status-dot ${progressDot(progress.status, running)}`} />{copy.runStatus(progress.status)}</span><span>{progress.startedAt ? elapsed(progress.startedAt) : "00:00"}</span></div>
-    <div className="run-facts">
-      <span>{copy.providerFact(progress.provider ?? "-")}</span>
-      <span>{copy.modeFact(progress.mode ?? "-")}</span>
-      <span>{copy.toolsFact(progress.toolResults, progress.toolCalls)}</span>
-    </div>
-    {goal && <GoalProgress copy={copy} goal={goal} planStatus={planStatus} />}
-    {!goal && planStatus?.planId && <PlanProgress copy={copy} planStatus={planStatus} />}
-    <div className="progress-summary">{progress.summary}</div>
-  </section>
-}
-
-function GoalProgress({ copy, goal, planStatus }: { copy: DesktopCopy; goal: DesktopGoalState; planStatus?: DesktopPlanStatusResult }) {
-  return <div className="goal-progress">
-    <div className="goal-progress-summary">
-      <strong>{copy.goal}</strong>
-      <span>{goal.objective}</span>
-      <em>{copy.goalIteration(goal.status, goal.iteration)}</em>
-    </div>
-    <div className="goal-popover">
-      <strong>{goal.objective}</strong>
-      <div className="goal-meta-line">
-        <span>{goal.status}</span>
-        <span>{copy.iteration(goal.iteration)}</span>
-        {goal.complexity && <span>{goal.complexity}</span>}
-        {goal.activePlanId && <span>{goal.activePlanId}</span>}
-      </div>
-      {goal.firstSlice && <p>{goal.firstSlice}</p>}
-      <GoalList title={copy.acceptance} items={goal.acceptanceCriteria ?? []} />
-      <GoalList title={copy.checks} items={goal.completionChecks ?? []} />
-      {planStatus?.planId && <PlanProgress copy={copy} planStatus={planStatus} embedded />}
-      {goal.blocker && <p className="plan-blocker">{goal.blocker}</p>}
-    </div>
-  </div>
-}
-
-function GoalList({ items, title }: { items: string[]; title: string }) {
-  if (items.length === 0) return null
-  return <div className="goal-list"><small>{title}</small>{items.map((item, index) => <p key={`${title}-${index}`}>{item}</p>)}</div>
-}
-
-function PlanProgress({ copy, embedded = false, planStatus }: { copy: DesktopCopy; embedded?: boolean; planStatus: DesktopPlanStatusResult }) {
-  const snapshot = planProgressSnapshot(planStatus)
-
-  return <div className={`plan-progress ${embedded ? "embedded" : ""}`}>
-    <div className="plan-progress-summary">
-      <strong>{snapshot.currentIndex >= 0 ? copy.stepProgress(snapshot.currentIndex + 1, snapshot.total) : copy.planProgress(snapshot.completed, snapshot.total)}</strong>
-      <span>{snapshot.current?.goal ?? snapshot.title}</span>
-      <em>{snapshot.status}</em>
-    </div>
-    <div className="plan-popover">
-      <strong>{snapshot.title}</strong>
-      {snapshot.steps.map((step, index) => {
-        const status = snapshot.stepStatuses[step.id] ?? "pending"
-        return <div className={`plan-step ${status}`} key={step.id}>
-          <span>{index + 1}</span>
-          <p>{step.goal}</p>
-          <small>{status}</small>
-        </div>
-      })}
-      {planStatus.blocker && <p className="plan-blocker">{planStatus.blocker}</p>}
-    </div>
-  </div>
-}
-
 function planProgressSnapshot(planStatus: DesktopPlanStatusResult) {
   const plan = planStatus.plan?.plan
   const checkpoint = planStatus.plan?.checkpoint
@@ -1399,25 +1361,30 @@ function EmptyState({ copy }: { copy: DesktopCopy }) {
   return <section className="empty-state"><h2>{copy.noMessages}</h2><p>{copy.startSession}</p></section>
 }
 
-function WorkspaceChangesBar({ copy, onOpen, planStatus, status }: { copy: DesktopCopy; onOpen: () => void; planStatus?: DesktopPlanStatusResult; status?: DesktopWorkspaceStatus }) {
+function WorkspaceChangesBar({ copy, goal, onOpen, planStatus, status }: { copy: DesktopCopy; goal?: DesktopGoalState; onOpen: () => void; planStatus?: DesktopPlanStatusResult; status?: DesktopWorkspaceStatus }) {
   const plan = planStatus?.planId ? planProgressSnapshot(planStatus) : undefined
-  if (!status && !plan) return null
+  if (!status && !plan && !goal) return null
   const changedStatus = status && !status.clean ? status : undefined
   const stepNumber = plan ? Math.max(1, Math.min(plan.total || 1, plan.currentIndex >= 0 ? plan.currentIndex + 1 : plan.completed || 1)) : 0
   return <div className="workspace-changes-bar">
     <button className={changedStatus ? "changed" : "clean"} onClick={onOpen} title={copy.showGitChanges}>
+      {goal && <><span className="goal-inline-label">{copy.goal}</span><span className="goal-inline-objective">{goal.objective}</span><span className="status-separator">·</span></>}
       {plan && <><span className={`plan-inline-dot ${plan.status}`} /><span>{copy.stepProgress(stepNumber, plan.total || stepNumber)}</span><span className="status-separator">·</span></>}
       {status && <span>{status.clean ? copy.clean : copy.changedFiles(status.changedFiles)}</span>}
       {changedStatus && <><strong>+{changedStatus.added}</strong><em>-{changedStatus.deleted}</em></>}
     </button>
-    {plan && <div className="workspace-plan-popover">
-      {plan.steps.map((step, index) => {
+    {(goal || plan) && <div className="workspace-plan-popover">
+      {goal && <div className="status-goal-summary">
+        <strong>{goal.objective}</strong>
+        <span>{copy.goalIteration(goal.status, goal.iteration)}</span>
+      </div>}
+      {plan ? plan.steps.map((step, index) => {
         const status = plan.stepStatuses[step.id] ?? "pending"
         return <div className={`status-plan-step ${status}`} key={step.id}>
           <span>{status === "completed" ? "✓" : index === plan.currentIndex ? "" : index + 1}</span>
           <p>{step.goal}</p>
         </div>
-      })}
+      }) : <div className="status-plan-step pending"><span>·</span><p>{copy.noActivePlan}</p></div>}
     </div>}
   </div>
 }
@@ -1564,6 +1531,10 @@ function Composer({ attachments, copy, onCancelRun, onChangeEffort, onChangeMode
   const provider = settings?.provider ?? "deepseek"
   const model = settings?.model ?? defaultSetupModel(provider)
   const effort = settings?.effort ?? "high"
+  const permissionOptions: SelectOption[] = [
+    { value: "ask", label: copy.ask },
+    { value: "auto-review", label: copy.autoReview },
+  ]
   return <footer className="composer">
     {attachments.length > 0 && <div className="attachments-wrap">
       <div className="attachments-head"><span>{copy.attachedCount(attachments.length)}</span><button onClick={() => { void onClearAttachments() }} disabled={running}>{copy.clearAll}</button></div>
@@ -1581,25 +1552,9 @@ function Composer({ attachments, copy, onCancelRun, onChangeEffort, onChangeMode
       </div>
       {runMode === "goal"
         ? <div className="permission-static" title={copy.goalRestrictedTitle}>{copy.goalRestricted}</div>
-        : <label className="composer-select-wrap permission-select">
-          <span>{copy.permission}</span>
-          <select value={permissionMode} onChange={(event) => setPermissionMode(event.target.value as PermissionMode)} disabled={running}>
-            <option value="ask">{copy.ask}</option>
-            <option value="auto-review">{copy.autoReview}</option>
-          </select>
-        </label>}
-      <label className="composer-select-wrap model-select">
-        <span>{copy.model}</span>
-        <select value={model} onChange={(event) => onChangeModel(event.target.value)} disabled={running}>
-          {modelSelectOptions(provider, model).map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
-        </select>
-      </label>
-      <label className="composer-select-wrap effort-select">
-        <span>{copy.effort}</span>
-        <select value={effort} onChange={(event) => onChangeEffort(event.target.value as DesktopReasoningEffort)} disabled={running}>
-          {effortSelectOptions(copy).map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}
-        </select>
-      </label>
+        : <ComposerDropdown className="permission-select" disabled={running} label={copy.permission} options={permissionOptions} value={permissionMode} onChange={(value) => setPermissionMode(value as PermissionMode)} />}
+      <ComposerDropdown className="model-select" disabled={running} label={copy.model} options={modelSelectOptions(provider, model)} value={model} onChange={onChangeModel} />
+      <ComposerDropdown className="effort-select" disabled={running} label={copy.effort} options={effortSelectOptions(copy)} value={effort} onChange={(value) => onChangeEffort(value as DesktopReasoningEffort)} />
       {blockedByProvider && <span className="composer-warning">{providerReadiness ? providerReadinessLabel(providerReadiness) : copy.providerNotReady}</span>}
       {queuedCount > 0 && <span className="queue-chip">{queuedInputLabel(queuedCount)}</span>}
       <button className={`send-button ${running ? "running" : ""}`} onClick={() => {
@@ -1610,6 +1565,31 @@ function Composer({ attachments, copy, onCancelRun, onChangeEffort, onChangeMode
       </button>
     </div>
   </footer>
+}
+
+function ComposerDropdown({ className = "", disabled, label, onChange, options, value }: {
+  className?: string
+  disabled?: boolean
+  label: string
+  onChange: (value: string) => void
+  options: SelectOption[]
+  value: string
+}) {
+  const normalized = normalizeSelectOptions(options, value)
+  const selected = normalized.find((option) => option.value === value) ?? normalized[0] ?? { value, label: value }
+  return <div className={`composer-dropdown ${className}`}>
+    <button className="composer-dropdown-trigger" type="button" disabled={disabled}>
+      <span>{label}</span>
+      <strong>{selected.label}</strong>
+      <i aria-hidden="true" />
+    </button>
+    {!disabled && <div className="composer-dropdown-menu">
+      {normalized.map((option) => <button className={option.value === value ? "selected" : ""} key={option.value} onClick={() => onChange(option.value)} type="button">
+        <span>{option.label}</span>
+        {option.value === value && <em>✓</em>}
+      </button>)}
+    </div>}
+  </div>
 }
 
 function Panel({ children, title }: { children: React.ReactNode; title: string }) {
@@ -1664,7 +1644,19 @@ function InfoRow({ detail, label, status, value }: { detail?: string; label: str
 
 function SelectRow({ label, onChange, options, value }: { label: string; onChange: (value: string) => void; options: Array<string | SelectOption>; value: string }) {
   const normalized = normalizeSelectOptions(options, value)
-  return <label className="editable-row"><span>{label}</span><select value={value} onChange={(event) => onChange(event.target.value)}>{normalized.map((option) => <option value={option.value} key={option.value}>{option.label}</option>)}</select></label>
+  const selected = normalized.find((option) => option.value === value) ?? normalized[0] ?? { value, label: value }
+  return <div className="editable-row"><span>{label}</span><div className="panel-dropdown">
+    <button className="panel-dropdown-trigger" type="button">
+      <strong>{selected.label}</strong>
+      <i aria-hidden="true" />
+    </button>
+    <div className="panel-dropdown-menu">
+      {normalized.map((option) => <button className={option.value === value ? "selected" : ""} key={option.value} onClick={() => onChange(option.value)} type="button">
+        <span>{option.label}</span>
+        {option.value === value && <em>✓</em>}
+      </button>)}
+    </div>
+  </div></div>
 }
 
 function ToggleRow({ copy, label, onChange, value }: { copy: DesktopCopy; label: string; onChange: (value: boolean) => void; value: boolean }) {
@@ -1765,7 +1757,7 @@ function PermissionModal({ onClose, onError, prompt }: { prompt: PermissionPromp
     setSubmitting(true)
     setError("")
     try {
-      await window.easycode.replyPermission(prompt.requestId, sidecarPermissionReply(action))
+      await window.easycode.replyPermission(prompt.requestId, sidecarPermissionReply(action), prompt.workspaceRoot)
       onClose()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1788,7 +1780,7 @@ function PlanModal({ onClose, onError, prompt }: { prompt: PlanPrompt; onClose: 
     setError("")
     try {
       const payload = planReplyPayload(action, draft)
-      await window.easycode.replyPlan(prompt.runId, payload.action, payload.text)
+      await window.easycode.replyPlan(prompt.runId, payload.action, payload.text, prompt.workspaceRoot)
       onClose()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1805,24 +1797,11 @@ function currentTime() {
   return new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
 }
 
-function elapsed(startedAt: number, now = Date.now()) {
-  const seconds = Math.max(0, Math.floor((now - startedAt) / 1000))
-  const minutes = Math.floor(seconds / 60)
-  return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`
-}
-
 function displayRunStatus(status: RunStatus) {
   if (status === "waiting_plan") return "Waiting for plan"
   if (status === "waiting_permission") return "Waiting for permission"
   if (status === "blocked") return "Blocked"
   return status[0].toUpperCase() + status.slice(1)
-}
-
-function progressDot(status: RunStatus, running: boolean) {
-  if (running) return "blue"
-  if (status === "failed") return "red"
-  if (status === "blocked") return "orange"
-  return "green"
 }
 
 function providerReadinessLabel(readiness: DesktopProviderReadiness | undefined) {

@@ -97,6 +97,31 @@ describe("desktop preload api", () => {
     expect(ipc.calls).toEqual(expectedInvokeCalls.map((expected) => ({ channel: expected.channel, args: [...expected.ipcArgs] })))
   })
 
+  test("passes workspace roots only for workspace-scoped sidecar calls", async () => {
+    const ipc = new FakeIpc()
+    const api = createDesktopApi(ipc)
+
+    await api.listSessions("/repo/a")
+    await api.loadSession("scratch", "/repo/a")
+    await api.deleteSession("scratch", "/repo/a")
+    await api.executeSlashCommand("/settings", 0, 0, "/repo/a")
+    await api.runPrompt("build it", "build", [], "ask", [], "/repo/a")
+    await api.cancelRun("/repo/a")
+    await api.replyPermission("permission_1", "once", "/repo/a")
+    await api.replyPlan("run_1", "approve", undefined, "/repo/a")
+
+    expect(ipc.calls).toEqual([
+      { channel: "sidecar:listSessions", args: ["/repo/a"] },
+      { channel: "sidecar:loadSession", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:deleteSession", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:executeSlashCommand", args: ["/settings", 0, 0, "/repo/a"] },
+      { channel: "sidecar:runPrompt", args: ["build it", "build", [], "ask", [], "/repo/a"] },
+      { channel: "sidecar:cancelRun", args: ["/repo/a"] },
+      { channel: "sidecar:replyPermission", args: ["permission_1", "once", "/repo/a"] },
+      { channel: "sidecar:replyPlan", args: ["run_1", "approve", undefined, "/repo/a"] },
+    ])
+  })
+
   test("forwards and unregisters sidecar event listeners", () => {
     const ipc = new FakeIpc()
     const api = createDesktopApi(ipc)

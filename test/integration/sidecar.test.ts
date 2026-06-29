@@ -936,6 +936,13 @@ describe("sidecar integration", () => {
       expect(readiness.status).toBe("missing_env")
       expect(readiness.missingEnv).toEqual(["OPENAI_API_KEY"])
       expect(readiness.reason).toContain("OPENAI_API_KEY")
+
+      await Bun.write(path.join(root, ".env"), "OPENAI_API_KEY=fixture-value\n")
+      const refreshed = await service.handle({ id: "readiness-2", method: "getProviderReadiness" }) as { provider: string; status: string; missingEnv: string[] }
+
+      expect(refreshed.provider).toBe("openai")
+      expect(refreshed.status).toBe("ready")
+      expect(refreshed.missingEnv).toEqual([])
     } finally {
       if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY
       else process.env.OPENAI_API_KEY = previousOpenAIKey

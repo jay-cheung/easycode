@@ -99,9 +99,9 @@ desktopHandle("desktop:configureProvider", async (_event, input: DesktopProvider
   return { ...env, settings: next }
 })
 desktopHandle("sidecar:listSkills", () => activeSidecars().request("listSkills"))
-desktopHandle("sidecar:listSessions", () => activeSidecars().request("listSessions"))
-desktopHandle("sidecar:loadSession", (_event, session: string) => activeSidecars().request("loadSession", { session }))
-desktopHandle("sidecar:deleteSession", (_event, session: string) => activeSidecars().request("deleteSession", { session }))
+desktopHandle("sidecar:listSessions", (_event, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "listSessions"))
+desktopHandle("sidecar:loadSession", (_event, session: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "loadSession", { session }))
+desktopHandle("sidecar:deleteSession", (_event, session: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "deleteSession", { session }))
 desktopHandle("sidecar:getGoalStatus", (_event, session?: string) => activeSidecars().request("getGoalStatus", session ? { session } : {}))
 desktopHandle("sidecar:pauseGoal", (_event, session?: string) => activeSidecars().request("pauseGoal", session ? { session, reason: "Paused from desktop." } : { reason: "Paused from desktop." }))
 desktopHandle("sidecar:resumeGoal", (_event, session?: string) => activeSidecars().request("resumeGoal", session ? { session } : {}))
@@ -109,21 +109,21 @@ desktopHandle("sidecar:clearGoal", (_event, session?: string) => activeSidecars(
 desktopHandle("sidecar:getPlanStatus", (_event, session?: string) => activeSidecars().request("getPlanStatus", session ? { session } : {}))
 desktopHandle("sidecar:clearPlan", (_event, session?: string) => activeSidecars().request("clearPlan", session ? { session } : {}))
 desktopHandle("sidecar:updateSettings", (_event, patch: Partial<DesktopSettings>) => activeSidecars().request("updateSettings", patch as Record<string, unknown>))
-desktopHandle("sidecar:executeSlashCommand", (_event, text: string, pendingImages?: number, pendingFiles?: number) => activeSidecars().request("executeSlashCommand", {
+desktopHandle("sidecar:executeSlashCommand", (_event, text: string, pendingImages?: number, pendingFiles?: number, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "executeSlashCommand", {
   text,
   ...(pendingImages !== undefined ? { pendingImages } : {}),
   ...(pendingFiles !== undefined ? { pendingFiles } : {}),
 }))
-desktopHandle("sidecar:runPrompt", (_event, text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[]) => activeSidecars().request("runPrompt", {
+desktopHandle("sidecar:runPrompt", (_event, text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[], workspaceRoot?: string) => sidecarRequest(workspaceRoot, "runPrompt", {
   text,
   ...(mode ? { mode } : {}),
   ...(images?.length ? { images } : {}),
   ...(files?.length ? { files } : {}),
   ...(permissionMode ? { permissionMode } : {}),
 }))
-desktopHandle("sidecar:cancelRun", () => activeSidecars().request("cancelRun"))
-desktopHandle("sidecar:replyPermission", (_event, requestId: string, reply: string) => activeSidecars().request("replyPermission", { requestId, reply }))
-desktopHandle("sidecar:replyPlan", (_event, runId: string, action: string, text?: string) => activeSidecars().request("replyPlan", { runId, action, text }))
+desktopHandle("sidecar:cancelRun", (_event, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "cancelRun"))
+desktopHandle("sidecar:replyPermission", (_event, requestId: string, reply: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "replyPermission", { requestId, reply }))
+desktopHandle("sidecar:replyPlan", (_event, runId: string, action: string, text?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "replyPlan", { runId, action, text }))
 
 desktopHandle("desktop:pickWorkspace", async () => {
   const result = await dialog.showOpenDialog({ properties: ["openDirectory"] })
@@ -222,6 +222,11 @@ app.on("activate", () => {
 function activeSidecars() {
   if (!sidecars) throw new Error("Desktop sidecar registry is not initialized.")
   return sidecars
+}
+
+function sidecarRequest(workspaceRoot: string | undefined, method: string, params: Record<string, unknown> = {}) {
+  const registry = activeSidecars()
+  return workspaceRoot ? registry.requestWorkspace(workspaceRoot, method, params) : registry.request(method, params)
 }
 
 function parseGitStatus(output: string, numstat = "") {

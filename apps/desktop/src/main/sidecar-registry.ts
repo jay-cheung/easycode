@@ -34,8 +34,16 @@ export class WorkspaceSidecarRegistry<Settings extends { workspaceRoot: string; 
     return this.active().request(method, params)
   }
 
+  requestWorkspace(workspaceRoot: string, method: string, params: Record<string, unknown> = {}) {
+    return this.workspace(workspaceRoot).request(method, params)
+  }
+
   status() {
     return this.active().status()
+  }
+
+  statusWorkspace(workspaceRoot: string) {
+    return this.workspace(workspaceRoot).status()
   }
 
   stopActive(reason?: Error) {
@@ -76,6 +84,13 @@ export class WorkspaceSidecarRegistry<Settings extends { workspaceRoot: string; 
     if (!this.activeKey) throw new Error("No active workspace sidecar.")
     const bridge = this.bridges.get(this.activeKey)
     if (!bridge) throw new Error("No active workspace sidecar.")
+    return bridge
+  }
+
+  private workspace(workspaceRoot: string) {
+    const key = workspaceKey(workspaceRoot)
+    const bridge = this.bridges.get(key)
+    if (!bridge) throw new Error(`No sidecar for workspace: ${workspaceRoot}`)
     return bridge
   }
 

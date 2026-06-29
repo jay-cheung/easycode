@@ -3,13 +3,15 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import type { DesktopProviderSetup, DesktopSettings } from "../shared/protocol.js"
-import { mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "./provider-env.js"
+import { envEntriesFromText, mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "./provider-env.js"
 import { normalizeSettings, normalizeSettingsForStorage } from "./settings-normalize.js"
 
 const settingsFile = () => path.join(app.getPath("userData"), "settings.json")
 const globalEnvFile = () => path.join(homedir(), ".easycode", ".env")
+type EnvTarget = Record<string, string | undefined>
 
 export async function loadSettings(): Promise<DesktopSettings> {
+  await loadGlobalProviderEnvironment()
   const envDefaults = await loadGlobalEnvDefaults()
   try {
     const parsed = JSON.parse(await readFile(settingsFile(), "utf8")) as Partial<DesktopSettings>
@@ -44,6 +46,18 @@ export async function configureUiLanguageEnvironment(language: DesktopSettings["
   await writeFile(envPath, mergeProviderEnvText(existing, { EASYCODE_LANG: language }))
   process.env.EASYCODE_LANG = language
   return envPath
+}
+
+export async function loadGlobalProviderEnvironment(env: EnvTarget = process.env) {
+  const text = await readFile(globalEnvFile(), "utf8").catch(() => "")
+  if (!text) return 0
+  let loaded = 0
+  for (const [key, value] of Object.entries(envEntriesFromText(text))) {
+    if (env[key] !== undefined) continue
+    env[key] = value
+    loaded += 1
+  }
+  return loaded
 }
 
 async function loadGlobalEnvDefaults() {
