@@ -48,7 +48,7 @@ describe("desktop renderer UI integration", () => {
     expect(app).toContain("isGoalControlTool(event.toolName)")
     expect(app).toContain("if (isPlanControlTool(item.title) || isGoalControlTool(item.title)) continue")
     expect(app).toContain('className="composer-stack"')
-    expect(app).toContain("<WorkspaceChangesBar copy={copy} goal={goal} planStatus={planStatus} status={workspaceStatus} onOpen={openWorkspaceChanges} />")
+    expect(app).toContain("<WorkspaceChangesBar copy={copy} goal={goal} planStatus={planStatus} progress={progress} status={workspaceStatus} onOpen={openWorkspaceChanges} />")
     expect(app).toContain("function ComposerDropdown")
     expect(app).toContain('className="panel-dropdown-trigger"')
     expect(app).not.toContain("function GoalProgress")

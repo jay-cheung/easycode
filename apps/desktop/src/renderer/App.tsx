@@ -3,8 +3,11 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import type { DesktopDeleteSessionResult, DesktopFileSelection, DesktopGoalState, DesktopGoalStatusResult, DesktopListSessionsResult, DesktopListSkillsResult, DesktopLoadSessionResult, DesktopMessage, DesktopMessagePart, DesktopPermissionMode, DesktopPlanStatusResult, DesktopProviderListResult, DesktopProviderReadiness, DesktopProviderSetup, DesktopProviderSetupResult, DesktopReasoningEffort, DesktopRunMode, DesktopSessionSummary, DesktopSettings, DesktopSkillInfo, DesktopSlashCommandResult, DesktopWorkspaceStatus, SidecarFrame } from "../shared/protocol.js"
 import { applyAttachmentAction, clearAttachmentSlashCommands, pickedFileSlashCommands, rejectedWorkspaceFileSummary, removeFileRefs, type AttachmentAction, type DesktopAttachment } from "./attachment-state.js"
+import { EmptyState } from "./empty-state.js"
+import { assistantErrorPresentation } from "./message-error.js"
 import { permissionPromptAfterRunDone, permissionRunSnapshot, permissionUiAfterRequest, sidecarPermissionReply, type PermissionReplyAction, type PermissionRunSnapshot } from "./permission-state.js"
 import { canSubmitPlanDraft, displayPlanMarkdown, goalAfterLifecycleEvent, goalLifecycleSummary, planReplyPayload, planStatusFromResult, runStatusForGoalPhase, runStatusFromGoalControlResult, runStatusFromRunDone, shouldClearBlockingPromptsAfterRunDone, shouldReloadSessionAfterGoalControl, shouldReloadSessionAfterGoalLifecycle, shouldReloadSessionAfterRunDone, type PlanReplyAction } from "./plan-goal-state.js"
+import { runProgressLabel, type RunStage } from "./run-progress.js"
 import { composerStateAfterQueuedInput, createQueuedRunInput, dequeueQueuedRunInput, isCancelRunInput, isRunProducingSlashInput, queuedInputLabel, shortQueuedPrompt, shouldDetachActiveRunForWorkspaceSwitch, shouldQueueRunInput, type QueuedRunInput } from "./run-queue.js"
 import { readDesktopSessionSelection, resolveStartupSession, resolveStartupWorkspace, writeDesktopSessionSelection } from "./session-selection-state.js"
 import { draftSessionId as createDraftSessionId, draftSessionPromptPlan, mergeSessionListPreservingOrder, planWorkspaceRemoval, removeSessionPreview, sessionIdFromPrompt, sessionSwitchSlashCommand, titleFromPrompt, truncateSessionTitle, upsertSessionPreview as upsertSessionPreviewState, workspaceRemovalClearsDraft, workspaceRoots, workspaceSwitchPatch } from "./session-workspace-state.js"
@@ -36,7 +39,7 @@ type Attachment = DesktopAttachment
 type MarkdownFileOpenHandler = (filePath: string) => Promise<void>
 type DesktopCopy = ReturnType<typeof desktopCopy>
 type RunStatus = "idle" | "running" | "waiting_plan" | "waiting_permission" | "done" | "failed" | "blocked" | "cancelled"
-type Progress = { status: RunStatus; startedAt?: number; summary: string; provider?: string; model?: string; mode?: string; toolCalls: number; toolResults: number }
+type Progress = { status: RunStatus; stage?: RunStage; startedAt?: number; summary: string; provider?: string; model?: string; mode?: string; toolCalls: number; toolResults: number }
 type RunMode = DesktopRunMode
 type SelectOption = { value: string; label: string }
 
@@ -161,43 +164,46 @@ export function App() {
     if (!("type" in frame) || frame.type !== "event") return
     const event = frame.event
     if (event.type === "run_start") {
-      updateProgress({ status: "running", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.provider}${event.model ? ` ${event.model}` : ""} started.`, provider: event.provider, model: event.model, mode: event.mode, toolCalls: 0, toolResults: 0 })
+      updateProgress({ status: "running", stage: "thinking", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.provider}${event.model ? ` ${event.model}` : ""} started.`, provider: event.provider, model: event.model, mode: event.mode, toolCalls: 0, toolResults: 0 })
     } else if (event.type === "provider_progress") {
-      updateProgress({ ...progressRef.current, status: "running", summary: `${event.provider}${event.model ? ` ${event.model}` : ""} ${event.phase ?? "working"}.` })
+      updateProgress({ ...progressRef.current, status: "running", stage: "thinking", summary: `${event.provider}${event.model ? ` ${event.model}` : ""} ${event.phase ?? "working"}.` })
     } else if (event.type === "goal") {
       setGoal((current) => goalAfterLifecycleEvent(current, event))
-      updateProgress({ ...progressRef.current, status: runStatusForGoalPhase(event.phase), startedAt: progressRef.current.startedAt ?? Date.now(), mode: "goal", summary: goalLifecycleSummary(event) })
+      updateProgress({ ...progressRef.current, status: runStatusForGoalPhase(event.phase), stage: "thinking", startedAt: progressRef.current.startedAt ?? Date.now(), mode: "goal", summary: goalLifecycleSummary(event) })
       void refreshGoalStatus()
       if (shouldReloadSessionAfterGoalLifecycle(event.phase)) {
         void syncCurrentSessionMessages(undefined, { preserveVisible: true }).catch((error) => reportUiError(error, "Goal session sync failed."))
         void refreshPlanStatus()
         void refreshSessions()
       }
-    } else if (event.type === "text_delta") appendAssistant(event.text)
+    } else if (event.type === "text_delta") {
+      updateProgress({ ...progressRef.current, status: "running", stage: "responding", startedAt: progressRef.current.startedAt ?? Date.now(), summary: "Receiving response." })
+      appendAssistant(event.text)
+    }
     else if (event.type === "tool_call") {
-      updateProgress({ ...progressRef.current, status: "running", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `Running ${event.call.name}.`, toolCalls: progressRef.current.toolCalls + 1 })
+      updateProgress({ ...progressRef.current, status: "running", stage: "tool", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `Running ${event.call.name}.`, toolCalls: progressRef.current.toolCalls + 1 })
       appendTool(event.call.name, JSON.stringify(event.call.input, null, 2), "running")
     } else if (event.type === "tool_result") {
-      updateProgress({ ...progressRef.current, status: "running", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.title || event.toolName} completed.`, toolResults: progressRef.current.toolResults + 1 })
+      updateProgress({ ...progressRef.current, status: "running", stage: "thinking", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.title || event.toolName} completed.`, toolResults: progressRef.current.toolResults + 1 })
       if (isPlanControlTool(event.toolName)) void refreshPlanStatus()
       else if (isGoalControlTool(event.toolName)) void refreshGoalStatus()
       else appendTool(event.title || event.toolName, event.output, "done")
     } else if (event.type === "permission_request") {
       const nextPermission = permissionUiAfterRequest(activePermissionRef.current.effectiveMode, event.request)
       if (nextPermission.prompt) {
-        updateProgress({ ...progressRef.current, status: nextPermission.progressStatus, summary: nextPermission.progressSummary })
+        updateProgress({ ...progressRef.current, status: nextPermission.progressStatus, stage: "permission", summary: nextPermission.progressSummary })
         setPermission(nextPermission.prompt ? { ...nextPermission.prompt, workspaceRoot: settingsRef.current?.workspaceRoot } : undefined)
       } else {
         appendStatus(nextPermission.statusText)
         void window.easycode.replyPermission(event.request.id, nextPermission.autoReply, settingsRef.current?.workspaceRoot).catch((error) => reportUiError(error, "Permission auto-reply failed."))
       }
     } else if (event.type === "plan_approval_request") {
-      updateProgress({ ...progressRef.current, status: "waiting_plan", startedAt: progressRef.current.startedAt ?? Date.now(), summary: "Plan is waiting for approval." })
+      updateProgress({ ...progressRef.current, status: "waiting_plan", stage: "plan", startedAt: progressRef.current.startedAt ?? Date.now(), summary: "Plan is waiting for approval." })
       setPlan({ runId: frame.runId!, markdown: event.markdown, workspaceRoot: settingsRef.current?.workspaceRoot })
     } else if (event.type === "provider_metrics") {
-      updateProgress({ ...progressRef.current, status: "running", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.metrics.provider} metrics received.`, provider: event.metrics.provider, model: event.metrics.model })
+      updateProgress({ ...progressRef.current, status: "running", stage: "thinking", startedAt: progressRef.current.startedAt ?? Date.now(), summary: `${event.metrics.provider} metrics received.`, provider: event.metrics.provider, model: event.metrics.model })
     } else if (event.type === "failure") {
-      updateProgress({ ...progressRef.current, status: "failed", summary: event.text })
+      updateProgress({ ...progressRef.current, status: "failed", stage: undefined, summary: event.text })
     } else if (event.type === "run_done") {
       setRunning(false)
       runningRef.current = false
@@ -206,7 +212,7 @@ export function App() {
         setPermission((current) => permissionPromptAfterRunDone(current, event.status))
         setPlan(undefined)
       }
-      updateProgress({ ...progressRef.current, status: runStatusFromRunDone(event.status), startedAt: progressRef.current.startedAt, summary: `Run ${event.status}.` })
+      updateProgress({ ...progressRef.current, status: runStatusFromRunDone(event.status), stage: undefined, startedAt: progressRef.current.startedAt, summary: `Run ${event.status}.` })
       if (shouldReloadSessionAfterRunDone(event.status)) void syncCurrentSessionMessages(undefined, { preserveVisible: true }).catch((error) => reportUiError(error, "Session message sync failed."))
       void refreshWorkspaceStatus()
       void refreshSessions()
@@ -287,7 +293,7 @@ export function App() {
     setRunning(true)
     runningRef.current = true
     activeRunWorkspaceRef.current = runWorkspaceRoot
-    updateProgress({ status: "running", startedAt: Date.now(), summary: "Preparing run context.", toolCalls: 0, toolResults: 0 })
+    updateProgress({ status: "running", stage: "preparing", startedAt: Date.now(), summary: "Preparing run context.", toolCalls: 0, toolResults: 0 })
     setItems((current) => [...current, { id: crypto.randomUUID(), kind: "user", text, time: currentTime() }, { id: crypto.randomUUID(), kind: "assistant", text: copy.waitingForModel, time: currentTime(), pending: true }])
     try {
       const effectiveRunMode = modeOverride ?? runMode
@@ -307,7 +313,7 @@ export function App() {
 
   const cancelRun = async () => {
     if (!running) return
-    updateProgress({ ...progressRef.current, status: "cancelled", summary: "Cancelling run..." })
+    updateProgress({ ...progressRef.current, status: "cancelled", stage: "cancelling", summary: "Cancelling run..." })
     try {
       const result = await window.easycode.cancelRun(activeRunWorkspaceRef.current ?? settingsRef.current?.workspaceRoot) as { cancelled?: boolean }
       if (!result.cancelled) updateProgress({ ...progressRef.current, status: "idle", summary: "No active run to cancel." })
@@ -743,7 +749,7 @@ export function App() {
     if (running) return
     setRunning(true)
     runningRef.current = true
-    updateProgress({ status: "running", startedAt: Date.now(), summary: "Resuming goal.", mode: "goal", toolCalls: 0, toolResults: 0 })
+    updateProgress({ status: "running", stage: "preparing", startedAt: Date.now(), summary: "Resuming goal.", mode: "goal", toolCalls: 0, toolResults: 0 })
     try {
       const result = await window.easycode.resumeGoal(settings?.session) as { status?: string; text?: string }
       setRunning(false)
@@ -830,14 +836,14 @@ export function App() {
         </header>
 
         <div className="stream" ref={streamRef}>
-          {streamEntries.length === 0 && <EmptyState copy={copy} />}
+          {streamEntries.length === 0 && <EmptyState copy={copy} onSelectPrompt={setPrompt} />}
           {streamEntries.map((entry) => entry.kind === "assistantTurn"
             ? <AssistantTurn copy={copy} key={entry.id} entry={entry} onOpenFile={openWorkspaceFileFromMessage} />
             : <Message copy={copy} key={entry.id} item={entry.item} onOpenFile={openWorkspaceFileFromMessage} />)}
         </div>
 
         <div className="composer-stack">
-          <WorkspaceChangesBar copy={copy} goal={goal} planStatus={planStatus} status={workspaceStatus} onOpen={openWorkspaceChanges} />
+          <WorkspaceChangesBar copy={copy} goal={goal} planStatus={planStatus} progress={progress} status={workspaceStatus} onOpen={openWorkspaceChanges} />
           <Composer
             attachments={attachments}
             onClearAttachments={clearAttachments}
@@ -1019,6 +1025,8 @@ function desktopCopy(language: string | undefined) {
       completed: "已完成",
       cannotOpenFile: (filePath: string, message: string) => `无法打开 ${filePath}：${message}`,
       cannotOpenChanges: (message: string) => `无法打开 Git 变更：${message}`,
+      certificateIssueDetail: "本地证书链校验失败，通常和代理或系统证书配置有关。",
+      certificateIssueTitle: "证书校验失败",
       copyOutput: "复制回复",
       defaultSessionTitle: "添加桌面 sidecar 客户端",
       details: "详情",
@@ -1077,6 +1085,8 @@ function desktopCopy(language: string | undefined) {
       removeWorkspace: "移除工作区",
       resume: "继续",
       run: "运行",
+      runFailed: "运行失败",
+      runFailedHint: "调整配置后可以直接重试，或继续补充说明。",
       running: "运行中",
       runStatus: (status: RunStatus) => {
         if (status === "waiting_plan") return "等待计划"
@@ -1092,6 +1102,7 @@ function desktopCopy(language: string | undefined) {
       send: "发送",
       show: "展开",
       showAllSkills: (count: number) => `显示全部 ${count} 个技能`,
+      showFullResponse: "展开完整回复",
       showInFinder: "在 Finder 中显示",
       showGitChanges: "查看 Git 变更",
       showLess: "收起",
@@ -1101,9 +1112,20 @@ function desktopCopy(language: string | undefined) {
       sidecarStatus: "Sidecar 状态",
       skills: "技能",
       startSession: "在这个工作区开始一个本地 EasyCode 会话。",
+      starterPrompts: ["检查当前改动", "解释这个项目", "制定一个实现计划", "创建一个目标并持续执行"],
       state: "状态",
       stepProgress: (current: number, total: number) => `步骤 ${current}/${total}`,
       stopped: "已停止",
+      runStageLabel: (stage: RunStage) => {
+        if (stage === "preparing") return "准备上下文"
+        if (stage === "connecting") return "连接模型"
+        if (stage === "thinking") return "模型思考中"
+        if (stage === "responding") return "正在回复"
+        if (stage === "tool") return "执行工具"
+        if (stage === "permission") return "等待授权"
+        if (stage === "plan") return "等待计划批准"
+        return "正在停止"
+      },
       thinking: "思考",
       toolCallCount: (count: number) => `${count} 次工具调用`,
       tools: "工具",
@@ -1144,6 +1166,8 @@ function desktopCopy(language: string | undefined) {
     completed: "Completed",
     cannotOpenFile: (filePath: string, message: string) => `Cannot open ${filePath}: ${message}`,
     cannotOpenChanges: (message: string) => `Cannot open Git changes: ${message}`,
+    certificateIssueDetail: "The local certificate chain could not be verified. This is usually caused by proxy or certificate settings.",
+    certificateIssueTitle: "Certificate verification failed",
     copyOutput: "Copy response",
     defaultSessionTitle: "Add desktop sidecar client",
     details: "details",
@@ -1202,12 +1226,15 @@ function desktopCopy(language: string | undefined) {
       removeWorkspace: "Remove Workspace",
     resume: "Resume",
     run: "Run",
+    runFailed: "Run failed",
+    runFailedHint: "Fix the configuration and retry, or continue with more direction.",
     running: "Running",
     runStatus: displayRunStatus,
     runState: "Run State",
     send: "Send",
     show: "Show",
     showAllSkills: (count: number) => `Show all ${count} skills`,
+    showFullResponse: "Show full response",
     showInFinder: "Show in Finder",
     showGitChanges: "View Git changes",
     showLess: "Show less",
@@ -1217,9 +1244,20 @@ function desktopCopy(language: string | undefined) {
     sidecarStatus: "Sidecar Status",
     skills: "Skills",
     startSession: "Start a local EasyCode session in this workspace.",
+    starterPrompts: ["Review current changes", "Explain this project", "Draft an implementation plan", "Create a goal and keep going"],
     state: "state",
     stepProgress: (current: number, total: number) => `Step ${current}/${total}`,
     stopped: "Stopped",
+    runStageLabel: (stage: RunStage) => {
+      if (stage === "preparing") return "Preparing context"
+      if (stage === "connecting") return "Connecting model"
+      if (stage === "thinking") return "Thinking"
+      if (stage === "responding") return "Responding"
+      if (stage === "tool") return "Running tools"
+      if (stage === "permission") return "Waiting for approval"
+      if (stage === "plan") return "Waiting for plan"
+      return "Stopping"
+    },
     thinking: "Thinking",
     toolCallCount: (count: number) => `${count} tool call${count === 1 ? "" : "s"}`,
     tools: "Tools",
@@ -1357,17 +1395,15 @@ function planProgressSnapshot(planStatus: DesktopPlanStatusResult) {
   }
 }
 
-function EmptyState({ copy }: { copy: DesktopCopy }) {
-  return <section className="empty-state"><h2>{copy.noMessages}</h2><p>{copy.startSession}</p></section>
-}
-
-function WorkspaceChangesBar({ copy, goal, onOpen, planStatus, status }: { copy: DesktopCopy; goal?: DesktopGoalState; onOpen: () => void; planStatus?: DesktopPlanStatusResult; status?: DesktopWorkspaceStatus }) {
+function WorkspaceChangesBar({ copy, goal, onOpen, planStatus, progress, status }: { copy: DesktopCopy; goal?: DesktopGoalState; onOpen: () => void; planStatus?: DesktopPlanStatusResult; progress?: Progress; status?: DesktopWorkspaceStatus }) {
   const plan = planStatus?.planId ? planProgressSnapshot(planStatus) : undefined
-  if (!status && !plan && !goal) return null
+  const progressLabel = runProgressLabel(progress, copy)
+  if (!status && !plan && !goal && !progressLabel) return null
   const changedStatus = status && !status.clean ? status : undefined
   const stepNumber = plan ? Math.max(1, Math.min(plan.total || 1, plan.currentIndex >= 0 ? plan.currentIndex + 1 : plan.completed || 1)) : 0
   return <div className="workspace-changes-bar">
-    <button className={changedStatus ? "changed" : "clean"} onClick={onOpen} title={copy.showGitChanges}>
+    <button className={changedStatus ? "changed" : "clean"} onClick={onOpen} title={progressLabel ? progress?.summary : copy.showGitChanges}>
+      {progressLabel && <><span className={`run-inline-dot ${progress?.status ?? "idle"}`} /><span>{progressLabel}</span>{(goal || plan || status) && <span className="status-separator">·</span>}</>}
       {goal && <><span className="goal-inline-label">{copy.goal}</span><span className="goal-inline-objective">{goal.objective}</span><span className="status-separator">·</span></>}
       {plan && <><span className={`plan-inline-dot ${plan.status}`} /><span>{copy.stepProgress(stepNumber, plan.total || stepNumber)}</span><span className="status-separator">·</span></>}
       {status && <span>{status.clean ? copy.clean : copy.changedFiles(status.changedFiles)}</span>}
@@ -1395,8 +1431,11 @@ function Message({ copy, item, onOpenFile }: { copy: DesktopCopy; item: Exclude<
 }
 
 function AssistantTurn({ copy, entry, onOpenFile }: { copy: DesktopCopy; entry: Extract<StreamEntry, { kind: "assistantTurn" }>; onOpenFile: MarkdownFileOpenHandler }) {
+  const [expanded, setExpanded] = useState(false)
   const parts = groupAssistantActivity(entry.parts)
   const outputText = assistantOutputText(parts)
+  const shouldCollapse = responseShouldCollapse(outputText, parts)
+  const compact = shouldCollapse && !expanded
   return <article className="message assistant assistant-turn">
     <div className="message-head">
       <strong>EasyCode</strong>
@@ -1405,13 +1444,16 @@ function AssistantTurn({ copy, entry, onOpenFile }: { copy: DesktopCopy; entry: 
         {outputText && <button className="copy-output" onClick={() => { void copyToClipboard(outputText) }} aria-label={copy.copyOutput} title={copy.copyOutput}><span className="copy-icon" /></button>}
       </div>
     </div>
-    <div className="message-body">
+    <div className={`message-body ${compact ? "response-compact" : ""}`}>
       {parts.map((part) => part.kind === "activity"
         ? <ActivityGroup copy={copy} key={part.id} onOpenFile={onOpenFile} parts={part.parts} />
         : part.kind === "tools"
           ? <ToolGroup copy={copy} key={part.id} tools={part.tools} />
-          : <MessageText copy={copy} key={part.id} onOpenFile={onOpenFile} text={part.item.text || "..."} />)}
+          : part.item.pending
+            ? <PendingAssistant copy={copy} key={part.id} />
+            : <MessageText allowErrorCard copy={copy} key={part.id} onOpenFile={onOpenFile} text={part.item.text || "..."} />)}
     </div>
+    {shouldCollapse && <button className="response-expand" onClick={() => setExpanded((value) => !value)} type="button">{expanded ? copy.showLess : copy.showFullResponse}</button>}
   </article>
 }
 
@@ -1433,12 +1475,29 @@ function ActivityGroup({ copy, onOpenFile, parts }: { copy: DesktopCopy; onOpenF
     {open && <div className="activity-list">
       {parts.map((part) => part.kind === "tools"
         ? <ToolGroup copy={copy} key={part.id} tools={part.tools} />
-        : <MessageText copy={copy} key={part.id} onOpenFile={onOpenFile} text={part.item.text || "..."} />)}
+        : part.item.pending
+          ? <PendingAssistant copy={copy} key={part.id} />
+          : <MessageText allowErrorCard copy={copy} key={part.id} onOpenFile={onOpenFile} text={part.item.text || "..."} />)}
     </div>}
   </article>
 }
 
-function MessageText({ copy, onOpenFile, text }: { copy: DesktopCopy; onOpenFile: MarkdownFileOpenHandler; text: string }) {
+function PendingAssistant({ copy }: { copy: DesktopCopy }) {
+  return <div className="pending-assistant">
+    <span className="pending-dot" />
+    <strong>{copy.waitingForModel}</strong>
+  </div>
+}
+
+function MessageText({ allowErrorCard, copy, onOpenFile, text }: { allowErrorCard?: boolean; copy: DesktopCopy; onOpenFile: MarkdownFileOpenHandler; text: string }) {
+  const error = allowErrorCard ? assistantErrorPresentation(text, copy) : undefined
+  if (error) return <div className="message-body">
+    <section className="message-error-card">
+      <div className="message-error-title"><span className="message-error-dot" /><strong>{error.title}</strong></div>
+      <p>{error.detail}</p>
+      <small>{error.hint}</small>
+    </section>
+  </div>
   return <div className="message-body">
     {splitReasoningBlocks(text).map((part, index) => part.kind === "reasoning"
       ? <ReasoningBlock copy={copy} key={`${part.kind}-${index}`} onOpenFile={onOpenFile} text={part.text} />
@@ -1998,9 +2057,15 @@ function activityLatestLabel(parts: AssistantTurnPart[]) {
   return "details"
 }
 
+function responseShouldCollapse(outputText: string, parts: AssistantRenderPart[]) {
+  if (parts.some((part) => part.kind !== "assistant")) return parts.length > 8 || outputText.length > 2600
+  return outputText.length > 1800
+}
+
 function assistantOutputText(parts: AssistantRenderPart[]) {
   return parts.flatMap((part) => {
     if (part.kind === "activity" || part.kind === "tools") return []
+    if (part.item.pending) return []
     return splitReasoningBlocks(part.item.text)
       .filter((block) => block.kind === "markdown")
       .map((block) => block.text.trim())

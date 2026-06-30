@@ -576,18 +576,25 @@ kbd {
   line-height: 21px;
 }
 
-.empty-state div {
+.starter-prompts {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.empty-state span {
+.starter-prompts button {
   padding: 6px 9px;
+  border: 1px solid #dfe6f1;
   border-radius: 7px;
   color: #4f5c74;
   background: #eef3fb;
   font-size: 12px;
+  cursor: pointer;
+}
+
+.starter-prompts button:hover {
+  color: #3157d8;
+  background: #e8efff;
 }
 
 .message {
@@ -622,6 +629,41 @@ kbd {
   max-width: none;
 }
 
+.message.assistant-turn > .message-body.response-compact {
+  position: relative;
+  max-height: min(560px, 56vh);
+  overflow: hidden;
+}
+
+.message.assistant-turn > .message-body.response-compact::after {
+  content: "";
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 86px;
+  background: linear-gradient(to bottom, rgba(255, 255, 255, 0), #fff 78%);
+  pointer-events: none;
+}
+
+.response-expand {
+  justify-self: center;
+  min-height: 28px;
+  margin-top: -1px;
+  padding: 4px 10px;
+  border: 1px solid #dfe6f1;
+  border-radius: 999px;
+  color: #536078;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 8px 20px rgba(50, 61, 84, 0.08);
+  font-size: 12px;
+}
+
+.response-expand:hover {
+  color: #3157d8;
+  background: #f4f7fc;
+}
+
 .message.assistant-turn .message-body .message-body {
   width: 100%;
   padding: 0;
@@ -636,6 +678,72 @@ kbd {
 
 .message.user .message-body {
   padding: 11px 14px;
+}
+
+.pending-assistant {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  max-width: 100%;
+  padding: 8px 11px;
+  border: 1px solid #dfe6f2;
+  border-radius: 999px;
+  color: #68748a;
+  background: rgba(248, 250, 253, 0.78);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.pending-assistant strong {
+  font-weight: 650;
+}
+
+.pending-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #3157d8;
+  animation: pendingPulse 1.1s ease-in-out infinite;
+}
+
+.message-error-card {
+  display: grid;
+  gap: 7px;
+  width: 100%;
+  padding: 12px 13px;
+  border: 1px solid rgba(218, 69, 76, 0.24);
+  border-radius: 8px;
+  color: #5f2f36;
+  background: #fff7f7;
+}
+
+.message-error-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #2b3448;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.message-error-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #d8474f;
+}
+
+.message-error-card p,
+.message-error-card small {
+  margin: 0;
+  color: #68748a;
+  font-size: 13px;
+  line-height: 19px;
+}
+
+.message-error-card small {
+  color: #8b96aa;
 }
 
 .message.status {
@@ -713,6 +821,19 @@ kbd {
   left: 0;
   bottom: 0;
   background: #fff;
+}
+
+@keyframes pendingPulse {
+  0%,
+  100% {
+    opacity: 0.42;
+    transform: scale(0.86);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 pre {
@@ -1468,6 +1589,33 @@ pre {
 .plan-inline-dot.running,
 .plan-inline-dot.active {
   animation: spin 0.9s linear infinite;
+}
+
+.run-inline-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.11);
+}
+
+.run-inline-dot.running,
+.run-inline-dot.waiting_plan,
+.run-inline-dot.waiting_permission {
+  animation: pendingPulse 1.1s ease-in-out infinite;
+}
+
+.run-inline-dot.failed,
+.run-inline-dot.blocked {
+  background: #d8474f;
+  box-shadow: 0 0 0 3px rgba(216, 71, 79, 0.12);
+}
+
+.run-inline-dot.cancelled {
+  background: #98a3b6;
+  box-shadow: 0 0 0 3px rgba(152, 163, 182, 0.12);
 }
 
 .status-separator {
