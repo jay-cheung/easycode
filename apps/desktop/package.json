@@ -1,7 +1,7 @@
 {
   "name": "@easycode/desktop",
   "productName": "easycode",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "type": "module",
   "main": "dist/main/main.js",
