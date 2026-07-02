@@ -5,7 +5,7 @@ describe("desktop package scripts", () => {
   test("declares the desktop app name for Electron dev and packaged builds", async () => {
     const manifest = await Bun.file(path.join(import.meta.dir, "../../apps/desktop/package.json")).json() as {
       productName?: string
-      build?: { artifactName?: string, productName?: string, linux?: { executableName?: string }, mac?: { extendInfo?: Record<string, string> } }
+      build?: { artifactName?: string, productName?: string, linux?: { executableName?: string }, mac?: { extendInfo?: Record<string, string>, hardenedRuntime?: boolean, identity?: string } }
     }
 
     expect(manifest.productName).toBe("easycode")
@@ -13,6 +13,8 @@ describe("desktop package scripts", () => {
     expect(manifest.build?.artifactName).toBe("easycode-${version}-${os}-${arch}.${ext}")
     expect(manifest.build?.artifactName).not.toContain("${name}")
     expect(manifest.build?.linux?.executableName).toBe("easycode")
+    expect(manifest.build?.mac?.identity).toBe("-")
+    expect(manifest.build?.mac?.hardenedRuntime).toBe(false)
     expect(manifest.build?.mac?.extendInfo?.CFBundleDisplayName).toBe("easycode")
     expect(manifest.build?.mac?.extendInfo?.CFBundleName).toBe("easycode")
   })

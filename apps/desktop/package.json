@@ -35,6 +35,8 @@
     "icon": "build/icon.png",
     "mac": {
       "icon": "build/icon.icns",
+      "identity": "-",
+      "hardenedRuntime": false,
       "extendInfo": {
         "CFBundleDisplayName": "easycode",
         "CFBundleName": "easycode"
