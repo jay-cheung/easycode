@@ -29,6 +29,7 @@
     "desktop:verify": "node scripts/desktop-verify.mjs",
     "desktop:package": "bash scripts/package-desktop.sh",
     "desktop:release": "bash scripts/release-desktop.sh",
+    "desktop:publish": "bash scripts/publish-desktop.sh",
     "release": "bash scripts/release.sh"
   },
   "dependencies": {

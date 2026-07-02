@@ -35,3 +35,4 @@ The Electron app lives under `apps/desktop`. It prefers a bundled platform sidec
 - CLI releases continue to use `v*` tags through `.github/workflows/release.yml`.
 - Desktop releases use separate `desktop-v*` tags through `.github/workflows/desktop-release.yml`.
 - `bun run desktop:release -- desktop-vX.Y.Z` is the GitHub/CI entrypoint for desktop artifacts. It updates `apps/desktop/package.json` inside the current checkout and runs the desktop packaging chain. `--publish` forwards to electron-builder.
+- `bun run desktop:publish -- X.Y.Z` is the one-command local release entrypoint. It checks for a clean tree, optionally bumps and commits `apps/desktop/package.json`, builds local desktop artifacts, creates an annotated `desktop-vX.Y.Z` tag, and pushes the commit plus tag.
