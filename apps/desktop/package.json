@@ -49,8 +49,7 @@
     },
     "linux": {
       "icon": "build/icon.png",
-      "executableName": "easycode",
-      "packageName": "easycode"
+      "executableName": "easycode"
     },
     "directories": {
       "output": "release"

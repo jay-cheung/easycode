@@ -22,7 +22,7 @@ describe("desktop package scripts", () => {
     expect(manifest.build?.artifactName).not.toContain("${name}")
     expect(manifest.build?.win?.executableName).toBe("easycode")
     expect(manifest.build?.linux?.executableName).toBe("easycode")
-    expect(manifest.build?.linux?.packageName).toBe("easycode")
+    expect(manifest.build?.linux).not.toHaveProperty("packageName")
     expect(manifest.build?.mac?.identity).toBe("-")
     expect(manifest.build?.mac?.hardenedRuntime).toBe(false)
     expect(manifest.build?.mac?.extendInfo?.CFBundleDisplayName).toBe("easycode")
