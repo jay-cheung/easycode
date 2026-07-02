@@ -26,7 +26,7 @@ export async function reconcileDesktopSettingsFromSidecar(api: Pick<DesktopSetti
 export async function applyDirectDesktopSettings(api: DesktopSettingsSyncApi, patch: Partial<DesktopSettings>) {
   const next = await api.updateSettings(patch)
   await api.initialize()
-  const sidecarResult = await api.updateSidecarSettings(sidecarSettingsPatch(patch))
+  const sidecarResult = await api.updateSidecarSettings(sidecarSettingsPatch(patch), next.workspaceRoot)
   return sidecarResult.settings ? await api.updateSettings(sidecarResult.settings) : next
 }
 

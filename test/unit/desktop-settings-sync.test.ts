@@ -16,7 +16,7 @@ const baseSettings: DesktopSettings = {
 }
 
 class FakeSettingsApi {
-  readonly calls: Array<{ method: string; input?: unknown }> = []
+  readonly calls: Array<{ method: string; input?: unknown; workspaceRoot?: string }> = []
 
   async updateSettings(settings: Partial<DesktopSettings>) {
     this.calls.push({ method: "updateSettings", input: settings })
@@ -28,8 +28,8 @@ class FakeSettingsApi {
     return {}
   }
 
-  async updateSidecarSettings(settings: DesktopSettingsPatch) {
-    this.calls.push({ method: "updateSidecarSettings", input: settings })
+  async updateSidecarSettings(settings: DesktopSettingsPatch, workspaceRoot?: string) {
+    this.calls.push({ method: "updateSidecarSettings", input: settings, workspaceRoot })
     return {
       settings: {
         ...baseSettings,
@@ -104,7 +104,7 @@ describe("desktop settings sync", () => {
     expect(api.calls).toEqual([
       { method: "updateSettings", input: { model: undefined, maxSteps: 12 } },
       { method: "initialize" },
-      { method: "updateSidecarSettings", input: { model: null, maxSteps: 12 } },
+      { method: "updateSidecarSettings", input: { model: null, maxSteps: 12 }, workspaceRoot: "/repo" },
       { method: "updateSettings", input: { ...baseSettings, model: undefined, maxSteps: 12 } },
     ])
   })

@@ -13,28 +13,28 @@ export function createDesktopApi(ipcRenderer: DesktopIpcRenderer): DesktopApi {
     updateSettings: (settings: Partial<DesktopSettings>) => invoke<DesktopSettings>("settings:update", settings),
     initialize: () => invoke("sidecar:initialize"),
     listProviders: () => invoke<DesktopProviderListResult>("sidecar:listProviders"),
-    getProviderReadiness: () => invoke<DesktopProviderReadiness>("sidecar:getProviderReadiness"),
+    getProviderReadiness: (workspaceRoot?: string) => invoke<DesktopProviderReadiness>("sidecar:getProviderReadiness", ...optionalArg(workspaceRoot)),
     configureProvider: (input: DesktopProviderSetup) => invoke<DesktopProviderSetupResult>("desktop:configureProvider", input),
-    listSkills: () => invoke<DesktopListSkillsResult>("sidecar:listSkills"),
+    listSkills: (workspaceRoot?: string) => invoke<DesktopListSkillsResult>("sidecar:listSkills", ...optionalArg(workspaceRoot)),
     listSessions: (workspaceRoot?: string) => invoke<DesktopListSessionsResult>("sidecar:listSessions", ...optionalArg(workspaceRoot)),
     loadSession: (session: string, workspaceRoot?: string) => invoke("sidecar:loadSession", session, ...optionalArg(workspaceRoot)),
     deleteSession: (session: string, workspaceRoot?: string) => invoke<DesktopDeleteSessionResult>("sidecar:deleteSession", session, ...optionalArg(workspaceRoot)),
-    getGoalStatus: (session?: string) => invoke<DesktopGoalStatusResult>("sidecar:getGoalStatus", session),
-    pauseGoal: (session?: string) => invoke("sidecar:pauseGoal", session),
-    resumeGoal: (session?: string) => invoke("sidecar:resumeGoal", session),
-    clearGoal: (session?: string) => invoke("sidecar:clearGoal", session),
-    getPlanStatus: (session?: string) => invoke<DesktopPlanStatusResult>("sidecar:getPlanStatus", session),
-    clearPlan: (session?: string) => invoke("sidecar:clearPlan", session),
-    updateSidecarSettings: (settings: DesktopSettingsPatch) => invoke<{ settings: DesktopSettings }>("sidecar:updateSettings", settings),
+    getGoalStatus: (session?: string, workspaceRoot?: string) => invoke<DesktopGoalStatusResult>("sidecar:getGoalStatus", ...optionalArgs(session, workspaceRoot)),
+    pauseGoal: (session?: string, workspaceRoot?: string) => invoke("sidecar:pauseGoal", ...optionalArgs(session, workspaceRoot)),
+    resumeGoal: (session?: string, workspaceRoot?: string) => invoke("sidecar:resumeGoal", ...optionalArgs(session, workspaceRoot)),
+    clearGoal: (session?: string, workspaceRoot?: string) => invoke("sidecar:clearGoal", ...optionalArgs(session, workspaceRoot)),
+    getPlanStatus: (session?: string, workspaceRoot?: string) => invoke<DesktopPlanStatusResult>("sidecar:getPlanStatus", ...optionalArgs(session, workspaceRoot)),
+    clearPlan: (session?: string, workspaceRoot?: string) => invoke("sidecar:clearPlan", ...optionalArgs(session, workspaceRoot)),
+    updateSidecarSettings: (settings: DesktopSettingsPatch, workspaceRoot?: string) => invoke<{ settings: DesktopSettings }>("sidecar:updateSettings", settings, ...optionalArg(workspaceRoot)),
     pickWorkspace: () => invoke<string | undefined>("desktop:pickWorkspace"),
     pickFiles: () => invoke<DesktopFileSelection[]>("desktop:pickFiles"),
     showWorkspace: (workspaceRoot?: string) => invoke<{ opened: boolean }>("desktop:showWorkspace", workspaceRoot),
-    openWorkspaceFile: (filePath: string) => invoke<{ opened: boolean; path: string }>("desktop:openWorkspaceFile", filePath),
-    openWorkspaceChanges: () => invoke<{ opened: boolean; path: string }>("desktop:openWorkspaceChanges"),
+    openWorkspaceFile: (filePath: string, workspaceRoot?: string) => invoke<{ opened: boolean; path: string }>("desktop:openWorkspaceFile", filePath, ...optionalArg(workspaceRoot)),
+    openWorkspaceChanges: (workspaceRoot?: string) => invoke<{ opened: boolean; path: string }>("desktop:openWorkspaceChanges", ...optionalArg(workspaceRoot)),
     removeWorkspaceSidecar: (workspaceRoot: string) => invoke<{ stopped: boolean }>("desktop:removeWorkspaceSidecar", workspaceRoot),
     showSidecar: () => invoke<{ opened: boolean }>("desktop:showSidecar"),
     sidecarStatus: () => invoke<DesktopSidecarStatus>("desktop:sidecarStatus"),
-    workspaceStatus: () => invoke<DesktopWorkspaceStatus>("desktop:workspaceStatus"),
+    workspaceStatus: (workspaceRoot?: string) => invoke<DesktopWorkspaceStatus>("desktop:workspaceStatus", ...optionalArg(workspaceRoot)),
     executeSlashCommand: (text: string, pendingImages?: number, pendingFiles?: number, workspaceRoot?: string) => invoke<DesktopSlashCommandResult>("sidecar:executeSlashCommand", text, pendingImages, pendingFiles, ...optionalArg(workspaceRoot)),
     runPrompt: (text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[], workspaceRoot?: string) => invoke("sidecar:runPrompt", text, mode, images, permissionMode, files, ...optionalArg(workspaceRoot)),
     cancelRun: (workspaceRoot?: string) => invoke("sidecar:cancelRun", ...optionalArg(workspaceRoot)),
@@ -50,4 +50,9 @@ export function createDesktopApi(ipcRenderer: DesktopIpcRenderer): DesktopApi {
 
 function optionalArg<T>(value: T | undefined): [] | [T] {
   return value === undefined ? [] : [value]
+}
+
+function optionalArgs<T, U>(first: T | undefined, second: U | undefined): [] | [T] | [T | undefined, U] {
+  if (second !== undefined) return [first, second]
+  return first === undefined ? [] : [first]
 }

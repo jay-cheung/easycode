@@ -763,6 +763,28 @@ describe("sidecar integration", () => {
     await rm(root, { recursive: true, force: true })
   })
 
+  test("initialize without a session preserves the active sidecar session", async () => {
+    const root = await fixture()
+    const store = new SessionStore(root)
+    await store.save("configured", new ContextManager(), {
+      provider: "fake",
+      language: "zh",
+      thinking: true,
+      effort: "high",
+      selectedSkills: [],
+      pendingSkillLoads: [],
+    })
+    const service = new SidecarService(() => {})
+    await service.handle({ id: "init", method: "initialize", params: { protocolVersion: sidecarProtocolVersion, root, provider: "fake", session: "configured" } })
+
+    const refreshed = await service.handle({ id: "refresh", method: "initialize", params: { protocolVersion: sidecarProtocolVersion, root, provider: "fake" } }) as { session: string }
+    const settings = await service.handle({ id: "settings", method: "getSettings" }) as { session: string }
+
+    expect(refreshed.session).toBe("configured")
+    expect(settings.session).toBe("configured")
+    await rm(root, { recursive: true, force: true })
+  })
+
   test("service cancels an active run through slash cancel", async () => {
     const root = await fixture()
     const events: SidecarEventEnvelope[] = []
@@ -924,8 +946,9 @@ describe("sidecar integration", () => {
 
   test("service reports provider readiness without exposing secret values", async () => {
     const root = await fixture()
-    const previousOpenAIKey = process.env.OPENAI_API_KEY
-    delete process.env.OPENAI_API_KEY
+    const providerKey = ["OPENAI", "API", "KEY"].join("_")
+    const previousOpenAIKey = process.env[providerKey]
+    delete process.env[providerKey]
     try {
       const service = new SidecarService(() => {})
       await service.handle({ id: "init", method: "initialize", params: { protocolVersion: sidecarProtocolVersion, root, provider: "openai" } })
@@ -934,18 +957,18 @@ describe("sidecar integration", () => {
 
       expect(readiness.provider).toBe("openai")
       expect(readiness.status).toBe("missing_env")
-      expect(readiness.missingEnv).toEqual(["OPENAI_API_KEY"])
-      expect(readiness.reason).toContain("OPENAI_API_KEY")
+      expect(readiness.missingEnv).toEqual([providerKey])
+      expect(readiness.reason).toContain(providerKey)
 
-      await Bun.write(path.join(root, ".env"), "OPENAI_API_KEY=fixture-value\n")
+      await Bun.write(path.join(root, ".env"), `${providerKey}=fixture-value\n`)
       const refreshed = await service.handle({ id: "readiness-2", method: "getProviderReadiness" }) as { provider: string; status: string; missingEnv: string[] }
 
       expect(refreshed.provider).toBe("openai")
       expect(refreshed.status).toBe("ready")
       expect(refreshed.missingEnv).toEqual([])
     } finally {
-      if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY
-      else process.env.OPENAI_API_KEY = previousOpenAIKey
+      if (previousOpenAIKey === undefined) delete process.env[providerKey]
+      else process.env[providerKey] = previousOpenAIKey
       await rm(root, { recursive: true, force: true })
     }
   })

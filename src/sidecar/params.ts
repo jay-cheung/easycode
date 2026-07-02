@@ -3,7 +3,7 @@ import { defaultProviderName, normalizeSessionSettings, type SessionSettings } f
 import { assertProtocolVersion, SidecarProtocolError } from "./jsonl"
 import type { ExecuteSlashCommandParams, InitializeParams, ReplyPermissionParams, ReplyPlanParams, RunPromptParams, UpdateSettingsParams } from "./types"
 
-export function parseInitializeParams(params: unknown, fallbackRoot: string, fallbackSettings: SessionSettings): InitializeParams & { root: string; session: string; settings: SessionSettings } {
+export function parseInitializeParams(params: unknown, fallbackRoot: string, fallbackSession: string, fallbackSettings: SessionSettings): InitializeParams & { root: string; session: string; settings: SessionSettings } {
   const input = record(params)
   assertProtocolVersion(input.protocolVersion)
   const root = typeof input.root === "string" && input.root ? path.resolve(input.root) : fallbackRoot
@@ -13,7 +13,7 @@ export function parseInitializeParams(params: unknown, fallbackRoot: string, fal
     ...input,
     provider,
   }, provider)
-  const session = typeof input.session === "string" && input.session.trim() ? input.session.trim() : "default"
+  const session = typeof input.session === "string" && input.session.trim() ? input.session.trim() : fallbackSession
   return { ...input, root, session, settings }
 }
 

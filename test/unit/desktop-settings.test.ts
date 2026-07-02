@@ -31,6 +31,29 @@ describe("desktop settings", () => {
     expect(settings.language).toBe("de")
   })
 
+  test("uses global env defaults when saving partial desktop settings", () => {
+    const saved = normalizeSettingsForStorage({
+      workspaceRoot: "/workspace",
+      session: "default",
+    }, {
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      language: "zh",
+    })
+
+    expect(saved.settings).toMatchObject({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      language: "zh",
+      session: "default",
+    })
+    expect(saved.stored).toMatchObject({
+      provider: "deepseek",
+      model: "deepseek-v4-flash",
+      language: "zh",
+    })
+  })
+
   test("persists explicit model reset without reapplying env model on reload", () => {
     const reset = normalizeSettingsForStorage({
       provider: "openai-compatible",

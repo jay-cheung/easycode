@@ -6,6 +6,36 @@ export type ProviderEnvDefaults = {
   language?: string
 }
 
+type EnvTarget = Record<string, string | undefined>
+
+const desktopRuntimeEnvKeys = new Set([
+  "EASYCODE_PROVIDER",
+  "EASYCODE_LANG",
+  "EASYCODE_REJECT_UNAUTHORIZED",
+  "EASYCODE_EXTRA_CA_CERTS",
+  "EASYCODE_DESKTOP_SIDECAR_PATH",
+  "NODE_TLS_REJECT_UNAUTHORIZED",
+  "NODE_EXTRA_CA_CERTS",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "no_proxy",
+  "TAVILY_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "DEEPSEEK_MODEL",
+  "DEEPSEEK_API_URL",
+  "OPENAI_API_KEY",
+  "OPENAI_MODEL",
+  "OPENAI_API_URL",
+  "OPENAI_COMPAT_API_KEY",
+  "OPENAI_COMPAT_API_URL",
+  "OPENAI_COMPAT_MODEL",
+])
+
 export function providerEnvEntries(input: DesktopProviderSetup & { provider: string }) {
   const entries: Record<string, string> = { EASYCODE_PROVIDER: input.provider }
   const apiKey = input.apiKey?.trim()
@@ -38,6 +68,21 @@ export function providerDefaultsFromEnvText(text: string): ProviderEnvDefaults {
 
 export function envEntriesFromText(text: string) {
   return parseEnvText(text)
+}
+
+export function applyDesktopRuntimeEnv(entries: Record<string, string>, env: EnvTarget) {
+  let loaded = 0
+  for (const [key, value] of Object.entries(entries)) {
+    if (!shouldApplyDesktopRuntimeEnv(key, env[key])) continue
+    env[key] = value
+    loaded += 1
+  }
+  return loaded
+}
+
+export function shouldApplyDesktopRuntimeEnv(key: string, current: string | undefined) {
+  if (current === undefined || current === "") return true
+  return desktopRuntimeEnvKeys.has(key)
 }
 
 export function mergeProviderEnvText(existing: string, entries: Record<string, string>) {

@@ -85,7 +85,7 @@ desktopHandle("sidecar:initialize", async () => {
   })
 })
 desktopHandle("sidecar:listProviders", () => activeSidecars().request("listProviders"))
-desktopHandle("sidecar:getProviderReadiness", () => activeSidecars().request("getProviderReadiness"))
+desktopHandle("sidecar:getProviderReadiness", (_event, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "getProviderReadiness"))
 desktopHandle("desktop:configureProvider", async (_event, input: DesktopProviderSetup) => {
   const current = await loadSettings()
   const env = await configureProviderEnvironment(input)
@@ -98,17 +98,17 @@ desktopHandle("desktop:configureProvider", async (_event, input: DesktopProvider
   activeSidecars().configure(next)
   return { ...env, settings: next }
 })
-desktopHandle("sidecar:listSkills", () => activeSidecars().request("listSkills"))
+desktopHandle("sidecar:listSkills", (_event, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "listSkills"))
 desktopHandle("sidecar:listSessions", (_event, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "listSessions"))
 desktopHandle("sidecar:loadSession", (_event, session: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "loadSession", { session }))
 desktopHandle("sidecar:deleteSession", (_event, session: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "deleteSession", { session }))
-desktopHandle("sidecar:getGoalStatus", (_event, session?: string) => activeSidecars().request("getGoalStatus", session ? { session } : {}))
-desktopHandle("sidecar:pauseGoal", (_event, session?: string) => activeSidecars().request("pauseGoal", session ? { session, reason: "Paused from desktop." } : { reason: "Paused from desktop." }))
-desktopHandle("sidecar:resumeGoal", (_event, session?: string) => activeSidecars().request("resumeGoal", session ? { session } : {}))
-desktopHandle("sidecar:clearGoal", (_event, session?: string) => activeSidecars().request("clearGoal", session ? { session } : {}))
-desktopHandle("sidecar:getPlanStatus", (_event, session?: string) => activeSidecars().request("getPlanStatus", session ? { session } : {}))
-desktopHandle("sidecar:clearPlan", (_event, session?: string) => activeSidecars().request("clearPlan", session ? { session } : {}))
-desktopHandle("sidecar:updateSettings", (_event, patch: Partial<DesktopSettings>) => activeSidecars().request("updateSettings", patch as Record<string, unknown>))
+desktopHandle("sidecar:getGoalStatus", (_event, session?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "getGoalStatus", session ? { session } : {}))
+desktopHandle("sidecar:pauseGoal", (_event, session?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "pauseGoal", session ? { session, reason: "Paused from desktop." } : { reason: "Paused from desktop." }))
+desktopHandle("sidecar:resumeGoal", (_event, session?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "resumeGoal", session ? { session } : {}))
+desktopHandle("sidecar:clearGoal", (_event, session?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "clearGoal", session ? { session } : {}))
+desktopHandle("sidecar:getPlanStatus", (_event, session?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "getPlanStatus", session ? { session } : {}))
+desktopHandle("sidecar:clearPlan", (_event, session?: string, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "clearPlan", session ? { session } : {}))
+desktopHandle("sidecar:updateSettings", (_event, patch: Partial<DesktopSettings>, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "updateSettings", patch as Record<string, unknown>))
 desktopHandle("sidecar:executeSlashCommand", (_event, text: string, pendingImages?: number, pendingFiles?: number, workspaceRoot?: string) => sidecarRequest(workspaceRoot, "executeSlashCommand", {
   text,
   ...(pendingImages !== undefined ? { pendingImages } : {}),
@@ -155,19 +155,19 @@ desktopHandle("desktop:showWorkspace", async (_event, workspaceRoot?: string) =>
   return { opened: !error }
 })
 
-desktopHandle("desktop:openWorkspaceFile", async (_event, filePath: string) => {
+desktopHandle("desktop:openWorkspaceFile", async (_event, filePath: string, workspaceRoot?: string) => {
   const settings = await loadSettings()
-  const absolutePath = await resolveWorkspaceFilePath(settings.workspaceRoot, filePath)
+  const absolutePath = await resolveWorkspaceFilePath(workspaceRoot || settings.workspaceRoot, filePath)
   await shell.openExternal(vscodeFileUri(absolutePath))
   return { opened: true, path: absolutePath }
 })
 
-desktopHandle("desktop:openWorkspaceChanges", async () => {
+desktopHandle("desktop:openWorkspaceChanges", async (_event, workspaceRoot?: string) => {
   const settings = await loadSettings()
-  const workspaceRoot = path.resolve(settings.workspaceRoot)
-  await shell.openExternal(vscodeFileUri(workspaceRoot))
+  const root = path.resolve(workspaceRoot || settings.workspaceRoot)
+  await shell.openExternal(vscodeFileUri(root))
   await shell.openExternal("vscode://command/workbench.view.scm")
-  return { opened: true, path: workspaceRoot }
+  return { opened: true, path: root }
 })
 
 desktopHandle("desktop:removeWorkspaceSidecar", (_event, workspaceRoot: string) => {
@@ -185,13 +185,14 @@ desktopHandle("desktop:showSidecar", async () => {
 
 desktopHandle("desktop:sidecarStatus", () => activeSidecars().status())
 
-desktopHandle("desktop:workspaceStatus", async () => {
+desktopHandle("desktop:workspaceStatus", async (_event, workspaceRoot?: string) => {
   const settings = await loadSettings()
+  const root = workspaceRoot || settings.workspaceRoot
   try {
     const [{ stdout }, diff, cachedDiff] = await Promise.all([
-      execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd: settings.workspaceRoot }),
-      execFileAsync("git", ["diff", "--numstat"], { cwd: settings.workspaceRoot }).catch(() => ({ stdout: "" })),
-      execFileAsync("git", ["diff", "--cached", "--numstat"], { cwd: settings.workspaceRoot }).catch(() => ({ stdout: "" })),
+      execFileAsync("git", ["status", "--porcelain=v1", "--branch"], { cwd: root }),
+      execFileAsync("git", ["diff", "--numstat"], { cwd: root }).catch(() => ({ stdout: "" })),
+      execFileAsync("git", ["diff", "--cached", "--numstat"], { cwd: root }).catch(() => ({ stdout: "" })),
     ])
     return parseGitStatus(stdout, `${diff.stdout}\n${cachedDiff.stdout}`)
   } catch (error) {
@@ -224,9 +225,15 @@ function activeSidecars() {
   return sidecars
 }
 
-function sidecarRequest(workspaceRoot: string | undefined, method: string, params: Record<string, unknown> = {}) {
+async function sidecarRequest(workspaceRoot: string | undefined, method: string, params: Record<string, unknown> = {}) {
   const registry = activeSidecars()
-  return workspaceRoot ? registry.requestWorkspace(workspaceRoot, method, params) : registry.request(method, params)
+  if (!workspaceRoot) return registry.request(method, params)
+  const settings = await loadSettings()
+  const requestedRoot = path.resolve(workspaceRoot)
+  const activeRoot = path.resolve(settings.workspaceRoot)
+  const activate = requestedRoot === activeRoot
+  registry.configureWorkspace({ ...settings, workspaceRoot: requestedRoot, session: activate ? settings.session : "default" }, { activate })
+  return registry.requestWorkspace(requestedRoot, method, params)
 }
 
 function parseGitStatus(output: string, numstat = "") {

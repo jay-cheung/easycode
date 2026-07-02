@@ -3,7 +3,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import type { DesktopProviderSetup, DesktopSettings } from "../shared/protocol.js"
-import { envEntriesFromText, mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "./provider-env.js"
+import { applyDesktopRuntimeEnv, envEntriesFromText, mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "./provider-env.js"
 import { normalizeSettings, normalizeSettingsForStorage } from "./settings-normalize.js"
 
 const settingsFile = () => path.join(app.getPath("userData"), "settings.json")
@@ -22,7 +22,9 @@ export async function loadSettings(): Promise<DesktopSettings> {
 }
 
 export async function saveSettings(input: Partial<DesktopSettings>) {
-  const { settings: next, stored } = normalizeSettingsForStorage(input)
+  await loadGlobalProviderEnvironment()
+  const envDefaults = await loadGlobalEnvDefaults()
+  const { settings: next, stored } = normalizeSettingsForStorage(input, envDefaults)
   await mkdir(path.dirname(settingsFile()), { recursive: true })
   await writeFile(settingsFile(), JSON.stringify(stored, null, 2))
   return next
@@ -51,13 +53,7 @@ export async function configureUiLanguageEnvironment(language: DesktopSettings["
 export async function loadGlobalProviderEnvironment(env: EnvTarget = process.env) {
   const text = await readFile(globalEnvFile(), "utf8").catch(() => "")
   if (!text) return 0
-  let loaded = 0
-  for (const [key, value] of Object.entries(envEntriesFromText(text))) {
-    if (env[key] !== undefined) continue
-    env[key] = value
-    loaded += 1
-  }
-  return loaded
+  return applyDesktopRuntimeEnv(envEntriesFromText(text), env)
 }
 
 async function loadGlobalEnvDefaults() {

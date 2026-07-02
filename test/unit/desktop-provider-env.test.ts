@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { envEntriesFromText, mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries } from "../../apps/desktop/src/main/provider-env"
+import { applyDesktopRuntimeEnv, envEntriesFromText, mergeProviderEnvText, providerDefaultsFromEnvText, providerEnvEntries, shouldApplyDesktopRuntimeEnv } from "../../apps/desktop/src/main/provider-env"
 
 describe("desktop provider env", () => {
   test("maps provider setup to the same env keys used by the CLI", () => {
@@ -37,6 +37,19 @@ describe("desktop provider env", () => {
     expect(merged).toBe(`# easycode configuration\nexport EASYCODE_PROVIDER=openai\n${providerKey}=replacement-value\n${searchKey}=search-fixture\nOPENAI_MODEL=gpt-5.5\n`)
   })
 
+  test("preserves existing provider keys when setup does not submit a replacement key", () => {
+    const providerKey = ["DEEPSEEK", "API", "KEY"].join("_")
+    const existing = `# easycode configuration\nEASYCODE_PROVIDER=deepseek\n${providerKey}=existing-provider-key\nDEEPSEEK_MODEL=deepseek-v4-pro\n`
+
+    const merged = mergeProviderEnvText(existing, providerEnvEntries({
+      provider: "deepseek",
+      apiKey: "",
+      model: "deepseek-v4-flash",
+    }))
+
+    expect(merged).toBe(`# easycode configuration\nEASYCODE_PROVIDER=deepseek\n${providerKey}=existing-provider-key\nDEEPSEEK_MODEL=deepseek-v4-flash\n`)
+  })
+
   test("reads CLI global env defaults for first desktop launch", () => {
     const providerKey = ["OPENAI", "API", "KEY"].join("_")
     const text = [
@@ -60,6 +73,36 @@ describe("desktop provider env", () => {
       [providerKey]: "fixture-value",
       EASYCODE_LANG: "zh",
     })
+  })
+
+  test("applies desktop runtime env from global config over stale inherited values", () => {
+    const providerKey = ["DEEPSEEK", "API", "KEY"].join("_")
+    const env: Record<string, string | undefined> = {
+      EASYCODE_PROVIDER: "openai",
+      [providerKey]: "",
+      NODE_EXTRA_CA_CERTS: "/stale/cert.pem",
+      PATH: "/usr/bin",
+    }
+
+    const loaded = applyDesktopRuntimeEnv({
+      EASYCODE_PROVIDER: "deepseek",
+      [providerKey]: "fixture-value",
+      NODE_EXTRA_CA_CERTS: "/tmp/easycode-ca.pem",
+      PATH: "/custom/bin",
+    }, env)
+
+    expect(loaded).toBe(3)
+    expect(env.EASYCODE_PROVIDER).toBe("deepseek")
+    expect(env[providerKey]).toBe("fixture-value")
+    expect(env.NODE_EXTRA_CA_CERTS).toBe("/tmp/easycode-ca.pem")
+    expect(env.PATH).toBe("/usr/bin")
+  })
+
+  test("recognizes blank inherited env values as loadable", () => {
+    expect(shouldApplyDesktopRuntimeEnv("ANY_ENV", undefined)).toBe(true)
+    expect(shouldApplyDesktopRuntimeEnv("ANY_ENV", "")).toBe(true)
+    expect(shouldApplyDesktopRuntimeEnv("ANY_ENV", "already-set")).toBe(false)
+    expect(shouldApplyDesktopRuntimeEnv("HTTPS_PROXY", "http://old.proxy")).toBe(true)
   })
 
   test("uses provider-specific model defaults from env text", () => {

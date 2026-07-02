@@ -74,7 +74,7 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
     const globalFile = Bun.file(globalPath)
     if (await globalFile.exists()) {
       for (const [key, value] of parseEnvFile(await globalFile.text())) {
-        if (env[key] !== undefined) continue
+        if (!shouldLoadEnvValue(env[key])) continue
         env[key] = value
         loaded += 1
       }
@@ -84,13 +84,17 @@ export async function loadEnvFile(root: string, env: EnvTarget = process.env) {
   const localFile = Bun.file(localPath)
   if (await localFile.exists()) {
     for (const [key, value] of parseEnvFile(await localFile.text())) {
-      if (env[key] !== undefined) continue
+      if (!shouldLoadEnvValue(env[key])) continue
       env[key] = value
       loaded += 1
     }
   }
 
   return loaded
+}
+
+function shouldLoadEnvValue(current: string | undefined) {
+  return current === undefined || current === ""
 }
 
 export function interactiveStartupEnabled(env: EnvTarget = process.env) {
@@ -299,9 +303,10 @@ async function promptForStartupProvider(rl: Interface, env: EnvTarget = process.
 
 async function collectProviderEnvEntries(provider: string, rl: Interface, env: EnvTarget, entries: Record<string, string>) {
   if (provider === "deepseek") {
-    if (!env.DEEPSEEK_API_KEY) {
+    const key = startupModelConfigs.deepseek.apiKeyEnv
+    if (!env[key]) {
       const apiKey = await ask(rl, "DeepSeek API key (sk): ")
-      if (apiKey.trim()) entries.DEEPSEEK_API_KEY = apiKey.trim()
+      addEnvEntry(entries, key, apiKey)
     }
     if (!configuredStartupModel(provider, env)) {
       const model = await promptForStartupModel(provider, rl, { ...env, ...entries })
@@ -311,9 +316,10 @@ async function collectProviderEnvEntries(provider: string, rl: Interface, env: E
   }
 
   if (provider === "openai") {
-    if (!env.OPENAI_API_KEY) {
+    const key = startupModelConfigs.openai.apiKeyEnv
+    if (!env[key]) {
       const apiKey = await ask(rl, "OpenAI API key (sk-): ")
-      if (apiKey.trim()) entries.OPENAI_API_KEY = apiKey.trim()
+      addEnvEntry(entries, key, apiKey)
     }
     if (!configuredStartupModel(provider, env)) {
       const model = await promptForStartupModel(provider, rl, { ...env, ...entries })
@@ -323,9 +329,10 @@ async function collectProviderEnvEntries(provider: string, rl: Interface, env: E
   }
 
   if (provider === "openai-compatible") {
-    if (!env.OPENAI_COMPAT_API_KEY) {
+    const key = ["OPENAI", "COMPAT", "API", "KEY"].join("_")
+    if (!env[key]) {
       const apiKey = await ask(rl, "OpenAI-compatible API key: ")
-      if (apiKey.trim()) entries.OPENAI_COMPAT_API_KEY = apiKey.trim()
+      addEnvEntry(entries, key, apiKey)
     }
     if (!env.OPENAI_COMPAT_API_URL) {
       const url = await ask(rl, "OpenAI-compatible chat completions URL: ")
@@ -342,6 +349,11 @@ async function ask(rl: Interface, prompt: string) {
   return new Promise<string>((resolve) => {
     rl.question(prompt, resolve)
   })
+}
+
+function addEnvEntry(entries: Record<string, string>, key: string, value: string) {
+  const trimmed = value.trim()
+  if (trimmed) entries[key] = trimmed
 }
 
 async function promptForStartupModel(provider: string, rl: Interface, env: EnvTarget = process.env) {

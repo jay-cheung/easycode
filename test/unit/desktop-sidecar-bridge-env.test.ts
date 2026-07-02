@@ -24,6 +24,30 @@ function resolve(child: FakeChild, result: unknown = {}) {
 }
 
 describe("desktop sidecar bridge environment", () => {
+  test("passes insecure TLS flag to dev sidecars when requested", async () => {
+    const previous = process.env.EASYCODE_DESKTOP_SIDECAR_INSECURE
+    const children: FakeChild[] = []
+    const spawnArgs: string[][] = []
+    try {
+      process.env.EASYCODE_DESKTOP_SIDECAR_INSECURE = "1"
+      const bridge = new SidecarBridge(settings("/bin/easycode-a"), ((_command: string, args: string[]) => {
+        spawnArgs.push(args)
+        const child = new FakeChild()
+        children.push(child)
+        return child as any
+      }) as any)
+
+      const request = bridge.request("getSettings")
+      resolve(children[0])
+      await request
+
+      expect(spawnArgs[0]).toEqual(["sidecar", "--stdio", "-k"])
+    } finally {
+      if (previous === undefined) delete process.env.EASYCODE_DESKTOP_SIDECAR_INSECURE
+      else process.env.EASYCODE_DESKTOP_SIDECAR_INSECURE = previous
+    }
+  })
+
   test("spawns restarted sidecars with the latest main-process environment", async () => {
     const previousProvider = process.env.EASYCODE_PROVIDER
     const children: FakeChild[] = []

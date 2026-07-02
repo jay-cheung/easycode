@@ -68,8 +68,9 @@ export class SidecarBridge {
   private ensureStarted() {
     if (this.isRunning() && this.child) return this.child
     const command = this.resolvedPath()
+    const args = sidecarArgs()
     const token = this.lifecycleToken
-    const child = this.spawnSidecar(command, ["sidecar", "--stdio"], { stdio: "pipe", env: { ...process.env } })
+    const child = this.spawnSidecar(command, args, { stdio: "pipe", env: { ...process.env } })
     this.child = child
     child.stdout.on("data", (chunk) => {
       if (!this.isCurrentChild(child, token)) return
@@ -143,6 +144,14 @@ export class SidecarBridge {
   private resolvedPath() {
     return resolveSidecarPath(this.settings)
   }
+}
+
+function sidecarArgs() {
+  const args = ["sidecar", "--stdio"]
+  if (process.env.EASYCODE_DESKTOP_SIDECAR_INSECURE === "1" || process.env.EASYCODE_DESKTOP_SIDECAR_INSECURE === "true") {
+    args.push("-k")
+  }
+  return args
 }
 
 function resolveSidecarPath(settings: DesktopSettings) {

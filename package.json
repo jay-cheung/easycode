@@ -24,6 +24,7 @@
     "build:darwin-arm64": "bun build --compile --target bun-darwin-arm64 ./src/cli.ts --outfile dist/easycode-darwin-arm64",
     "build:win-x64": "bun build --compile --target bun-windows-x64 ./src/cli.ts --outfile dist/easycode-win-x64.exe",
     "desktop:dev": "cd apps/desktop && bun run dev",
+    "desktop:dev:insecure": "cd apps/desktop && bun run dev:insecure",
     "desktop:build": "bun run build && cd apps/desktop && bun run build",
     "desktop:verify": "node scripts/desktop-verify.mjs",
     "desktop:package": "bash scripts/package-desktop.sh",

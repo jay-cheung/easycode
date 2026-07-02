@@ -101,9 +101,17 @@ describe("desktop preload api", () => {
     const ipc = new FakeIpc()
     const api = createDesktopApi(ipc)
 
+    await api.listSkills("/repo/a")
     await api.listSessions("/repo/a")
     await api.loadSession("scratch", "/repo/a")
     await api.deleteSession("scratch", "/repo/a")
+    await api.getGoalStatus("scratch", "/repo/a")
+    await api.pauseGoal("scratch", "/repo/a")
+    await api.resumeGoal("scratch", "/repo/a")
+    await api.clearGoal("scratch", "/repo/a")
+    await api.getPlanStatus("scratch", "/repo/a")
+    await api.clearPlan("scratch", "/repo/a")
+    await api.updateSidecarSettings({ language: "zh" }, "/repo/a")
     await api.executeSlashCommand("/settings", 0, 0, "/repo/a")
     await api.runPrompt("build it", "build", [], "ask", [], "/repo/a")
     await api.cancelRun("/repo/a")
@@ -111,14 +119,39 @@ describe("desktop preload api", () => {
     await api.replyPlan("run_1", "approve", undefined, "/repo/a")
 
     expect(ipc.calls).toEqual([
+      { channel: "sidecar:listSkills", args: ["/repo/a"] },
       { channel: "sidecar:listSessions", args: ["/repo/a"] },
       { channel: "sidecar:loadSession", args: ["scratch", "/repo/a"] },
       { channel: "sidecar:deleteSession", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:getGoalStatus", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:pauseGoal", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:resumeGoal", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:clearGoal", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:getPlanStatus", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:clearPlan", args: ["scratch", "/repo/a"] },
+      { channel: "sidecar:updateSettings", args: [{ language: "zh" }, "/repo/a"] },
       { channel: "sidecar:executeSlashCommand", args: ["/settings", 0, 0, "/repo/a"] },
       { channel: "sidecar:runPrompt", args: ["build it", "build", [], "ask", [], "/repo/a"] },
       { channel: "sidecar:cancelRun", args: ["/repo/a"] },
       { channel: "sidecar:replyPermission", args: ["permission_1", "once", "/repo/a"] },
       { channel: "sidecar:replyPlan", args: ["run_1", "approve", undefined, "/repo/a"] },
+    ])
+  })
+
+  test("passes workspace roots for workspace-scoped desktop status calls", async () => {
+    const ipc = new FakeIpc()
+    const api = createDesktopApi(ipc)
+
+    await api.getProviderReadiness("/repo/a")
+    await api.openWorkspaceFile("src/app.ts", "/repo/a")
+    await api.openWorkspaceChanges("/repo/a")
+    await api.workspaceStatus("/repo/a")
+
+    expect(ipc.calls).toEqual([
+      { channel: "sidecar:getProviderReadiness", args: ["/repo/a"] },
+      { channel: "desktop:openWorkspaceFile", args: ["src/app.ts", "/repo/a"] },
+      { channel: "desktop:openWorkspaceChanges", args: ["/repo/a"] },
+      { channel: "desktop:workspaceStatus", args: ["/repo/a"] },
     ])
   })
 

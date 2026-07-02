@@ -217,28 +217,28 @@ export type DesktopApi = {
   updateSettings(settings: Partial<DesktopSettings>): Promise<DesktopSettings>
   initialize(): Promise<any>
   listProviders(): Promise<DesktopProviderListResult>
-  getProviderReadiness(): Promise<DesktopProviderReadiness>
+  getProviderReadiness(workspaceRoot?: string): Promise<DesktopProviderReadiness>
   configureProvider(input: DesktopProviderSetup): Promise<DesktopProviderSetupResult>
-  listSkills(): Promise<DesktopListSkillsResult>
+  listSkills(workspaceRoot?: string): Promise<DesktopListSkillsResult>
   listSessions(workspaceRoot?: string): Promise<DesktopListSessionsResult>
   loadSession(session: string, workspaceRoot?: string): Promise<DesktopLoadSessionResult>
   deleteSession(session: string, workspaceRoot?: string): Promise<DesktopDeleteSessionResult>
-  getGoalStatus(session?: string): Promise<DesktopGoalStatusResult>
-  pauseGoal(session?: string): Promise<any>
-  resumeGoal(session?: string): Promise<any>
-  clearGoal(session?: string): Promise<any>
-  getPlanStatus(session?: string): Promise<DesktopPlanStatusResult>
-  clearPlan(session?: string): Promise<any>
-  updateSidecarSettings(settings: DesktopSettingsPatch): Promise<{ settings: DesktopSettings }>
+  getGoalStatus(session?: string, workspaceRoot?: string): Promise<DesktopGoalStatusResult>
+  pauseGoal(session?: string, workspaceRoot?: string): Promise<any>
+  resumeGoal(session?: string, workspaceRoot?: string): Promise<any>
+  clearGoal(session?: string, workspaceRoot?: string): Promise<any>
+  getPlanStatus(session?: string, workspaceRoot?: string): Promise<DesktopPlanStatusResult>
+  clearPlan(session?: string, workspaceRoot?: string): Promise<any>
+  updateSidecarSettings(settings: DesktopSettingsPatch, workspaceRoot?: string): Promise<{ settings: DesktopSettings }>
   pickWorkspace(): Promise<string | undefined>
   pickFiles(): Promise<DesktopFileSelection[]>
   showWorkspace(workspaceRoot?: string): Promise<{ opened: boolean }>
-  openWorkspaceFile(filePath: string): Promise<{ opened: boolean; path: string }>
-  openWorkspaceChanges(): Promise<{ opened: boolean; path: string }>
+  openWorkspaceFile(filePath: string, workspaceRoot?: string): Promise<{ opened: boolean; path: string }>
+  openWorkspaceChanges(workspaceRoot?: string): Promise<{ opened: boolean; path: string }>
   removeWorkspaceSidecar(workspaceRoot: string): Promise<{ stopped: boolean }>
   showSidecar(): Promise<{ opened: boolean }>
   sidecarStatus(): Promise<DesktopSidecarStatus>
-  workspaceStatus(): Promise<DesktopWorkspaceStatus>
+  workspaceStatus(workspaceRoot?: string): Promise<DesktopWorkspaceStatus>
   executeSlashCommand(text: string, pendingImages?: number, pendingFiles?: number, workspaceRoot?: string): Promise<DesktopSlashCommandResult>
   runPrompt(text: string, mode?: DesktopRunMode, images?: string[], permissionMode?: DesktopPermissionMode, files?: string[], workspaceRoot?: string): Promise<any>
   cancelRun(workspaceRoot?: string): Promise<any>

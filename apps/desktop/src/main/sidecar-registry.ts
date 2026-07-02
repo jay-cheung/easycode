@@ -18,13 +18,17 @@ export class WorkspaceSidecarRegistry<Settings extends { workspaceRoot: string; 
   constructor(private readonly createBridge: (settings: Settings) => WorkspaceBridgeLike<Settings>) {}
 
   configure(settings: Settings) {
+    return this.configureWorkspace(settings, { activate: true })
+  }
+
+  configureWorkspace(settings: Settings, options: { activate?: boolean } = {}) {
     const key = workspaceKey(settings.workspaceRoot)
     if (this.configured && this.sidecarPath !== settings.sidecarPath) {
       this.stopAll(new Error("Sidecar path changed."))
     }
     this.configured = true
     this.sidecarPath = settings.sidecarPath
-    this.activeKey = key
+    if (options.activate !== false) this.activeKey = key
     const bridge = this.bridgeFor(key, settings)
     bridge.configure(settings)
     return bridge

@@ -76,11 +76,11 @@ export class SidecarService {
   }
 
   private async initialize(params: unknown) {
-    const parsed = parseInitializeParams(params, this.root, this.settings)
+    const parsed = parseInitializeParams(params, this.root, this.session, this.settings)
     this.root = parsed.root
     this.session = parsed.session
     this.settings = parsed.settings
-    this.loadedEnvVars = await loadEnvFile(this.root)
+    await this.reloadEnvironment()
     this.emit({ type: "session_changed", session: this.session })
     return { protocolVersion: sidecarProtocolVersion, root: this.root, session: this.session, settings: this.settings }
   }
@@ -115,7 +115,7 @@ export class SidecarService {
   }
 
   private async providerReadiness() {
-    await loadEnvFile(this.root)
+    await this.reloadEnvironment()
     return diagnoseProviderReadiness(this.settings.provider, process.env, {
       model: this.settings.model,
       thinking: this.settings.thinking,
@@ -507,6 +507,7 @@ export class SidecarService {
     const context = await store.context(session)
     const settings = await this.sessionSettings(store, session)
     const logger = createLogger({ root: this.root, session })
+    await this.reloadEnvironment()
     emitLog(logger, { type: "data", name: "sidecar.run", detail: { mode, root: this.root, session, loadedEnvVars: this.loadedEnvVars } })
     let usage = normalizeSessionTokenUsage((await store.load(session))?.tokenUsage)
     const promptText = await promptWithAttachedFiles(this.root, text, fileInputs)
@@ -581,6 +582,7 @@ export class SidecarService {
   }
 
   private async runOnce(runId: string, session: string, context: ContextManagerLike, settings: SessionSettings, usage: SessionTokenUsage, logger: Logger | undefined, text: string, mode: AgentMode, abort: AbortController, options: { permissionMode?: RunPromptPermissionMode; permissionRuleMode?: "build" | "plan" | "goal"; emitRunDone?: boolean; images?: ImagePart[] } = {}) {
+    await this.reloadEnvironment()
     const store = this.store()
     let mainMetrics: ProviderRunMetrics | undefined
     let subagentUsage = normalizeSessionTokenUsage(undefined)
@@ -653,6 +655,11 @@ export class SidecarService {
     context.state.summary = loaded.summary
     context.setLedger(loaded.ledger)
     return context
+  }
+
+  private async reloadEnvironment() {
+    this.loadedEnvVars = await loadEnvFile(this.root)
+    return this.loadedEnvVars
   }
 
   private emit(event: SidecarEvent, runId?: string) {
