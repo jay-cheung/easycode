@@ -31,6 +31,7 @@
   "build": {
     "appId": "dev.easycode.desktop",
     "productName": "easycode",
+    "executableName": "easycode",
     "artifactName": "easycode-${version}-${os}-${arch}.${ext}",
     "icon": "build/icon.png",
     "mac": {
@@ -43,11 +44,13 @@
       }
     },
     "win": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "executableName": "easycode"
     },
     "linux": {
       "icon": "build/icon.png",
-      "executableName": "easycode"
+      "executableName": "easycode",
+      "packageName": "easycode"
     },
     "directories": {
       "output": "release"
