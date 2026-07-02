@@ -43,7 +43,8 @@
       "icon": "build/icon.png"
     },
     "linux": {
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "executableName": "easycode"
     },
     "directories": {
       "output": "release"
