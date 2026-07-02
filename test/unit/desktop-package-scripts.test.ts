@@ -23,4 +23,13 @@ describe("desktop package scripts", () => {
     expect(manifest.scripts?.dev).toContain("node scripts/run-electron.mjs")
     expect(manifest.scripts?.build).toContain("node scripts/bundle-preload.mjs")
   })
+
+  test("uses native macOS icon generation before falling back to manual icns output", async () => {
+    const source = await Bun.file(path.join(import.meta.dir, "../../apps/desktop/scripts/make-mac-icon.mjs")).text()
+
+    expect(source).toContain('spawnSync("iconutil"')
+    expect(source).toContain('"EasyCode.iconset"')
+    expect(source).toContain('["icon_512x512@2x.png", 1024]')
+    expect(source).toContain('fileHeader.write("icns"')
+  })
 })

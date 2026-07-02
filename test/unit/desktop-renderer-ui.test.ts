@@ -224,6 +224,16 @@ describe("desktop renderer UI contracts", () => {
     expect(css).not.toContain(".tool-row")
   })
 
+  test("sends composer input on Enter and keeps Shift Enter for new lines", async () => {
+    const composer = await rendererFile("composer.tsx")
+
+    expect(composer).toContain('if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return')
+    expect(composer).toContain("event.preventDefault()")
+    expect(composer).toContain("if (!prompt.trim() || blockedByProvider) return")
+    expect(composer).toContain("void sendPrompt()")
+    expect(composer).not.toContain("event.metaKey || event.ctrlKey")
+  })
+
   test("opens workspace changes in the local git changes panel", async () => {
     const main = await Bun.file(path.join(import.meta.dir, "../../apps/desktop/src/main/main.ts")).text()
     const app = await rendererFile("App.tsx")

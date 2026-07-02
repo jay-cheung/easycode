@@ -66,7 +66,10 @@ export function Composer({ attachments, copy, onCancelRun, onChangeEffort, onCha
       <div className="attachments">{attachments.map((file) => <button key={file.id} onClick={() => onRemoveAttachment(file.id)} disabled={running}><span>{file.name}</span><small>{file.kind} - {file.size}</small></button>)}</div>
     </div>}
     <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => {
-      if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) void sendPrompt()
+      if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return
+      event.preventDefault()
+      if (!prompt.trim() || blockedByProvider) return
+      void sendPrompt()
     }} placeholder={copy.composerPlaceholder} />
     <div className="composer-bar">
       <button className="file-button" onClick={onPickFiles} disabled={running}>{copy.addFiles}</button>

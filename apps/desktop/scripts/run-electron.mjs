@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs"
 import path from "node:path"
 import { createRequire } from "node:module"
 import { fileURLToPath } from "node:url"
@@ -34,6 +34,7 @@ export function patchMacInfoPlist(text, name = devApplicationName) {
     ["CFBundleDisplayName", name],
     ["CFBundleName", name],
     ["CFBundleIdentifier", devBundleIdentifier],
+    ["CFBundleIconFile", "electron.icns"],
     ["CFBundleVersion", devBundleIdentityVersion],
     ["CFBundleShortVersionString", `0.0.${devBundleIdentityVersion}`],
   ].reduce((input, [key, value]) => withStringKey(input, key, value), text)
@@ -96,8 +97,12 @@ export function ensureMacDevApp(sourceApp, options = {}) {
   const name = options.name ?? devApplicationName
   const targetRoot = options.targetRoot ?? path.join(appDir, ".easycode-electron")
   const targetApp = path.join(targetRoot, "Electron.app")
+  const legacyTargetApp = path.join(targetRoot, `${name}.app`)
   const marker = path.join(targetRoot, "source.txt")
-  const sourceMarker = `${sourceApp}\n${name}\n${devBundleIdentityVersion}\n`
+  const iconPath = path.join(appDir, "build", "icon.icns")
+  const sourceMarker = `${sourceApp}\n${name}\n${devBundleIdentityVersion}\n${iconSignature(iconPath)}\n`
+
+  if (legacyTargetApp !== targetApp) rmSync(legacyTargetApp, { recursive: true, force: true })
 
   if (!existsSync(targetApp) || !existsSync(marker) || readFileSync(marker, "utf8") !== sourceMarker) {
     rmSync(targetApp, { recursive: true, force: true })
@@ -112,7 +117,6 @@ export function ensureMacDevApp(sourceApp, options = {}) {
   if (patched !== plist) writeFileSync(plistPath, patched)
   patchLocalizedInfoPlistStrings(targetApp, name)
 
-  const iconPath = path.join(appDir, "build", "icon.icns")
   const resourcesIconPath = path.join(targetApp, "Contents", "Resources", "electron.icns")
   if (existsSync(iconPath)) {
     mkdirSync(path.dirname(resourcesIconPath), { recursive: true })
@@ -126,6 +130,12 @@ export function ensureMacDevApp(sourceApp, options = {}) {
     appPath: targetApp,
     executablePath: sourceExecutable,
   }
+}
+
+function iconSignature(iconPath) {
+  if (!existsSync(iconPath)) return "no-icon"
+  const stat = statSync(iconPath)
+  return `${iconPath}:${stat.size}:${Math.trunc(stat.mtimeMs)}`
 }
 
 export function devElectronCommand(platform = process.platform) {
