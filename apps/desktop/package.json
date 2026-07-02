@@ -31,6 +31,7 @@
   "build": {
     "appId": "dev.easycode.desktop",
     "productName": "easycode",
+    "artifactName": "easycode-${version}-${os}-${arch}.${ext}",
     "icon": "build/icon.png",
     "mac": {
       "icon": "build/icon.icns",
